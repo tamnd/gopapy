@@ -154,14 +154,43 @@ type AssignStmt struct {
 // ---------------------------------------------------------------------------
 
 type CompoundStmt struct {
-	Pos      plexer.Position
-	If       *IfStmt    `parser:"  @@"`
-	While    *WhileStmt `parser:"| @@"`
-	For      *ForStmt   `parser:"| @@"`
-	With     *WithStmt  `parser:"| @@"`
-	Try      *TryStmt   `parser:"| @@"`
-	FuncDef  *FuncDef   `parser:"| @@"`
-	ClassDef *ClassDef  `parser:"| @@"`
+	Pos        plexer.Position
+	Async      *AsyncStmt `parser:"  @@"`
+	Decorated  *Decorated `parser:"| @@"`
+	If         *IfStmt    `parser:"| @@"`
+	While      *WhileStmt `parser:"| @@"`
+	For        *ForStmt   `parser:"| @@"`
+	With       *WithStmt  `parser:"| @@"`
+	Try        *TryStmt   `parser:"| @@"`
+	FuncDef    *FuncDef   `parser:"| @@"`
+	ClassDef   *ClassDef  `parser:"| @@"`
+}
+
+// AsyncStmt is the `async` soft-keyword prefix on def, for, or with.
+// Each form reuses the existing non-async sub-rule and the AST emitter
+// swaps in the AsyncFunctionDef / AsyncFor / AsyncWith node types.
+type AsyncStmt struct {
+	Pos     plexer.Position
+	FuncDef *FuncDef  `parser:"'async' ( @@"`
+	For     *ForStmt  `parser:"  | @@"`
+	With    *WithStmt `parser:"  | @@ )"`
+}
+
+// Decorated is one or more `@expr NEWLINE` lines followed by a function or
+// class definition. The expressions can be any callable: a name, a dotted
+// path, or a call. CPython's grammar (3.9+) accepts `@expr` rather than the
+// older restricted dotted_name(args) form, so we follow suit.
+type Decorated struct {
+	Pos        plexer.Position
+	Decorators []*Decorator `parser:"@@+"`
+	Async      bool         `parser:"( @'async' )?"`
+	FuncDef    *FuncDef     `parser:"( @@"`
+	ClassDef   *ClassDef    `parser:"| @@ )"`
+}
+
+type Decorator struct {
+	Pos  plexer.Position
+	Expr *Expression `parser:"AT @@ NEWLINE"`
 }
 
 type Block struct {
@@ -225,10 +254,16 @@ type TargetAtom struct {
 	Expr *BitOr `parser:"@@"`
 }
 
+// WithStmt accepts both the bare comma-separated form
+// (`with a, b as c:`) and the parenthesized form added in PEP 617
+// (`with (a, b as c, d):`), with an optional trailing comma inside the
+// parens. The two forms produce identical AST shapes.
 type WithStmt struct {
-	Pos   plexer.Position
-	Items []*WithItem `parser:"'with' @@ ( COMMA @@ )* COLON"`
-	Body  *Block      `parser:"@@"`
+	Pos        plexer.Position
+	Paren      bool        `parser:"'with' ( @LPAREN"`
+	Items      []*WithItem `parser:"  @@ ( COMMA @@ )* COMMA? RPAREN"`
+	BareItems  []*WithItem `parser:"| @@ ( COMMA @@ )* )"`
+	Body       *Block      `parser:"COLON @@"`
 }
 
 type WithItem struct {
@@ -265,11 +300,25 @@ type FuncDef struct {
 	Body    *Block      `parser:"COLON @@"`
 }
 
+// Param covers one entry in a function parameter list. Five shapes:
+//
+//   /                  Slash=true                   PEP 570 marker
+//   *                  Star=true,  Name=""          bare-star kwonly marker
+//   *name              Star=true,  Name=name        vararg
+//   **name             Double=true, Name=name       kwarg
+//   name[:annot][=default]  the regular case
+//
+// Annot and Default only ever populate on the regular case. CPython
+// rejects them on *name/**name at compile time, not parse, so we accept
+// the syntactic form and let downstream flag.
 type Param struct {
 	Pos     plexer.Position
-	Star    bool        `parser:"( @STAR"`
-	Double  bool        `parser:"  | @DOUBLESTAR )?"`
-	Name    string      `parser:"@NAME"`
+	// Kind is one of "" (regular), "/" (PEP 570 marker), "*" (vararg or
+	// bare-star kwonly marker), or "**" (kwarg). Kept as a string instead
+	// of three bools because participle binds at most one capture per
+	// field, and we want both the prefix and the name in one Param shape.
+	Kind    string      `parser:"@( SLASH | DOUBLESTAR | STAR )?"`
+	Name    string      `parser:"@NAME?"`
 	Annot   *Expression `parser:"( COLON @@ )?"`
 	Default *Expression `parser:"( EQ @@ )?"`
 }

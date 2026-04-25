@@ -235,6 +235,10 @@ func augOp(op string) OperatorNode {
 
 func emitCompound(c *parser.CompoundStmt) StmtNode {
 	switch {
+	case c.Async != nil:
+		return emitAsync(c.Async)
+	case c.Decorated != nil:
+		return emitDecorated(c.Decorated)
 	case c.If != nil:
 		return emitIf(c.If)
 	case c.While != nil:
@@ -256,8 +260,12 @@ func emitCompound(c *parser.CompoundStmt) StmtNode {
 		}
 	case c.With != nil:
 		w := c.With
-		items := make([]*Withitem, 0, len(w.Items))
-		for _, it := range w.Items {
+		raw := w.Items
+		if !w.Paren {
+			raw = w.BareItems
+		}
+		items := make([]*Withitem, 0, len(raw))
+		for _, it := range raw {
 			items = append(items, &Withitem{
 				ContextExpr:  emitExpr(it.Context),
 				OptionalVars: ifNotNil(it.Vars, func(e *parser.Expression) ExprNode { return withCtx(emitExpr(e), &Store{}) }),
@@ -331,6 +339,76 @@ func emitClassDef(c *parser.ClassDef) StmtNode {
 	}
 }
 
+// emitDecorated lifts a decorator stack onto the function or class
+// definition that follows. CPython models decorators as a list field on
+// the def/class node, in source order. `@deco / async def` becomes an
+// AsyncFunctionDef with the same decorator list.
+func emitDecorated(d *parser.Decorated) StmtNode {
+	decos := make([]ExprNode, 0, len(d.Decorators))
+	for _, dec := range d.Decorators {
+		decos = append(decos, emitExpr(dec.Expr))
+	}
+	switch {
+	case d.FuncDef != nil && d.Async:
+		fd := emitAsyncFuncDef(d.FuncDef)
+		fd.DecoratorList = decos
+		return fd
+	case d.FuncDef != nil:
+		fd := emitFuncDef(d.FuncDef).(*FunctionDef)
+		fd.DecoratorList = decos
+		return fd
+	case d.ClassDef != nil:
+		cd := emitClassDef(d.ClassDef).(*ClassDef)
+		cd.DecoratorList = decos
+		return cd
+	}
+	return nil
+}
+
+// emitAsync turns a bare `async def/for/with` into the matching async
+// AST node. Decorated async defs go through emitDecorated instead so the
+// decorator list is preserved.
+func emitAsync(a *parser.AsyncStmt) StmtNode {
+	switch {
+	case a.FuncDef != nil:
+		return emitAsyncFuncDef(a.FuncDef)
+	case a.For != nil:
+		f := a.For
+		return &AsyncFor{
+			Pos:    pos(a.Pos),
+			Target: emitTargetList(f.Target, &Store{}),
+			Iter:   emitExpr(f.Iter),
+			Body:   emitBlock(f.Body),
+			Orelse: emitElse(f.Else),
+		}
+	case a.With != nil:
+		w := a.With
+		raw := w.Items
+		if !w.Paren {
+			raw = w.BareItems
+		}
+		items := make([]*Withitem, 0, len(raw))
+		for _, it := range raw {
+			items = append(items, &Withitem{
+				ContextExpr:  emitExpr(it.Context),
+				OptionalVars: ifNotNil(it.Vars, func(e *parser.Expression) ExprNode { return withCtx(emitExpr(e), &Store{}) }),
+			})
+		}
+		return &AsyncWith{Pos: pos(a.Pos), Items: items, Body: emitBlock(w.Body)}
+	}
+	return nil
+}
+
+func emitAsyncFuncDef(f *parser.FuncDef) *AsyncFunctionDef {
+	return &AsyncFunctionDef{
+		Pos:     pos(f.Pos),
+		Name:    f.Name,
+		Args:    emitArguments(f.Params),
+		Body:    emitBlock(f.Body),
+		Returns: emitExprOpt(f.Returns),
+	}
+}
+
 func emitBlock(b *parser.Block) []StmtNode {
 	out := make([]StmtNode, 0, len(b.Body))
 	for _, st := range b.Body {
@@ -351,18 +429,36 @@ func emitElse(e *parser.ElseClause) []StmtNode {
 // markers; everything lives in Args, *vararg, or **kwarg as recognised
 // by Param.Star and Param.Double. Defaults follow CPython's convention:
 // only the trailing run of positional defaults goes in Defaults.
+// emitArguments turns the participle Param list into the Arguments product
+// type. The list is walked in source order. A `/` flips already-collected
+// positional args into Posonlyargs (PEP 570). A `*` (with or without name)
+// flips subsequent regular params into Kwonlyargs (PEP 3102). `**name`
+// becomes Kwarg.
 func emitArguments(params []*parser.Param) *Arguments {
 	args := &Arguments{}
 	seenStar := false
 	for _, p := range params {
-		switch {
-		case p.Star:
+		// Param is all-optional fields, so participle can match zero
+		// tokens for an empty `()` parameter list. Skip those.
+		if p.Kind == "" && p.Name == "" {
+			continue
+		}
+		switch p.Kind {
+		case "/":
+			args.Posonlyargs = append(args.Posonlyargs, args.Args...)
+			args.Args = nil
+			continue
+		case "*":
 			seenStar = true
 			if p.Name != "" {
 				args.Vararg = paramArg(p)
 			}
-		case p.Double:
+			continue
+		case "**":
 			args.Kwarg = paramArg(p)
+			continue
+		}
+		switch {
 		case seenStar:
 			args.Kwonlyargs = append(args.Kwonlyargs, paramArg(p))
 			if p.Default != nil {
@@ -382,6 +478,25 @@ func emitArguments(params []*parser.Param) *Arguments {
 
 func paramArg(p *parser.Param) *Arg {
 	return &Arg{Pos: pos(p.Pos), Arg: p.Name, Annotation: emitExprOpt(p.Annot)}
+}
+
+// emitCallArgs builds the (Args, Keywords) pair for a Call. The bare
+// `f(x for x in xs)` form folds into a single positional GeneratorExp;
+// otherwise we walk First + Rest as a flat argument list.
+func emitCallArgs(c *parser.CallArgs) ([]ExprNode, []*Keyword) {
+	if c.First == nil {
+		return nil, nil
+	}
+	if len(c.Gen) > 0 {
+		gen := &GeneratorExp{
+			Pos:        pos(c.First.Pos),
+			Elt:        emitExpr(c.First.Posn),
+			Generators: emitComps(c.Gen),
+		}
+		return []ExprNode{gen}, nil
+	}
+	all := append([]*parser.Argument{c.First}, c.Rest...)
+	return emitArgList(all)
 }
 
 // emitArgList splits a participle Argument list into positional bases and
@@ -442,6 +557,14 @@ func emitExprOpt(e *parser.Expression) ExprNode {
 }
 
 func emitExpr(e *parser.Expression) ExprNode {
+	if e.Walrus != nil {
+		w := e.Walrus
+		return &NamedExpr{
+			Pos:    pos(w.Pos),
+			Target: &Name{Pos: pos(w.Pos), Id: w.Name, Ctx: &Store{}},
+			Value:  emitExpr(w.Value),
+		}
+	}
 	if e.Lambda != nil {
 		l := e.Lambda
 		return &Lambda{Pos: pos(l.Pos), Args: emitArguments(l.Params), Body: emitExpr(l.Body)}
@@ -668,7 +791,7 @@ func applyTrailer(value ExprNode, t *parser.Trailer) ExprNode {
 	case t.Attr != "":
 		return &Attribute{Pos: pos(t.Pos), Value: value, Attr: t.Attr, Ctx: &Load{}}
 	case t.Call != nil:
-		args, kws := emitArgList(t.Call.Args)
+		args, kws := emitCallArgs(t.Call)
 		return &Call{Pos: pos(t.Pos), Func: value, Args: args, Keywords: kws}
 	case t.Sub != nil:
 		return &Subscript{Pos: pos(t.Pos), Value: value, Slice: emitSubscriptList(t.Sub), Ctx: &Load{}}
@@ -722,11 +845,7 @@ func emitAtom(a *parser.Atom) ExprNode {
 	case a.Ellipsis:
 		return &Constant{Pos: p, Value: ConstantValue{Kind: ConstantEllipsis}}
 	case a.List != nil:
-		elts := make([]ExprNode, 0, len(a.List.Elts))
-		for _, e := range a.List.Elts {
-			elts = append(elts, emitExpr(e))
-		}
-		return &List{Pos: p, Elts: elts, Ctx: &Load{}}
+		return emitList(p, a.List)
 	case a.Dict != nil:
 		return emitDictOrSet(p, a.Dict)
 	case a.Paren != nil:
@@ -735,27 +854,94 @@ func emitAtom(a *parser.Atom) ExprNode {
 	return nil
 }
 
-// emitDictOrSet inspects whether the first item carries a Value to decide
-// between Dict and Set. Mixing the two in source is a parse error in
-// CPython, so we trust the first item to flag the kind.
+// emitList turns a ListLit into either a List or a ListComp.
+func emitList(p Pos, l *parser.ListLit) ExprNode {
+	if l.First == nil {
+		return &List{Pos: p, Ctx: &Load{}}
+	}
+	if len(l.Comp) > 0 {
+		if l.First.Star != nil {
+			// `[*x for ...]` is invalid in CPython but we mirror the parse.
+			return &ListComp{Pos: p, Elt: emitStarOrExpr(l.First), Generators: emitComps(l.Comp)}
+		}
+		return &ListComp{Pos: p, Elt: emitExpr(l.First.Expr), Generators: emitComps(l.Comp)}
+	}
+	elts := []ExprNode{emitStarOrExpr(l.First)}
+	for _, e := range l.Rest {
+		elts = append(elts, emitStarOrExpr(e))
+	}
+	return &List{Pos: p, Elts: elts, Ctx: &Load{}}
+}
+
+// emitDictOrSet picks Dict vs Set vs DictComp vs SetComp based on the
+// first item and whether a comprehension follows. A `**x` or a
+// `key: value` pair is a dict; anything else is a set. Dict unpacking
+// renders as a key=None entry in CPython's AST.
 func emitDictOrSet(p Pos, d *parser.DictOrSetLit) ExprNode {
 	if d.First == nil {
 		return &Dict{Pos: p}
 	}
-	if d.First.Value == nil {
-		elts := []ExprNode{emitExpr(d.First.Key)}
+	isDict := d.First.DStar != nil || d.First.Value != nil
+	if len(d.Comp) > 0 {
+		gens := emitComps(d.Comp)
+		if isDict {
+			return &DictComp{Pos: p, Key: emitExpr(d.First.Key), Value: emitExpr(d.First.Value), Generators: gens}
+		}
+		return &SetComp{Pos: p, Elt: emitDictSetElt(d.First), Generators: gens}
+	}
+	if !isDict {
+		elts := []ExprNode{emitDictSetElt(d.First)}
 		for _, r := range d.Rest {
-			elts = append(elts, emitExpr(r.Key))
+			elts = append(elts, emitDictSetElt(r))
 		}
 		return &Set{Pos: p, Elts: elts}
 	}
-	keys := []ExprNode{emitExpr(d.First.Key)}
-	values := []ExprNode{emitExpr(d.First.Value)}
+	var keys, values []ExprNode
+	addItem := func(it *parser.DictItemOrExpr) {
+		if it.DStar != nil {
+			keys = append(keys, nil)
+			values = append(values, emitExpr(it.DStar))
+			return
+		}
+		keys = append(keys, emitExpr(it.Key))
+		values = append(values, emitExpr(it.Value))
+	}
+	addItem(d.First)
 	for _, r := range d.Rest {
-		keys = append(keys, emitExpr(r.Key))
-		values = append(values, emitExpr(r.Value))
+		addItem(r)
 	}
 	return &Dict{Pos: p, Keys: keys, Values: values}
+}
+
+// emitComps flattens a list of CompFor clauses into Comprehension nodes.
+// Each `for` becomes its own Comprehension; the trailing `if` filters of
+// that for-clause attach to it as Ifs.
+func emitComps(cs []*parser.CompFor) []*Comprehension {
+	out := make([]*Comprehension, 0, len(cs))
+	for _, c := range cs {
+		ifs := make([]ExprNode, 0, len(c.Ifs))
+		for _, f := range c.Ifs {
+			ifs = append(ifs, emitDisjunction(f))
+		}
+		isAsync := 0
+		if c.Async {
+			isAsync = 1
+		}
+		out = append(out, &Comprehension{
+			Target:  emitTargetList(c.Target, &Store{}),
+			Iter:    emitDisjunction(c.Iter),
+			Ifs:     ifs,
+			IsAsync: isAsync,
+		})
+	}
+	return out
+}
+
+func emitDictSetElt(it *parser.DictItemOrExpr) ExprNode {
+	if it.StarSet != nil {
+		return &Starred{Pos: pos(it.Pos), Value: emitExpr(it.StarSet), Ctx: &Load{}}
+	}
+	return emitExpr(it.Key)
 }
 
 // emitParen distinguishes `(expr)` (just a value) from `(a,)` /
@@ -769,18 +955,33 @@ func emitDictOrSet(p Pos, d *parser.DictOrSetLit) ExprNode {
 // always fold a single element to its bare expression. PR2 widens
 // ParenLit so the trailing-comma case becomes detectable.
 func emitParen(p Pos, paren *parser.ParenLit) ExprNode {
-	switch len(paren.Elts) {
-	case 0:
+	if paren.First == nil {
 		return &Tuple{Pos: p, Ctx: &Load{}}
-	case 1:
-		return emitExpr(paren.Elts[0])
-	default:
-		elts := make([]ExprNode, 0, len(paren.Elts))
-		for _, e := range paren.Elts {
-			elts = append(elts, emitExpr(e))
-		}
-		return &Tuple{Pos: p, Elts: elts, Ctx: &Load{}}
 	}
+	if len(paren.Comp) > 0 {
+		return &GeneratorExp{Pos: p, Elt: emitExpr(paren.First.Expr), Generators: emitComps(paren.Comp)}
+	}
+	if len(paren.Rest) == 0 {
+		// `(x)` vs `(x,)`: trailing comma (or a `*x` head) makes a Tuple.
+		if paren.TrailingComma || paren.First.Star != nil {
+			return &Tuple{Pos: p, Elts: []ExprNode{emitStarOrExpr(paren.First)}, Ctx: &Load{}}
+		}
+		return emitExpr(paren.First.Expr)
+	}
+	elts := make([]ExprNode, 0, 1+len(paren.Rest))
+	elts = append(elts, emitStarOrExpr(paren.First))
+	for _, e := range paren.Rest {
+		elts = append(elts, emitStarOrExpr(e))
+	}
+	return &Tuple{Pos: p, Elts: elts, Ctx: &Load{}}
+}
+
+// emitStarOrExpr unwraps a list/tuple element that may be `*expr`.
+func emitStarOrExpr(s *parser.StarOrExpr) ExprNode {
+	if s.Star != nil {
+		return &Starred{Pos: pos(s.Pos), Value: emitExpr(s.Star), Ctx: &Load{}}
+	}
+	return emitExpr(s.Expr)
 }
 
 func emitYield(y *parser.YieldExpr) ExprNode {
@@ -822,11 +1023,17 @@ func isHexInt(s string) bool {
 // still flow through here as literal STRING tokens.
 func stringConstant(p Pos, parts []string) ExprNode {
 	isBytes := false
+	hasF := false
 	for _, raw := range parts {
 		if hasStringPrefix(raw, 'b') {
 			isBytes = true
-			break
 		}
+		if hasStringPrefix(raw, 'f') {
+			hasF = true
+		}
+	}
+	if hasF {
+		return emitFString(p, parts)
 	}
 	var b strings.Builder
 	for _, raw := range parts {
@@ -882,44 +1089,114 @@ func decodeStringLiteral(raw string) string {
 	return s
 }
 
+// decodeEscapes processes Python's escape sequences inside a string literal:
+//   \\ \' \" \a \b \f \n \r \t \v   single-char escapes
+//   \NNN                             1-3 octal digits, value mod 256
+//   \xHH                             two hex digits, exact
+//   \uHHHH                           four hex digits (BMP code point)
+//   \UHHHHHHHH                       eight hex digits (full code point)
+//   \<newline>                       line continuation, dropped
+// Anything else (e.g. \z, \q) is preserved as-is, matching CPython's
+// "deprecated invalid escape" behavior; \N{name} is not yet implemented
+// and is left intact rather than failing parse.
 func decodeEscapes(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+1 < len(s) {
-			switch s[i+1] {
-			case 'n':
-				b.WriteByte('\n')
-			case 't':
-				b.WriteByte('\t')
-			case 'r':
-				b.WriteByte('\r')
-			case '\\':
-				b.WriteByte('\\')
-			case '\'':
-				b.WriteByte('\'')
-			case '"':
-				b.WriteByte('"')
-			case 'x':
-				if i+3 < len(s) && isHex(s[i+2]) && isHex(s[i+3]) {
-					b.WriteByte(hexNibble(s[i+2])<<4 | hexNibble(s[i+3]))
-					i += 3
-					continue
-				}
-				b.WriteByte('\\')
-				b.WriteByte(s[i+1])
-			case '0', '1', '2', '3', '4', '5', '6', '7':
-				b.WriteByte('\\')
-				b.WriteByte(s[i+1])
-			default:
-				b.WriteByte('\\')
-				b.WriteByte(s[i+1])
-			}
-			i++
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
 			continue
 		}
-		b.WriteByte(s[i])
+		c := s[i+1]
+		switch c {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case 'r':
+			b.WriteByte('\r')
+		case '\\':
+			b.WriteByte('\\')
+		case '\'':
+			b.WriteByte('\'')
+		case '"':
+			b.WriteByte('"')
+		case 'a':
+			b.WriteByte(0x07)
+		case 'b':
+			b.WriteByte(0x08)
+		case 'f':
+			b.WriteByte(0x0c)
+		case 'v':
+			b.WriteByte(0x0b)
+		case '\n':
+			// Backslash-newline is a line continuation: drop both.
+		case 'x':
+			if i+3 < len(s) && isHex(s[i+2]) && isHex(s[i+3]) {
+				b.WriteByte(hexNibble(s[i+2])<<4 | hexNibble(s[i+3]))
+				i += 3
+				continue
+			}
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			// Octal: 1-3 digits, value mod 256.
+			val := int(c - '0')
+			n := 1
+			if i+2 < len(s) && isOctal(s[i+2]) {
+				val = val*8 + int(s[i+2]-'0')
+				n++
+				if i+3 < len(s) && isOctal(s[i+3]) {
+					val = val*8 + int(s[i+3]-'0')
+					n++
+				}
+			}
+			b.WriteByte(byte(val & 0xff))
+			i += n
+			continue
+		case 'u':
+			if i+5 < len(s) && allHex(s[i+2:i+6]) {
+				r := hexValue(s[i+2 : i+6])
+				b.WriteRune(rune(r))
+				i += 5
+				continue
+			}
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case 'U':
+			if i+9 < len(s) && allHex(s[i+2:i+10]) {
+				r := hexValue(s[i+2 : i+10])
+				b.WriteRune(rune(r))
+				i += 9
+				continue
+			}
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		}
+		i++
 	}
 	return b.String()
+}
+
+func isOctal(c byte) bool { return c >= '0' && c <= '7' }
+
+func allHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isHex(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func hexValue(s string) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		n = n<<4 | int(hexNibble(s[i]))
+	}
+	return n
 }
 
 func isHex(c byte) bool {

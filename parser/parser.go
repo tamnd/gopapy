@@ -45,6 +45,30 @@ func ParseString(filename, src string) (*File, error) {
 	return ParseFile(filename, []byte(src))
 }
 
+// ParseExpression parses src as a single Python expression. Used by the
+// AST emitter to recurse into f-string interpolation bodies. The source
+// is wrapped as a one-liner so it goes through the file parser, then the
+// resulting Expression is fished out.
+func ParseExpression(src string) (*Expression, error) {
+	f, err := ParseFile("<fstring>", []byte(src+"\n"))
+	if err != nil {
+		return nil, err
+	}
+	if len(f.Statements) == 0 || f.Statements[0].Simples == nil {
+		return nil, fmt.Errorf("not an expression: %q", src)
+	}
+	s := f.Statements[0].Simples.First
+	switch {
+	case s.ExprStmt != nil:
+		return s.ExprStmt, nil
+	case s.Assign != nil && s.Assign.Annot == nil && s.Assign.Aug == "" && len(s.Assign.More) == 0:
+		// Bare expression that parsed through the assignment alternative
+		// because Assign is tried first. Unwrap the Target.
+		return s.Assign.Target, nil
+	}
+	return nil, fmt.Errorf("not an expression: %q", src)
+}
+
 // ParseReader parses from a byte slice presented as a buffer (kept here for
 // API symmetry with the std library — in practice all callers have bytes
 // already).

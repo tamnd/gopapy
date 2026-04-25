@@ -5,13 +5,28 @@ import (
 )
 
 // Expression is the top-level expression rule, encompassing the conditional
-// expression (`X if C else Y`) and lambda. Lower precedence than disjunction.
+// expression (`X if C else Y`), lambda, and the walrus assignment expression
+// (NAME := expr). Walrus binds looser than the conditional but tighter than
+// a bare assignment statement.
 type Expression struct {
+	Pos     plexer.Position
+	Walrus  *WalrusExpr  `parser:"  @@"`
+	Lambda  *Lambda      `parser:"| @@"`
+	Body    *Disjunction `parser:"| @@"`
+	IfTest  *Disjunction `parser:"  ( 'if' @@"`
+	IfElse  *Expression  `parser:"    'else' @@ )?"`
+}
+
+// WalrusExpr is `NAME := expr`. The CPython grammar restricts walrus to
+// specific positions (call args, comprehension conditions, parenthesized
+// expressions, ...). gopapy follows the leniency of participle: we accept
+// walrus anywhere an Expression appears and rely on a downstream pass to
+// flag misuse, which mirrors how CPython itself reports the SyntaxError
+// only after parse.
+type WalrusExpr struct {
 	Pos    plexer.Position
-	Lambda *Lambda      `parser:"  @@"`
-	Body   *Disjunction `parser:"| @@"`
-	IfTest *Disjunction `parser:"  ( 'if' @@"`
-	IfElse *Expression  `parser:"    'else' @@ )?"`
+	Name   string      `parser:"@NAME WALRUS"`
+	Value  *Expression `parser:"@@"`
 }
 
 type Lambda struct {
@@ -151,9 +166,16 @@ type Trailer struct {
 	Sub *SubscriptList `parser:"| LBRACK @@ RBRACK"`
 }
 
+// CallArgs is the argument list of a call. Two shapes:
+//   `f(a, b, c)`           regular argument list
+//   `f(x for x in xs)`     single bare GeneratorExp; the call parens
+//                          double as the genexp parens. Mixing a genexp
+//                          with other args requires its own parens.
 type CallArgs struct {
-	Pos  plexer.Position
-	Args []*Argument `parser:"( @@ ( COMMA @@ )* COMMA? )?"`
+	Pos   plexer.Position
+	First *Argument   `parser:"( @@"`
+	Gen   []*CompFor  `parser:"  ( @@+"`
+	Rest  []*Argument `parser:"  | ( COMMA @@ )+ COMMA? | COMMA )? )?"`
 }
 
 // Argument covers positional, *star, **double-star, and keyword arguments.
@@ -216,28 +238,76 @@ type Atom struct {
 	Paren    *ParenLit     `parser:"| @@"`
 }
 
+// ListLit is `[ ... ]`. The body is either empty, a list-of-elements
+// (with optional trailing comma), or a comprehension `expr for x in xs ...`.
+// The Comp slice being non-empty flips emission from List to ListComp.
 type ListLit struct {
-	Pos  plexer.Position
-	Elts []*Expression `parser:"LBRACK ( @@ ( COMMA @@ )* COMMA? )? RBRACK"`
+	Pos   plexer.Position
+	First *StarOrExpr   `parser:"LBRACK ( @@"`
+	Comp  []*CompFor    `parser:"  ( @@+"`
+	Rest  []*StarOrExpr `parser:"  | ( COMMA @@ )+ COMMA? | COMMA )? )? RBRACK"`
 }
 
+// CompFor is one comprehension clause: optional `async`, then `for target
+// in iter`, then any number of `if cond` filters bound to that for-clause.
+// Iter and Ifs use Disjunction (not Expression) so a trailing `if` is
+// recognised as another filter rather than a conditional expression.
+type CompFor struct {
+	Pos    plexer.Position
+	Async  bool           `parser:"@'async'? 'for'"`
+	Target *TargetList    `parser:"@@ 'in'"`
+	Iter   *Disjunction   `parser:"@@"`
+	Ifs    []*Disjunction `parser:"( 'if' @@ )*"`
+}
+
+// StarOrExpr is a single element inside a list/set/tuple literal: either
+// a bare expression or `*expr` for iterable unpacking. The emitter wraps
+// the latter in a Starred node with Load context.
+type StarOrExpr struct {
+	Pos  plexer.Position
+	Star *Expression `parser:"  STAR @@"`
+	Expr *Expression `parser:"| @@"`
+}
+
+// DictOrSetLit is `{ ... }`. The first item picks dict-vs-set: a `**` or
+// a `key: value` pair makes it a dict, anything else is a set. A trailing
+// comprehension flips Dict->DictComp or Set->SetComp.
 type DictOrSetLit struct {
 	Pos   plexer.Position
 	First *DictItemOrExpr   `parser:"LBRACE ( @@"`
-	Rest  []*DictItemOrExpr `parser:"  ( COMMA @@ )* COMMA? )? RBRACE"`
+	Comp  []*CompFor        `parser:"  ( @@+"`
+	Rest  []*DictItemOrExpr `parser:"  | ( COMMA @@ )+ COMMA? | COMMA )? )? RBRACE"`
 }
 
-// DictItemOrExpr is `expr COLON expr` (dict entry) or just `expr` (set elt).
-// The emitter checks Value to disambiguate.
+// DictItemOrExpr captures one element inside `{ ... }`. Possibilities:
+//   `**expr`           dict unpacking (DStar holds the value)
+//   `*expr`            set unpacking   (StarSet)
+//   `expr : expr`      dict entry      (Key + Value)
+//   `expr`             set element     (Key only, Value nil)
+// The emitter checks fields to decide between Dict and Set and between
+// the unpacking and literal forms.
 type DictItemOrExpr struct {
-	Pos   plexer.Position
-	Key   *Expression `parser:"@@"`
-	Value *Expression `parser:"( COLON @@ )?"`
+	Pos     plexer.Position
+	DStar   *Expression `parser:"  DOUBLESTAR @@"`
+	StarSet *Expression `parser:"| STAR @@"`
+	Key     *Expression `parser:"| @@"`
+	Value   *Expression `parser:"  ( COLON @@ )?"`
 }
 
+// ParenLit is `( expr (, expr)* ,? )`. TrailingComma flips on when the
+// source ended with a comma — needed to disambiguate `(x)` (a parenthesized
+// expression) from `(x,)` (a single-element tuple). Both shapes have one
+// element in Elts; only the comma flag tells them apart.
+// ParenLit is `( ... )`. Three shapes:
+//   `(x)`           parenthesized expression: First set, Rest empty, no comma
+//   `(x,)` `(a, b)` Tuple: TrailingComma set or Rest non-empty
+//   `(x for x in xs)` GeneratorExp: Comp non-empty
 type ParenLit struct {
-	Pos  plexer.Position
-	Elts []*Expression `parser:"LPAREN ( @@ ( COMMA @@ )* COMMA? )? RPAREN"`
+	Pos           plexer.Position
+	First         *StarOrExpr   `parser:"LPAREN ( @@"`
+	Comp          []*CompFor    `parser:"  ( @@+"`
+	Rest          []*StarOrExpr `parser:"  | ( COMMA @@ )+"`
+	TrailingComma bool          `parser:"      @COMMA? | @COMMA )? )? RPAREN"`
 }
 
 // YieldExpr = `yield` [`from` expression | star_expressions]
