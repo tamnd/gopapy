@@ -233,7 +233,16 @@ type Atom struct {
 
 type ListLit struct {
 	Pos  plexer.Position
-	Elts []*Expression `parser:"LBRACK ( @@ ( COMMA @@ )* COMMA? )? RBRACK"`
+	Elts []*StarOrExpr `parser:"LBRACK ( @@ ( COMMA @@ )* COMMA? )? RBRACK"`
+}
+
+// StarOrExpr is a single element inside a list/set/tuple literal: either
+// a bare expression or `*expr` for iterable unpacking. The emitter wraps
+// the latter in a Starred node with Load context.
+type StarOrExpr struct {
+	Pos  plexer.Position
+	Star *Expression `parser:"  STAR @@"`
+	Expr *Expression `parser:"| @@"`
 }
 
 type DictOrSetLit struct {
@@ -242,12 +251,19 @@ type DictOrSetLit struct {
 	Rest  []*DictItemOrExpr `parser:"  ( COMMA @@ )* COMMA? )? RBRACE"`
 }
 
-// DictItemOrExpr is `expr COLON expr` (dict entry) or just `expr` (set elt).
-// The emitter checks Value to disambiguate.
+// DictItemOrExpr captures one element inside `{ ... }`. Possibilities:
+//   `**expr`           dict unpacking (DStar holds the value)
+//   `*expr`            set unpacking   (StarSet)
+//   `expr : expr`      dict entry      (Key + Value)
+//   `expr`             set element     (Key only, Value nil)
+// The emitter checks fields to decide between Dict and Set and between
+// the unpacking and literal forms.
 type DictItemOrExpr struct {
-	Pos   plexer.Position
-	Key   *Expression `parser:"@@"`
-	Value *Expression `parser:"( COLON @@ )?"`
+	Pos     plexer.Position
+	DStar   *Expression `parser:"  DOUBLESTAR @@"`
+	StarSet *Expression `parser:"| STAR @@"`
+	Key     *Expression `parser:"| @@"`
+	Value   *Expression `parser:"  ( COLON @@ )?"`
 }
 
 // ParenLit is `( expr (, expr)* ,? )`. TrailingComma flips on when the
@@ -256,7 +272,7 @@ type DictItemOrExpr struct {
 // element in Elts; only the comma flag tells them apart.
 type ParenLit struct {
 	Pos           plexer.Position
-	Elts          []*Expression `parser:"LPAREN ( @@ ( COMMA @@ )*"`
+	Elts          []*StarOrExpr `parser:"LPAREN ( @@ ( COMMA @@ )*"`
 	TrailingComma bool          `parser:"            @COMMA? )? RPAREN"`
 }
 

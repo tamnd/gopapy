@@ -732,7 +732,7 @@ func emitAtom(a *parser.Atom) ExprNode {
 	case a.List != nil:
 		elts := make([]ExprNode, 0, len(a.List.Elts))
 		for _, e := range a.List.Elts {
-			elts = append(elts, emitExpr(e))
+			elts = append(elts, emitStarOrExpr(e))
 		}
 		return &List{Pos: p, Elts: elts, Ctx: &Load{}}
 	case a.Dict != nil:
@@ -743,27 +743,45 @@ func emitAtom(a *parser.Atom) ExprNode {
 	return nil
 }
 
-// emitDictOrSet inspects whether the first item carries a Value to decide
-// between Dict and Set. Mixing the two in source is a parse error in
-// CPython, so we trust the first item to flag the kind.
+// emitDictOrSet picks Dict vs Set based on the first item: a `**x` or a
+// `key: value` pair makes it a Dict; anything else is a Set. Dict
+// unpacking renders as a key=None entry in CPython's AST, so we set the
+// nil key explicitly. Set literals accept `*x` (star-unpack) but reject
+// `**x`; mixing them in source is rejected by CPython, not us.
 func emitDictOrSet(p Pos, d *parser.DictOrSetLit) ExprNode {
 	if d.First == nil {
 		return &Dict{Pos: p}
 	}
-	if d.First.Value == nil {
-		elts := []ExprNode{emitExpr(d.First.Key)}
+	isDict := d.First.DStar != nil || d.First.Value != nil
+	if !isDict {
+		elts := []ExprNode{emitDictSetElt(d.First)}
 		for _, r := range d.Rest {
-			elts = append(elts, emitExpr(r.Key))
+			elts = append(elts, emitDictSetElt(r))
 		}
 		return &Set{Pos: p, Elts: elts}
 	}
-	keys := []ExprNode{emitExpr(d.First.Key)}
-	values := []ExprNode{emitExpr(d.First.Value)}
+	var keys, values []ExprNode
+	addItem := func(it *parser.DictItemOrExpr) {
+		if it.DStar != nil {
+			keys = append(keys, nil)
+			values = append(values, emitExpr(it.DStar))
+			return
+		}
+		keys = append(keys, emitExpr(it.Key))
+		values = append(values, emitExpr(it.Value))
+	}
+	addItem(d.First)
 	for _, r := range d.Rest {
-		keys = append(keys, emitExpr(r.Key))
-		values = append(values, emitExpr(r.Value))
+		addItem(r)
 	}
 	return &Dict{Pos: p, Keys: keys, Values: values}
+}
+
+func emitDictSetElt(it *parser.DictItemOrExpr) ExprNode {
+	if it.StarSet != nil {
+		return &Starred{Pos: pos(it.Pos), Value: emitExpr(it.StarSet), Ctx: &Load{}}
+	}
+	return emitExpr(it.Key)
 }
 
 // emitParen distinguishes `(expr)` (just a value) from `(a,)` /
@@ -781,17 +799,29 @@ func emitParen(p Pos, paren *parser.ParenLit) ExprNode {
 	case 0:
 		return &Tuple{Pos: p, Ctx: &Load{}}
 	case 1:
-		if paren.TrailingComma {
-			return &Tuple{Pos: p, Elts: []ExprNode{emitExpr(paren.Elts[0])}, Ctx: &Load{}}
+		// `(*x,)` is a Tuple even with a single element because the comma
+		// is implicit; same idea as `(x,)`. A bare `(*x)` is invalid in
+		// CPython but we mirror the parser shape and let downstream flag.
+		single := paren.Elts[0]
+		if paren.TrailingComma || single.Star != nil {
+			return &Tuple{Pos: p, Elts: []ExprNode{emitStarOrExpr(single)}, Ctx: &Load{}}
 		}
-		return emitExpr(paren.Elts[0])
+		return emitExpr(single.Expr)
 	default:
 		elts := make([]ExprNode, 0, len(paren.Elts))
 		for _, e := range paren.Elts {
-			elts = append(elts, emitExpr(e))
+			elts = append(elts, emitStarOrExpr(e))
 		}
 		return &Tuple{Pos: p, Elts: elts, Ctx: &Load{}}
 	}
+}
+
+// emitStarOrExpr unwraps a list/tuple element that may be `*expr`.
+func emitStarOrExpr(s *parser.StarOrExpr) ExprNode {
+	if s.Star != nil {
+		return &Starred{Pos: pos(s.Pos), Value: emitExpr(s.Star), Ctx: &Load{}}
+	}
+	return emitExpr(s.Expr)
 }
 
 func emitYield(y *parser.YieldExpr) ExprNode {
