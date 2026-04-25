@@ -387,17 +387,22 @@ func emitArguments(params []*parser.Param) *Arguments {
 	args := &Arguments{}
 	seenStar := false
 	for _, p := range params {
-		switch {
-		case p.Slash:
+		switch p.Kind {
+		case "/":
 			args.Posonlyargs = append(args.Posonlyargs, args.Args...)
 			args.Args = nil
-		case p.Star:
+			continue
+		case "*":
 			seenStar = true
 			if p.Name != "" {
 				args.Vararg = paramArg(p)
 			}
-		case p.Double:
+			continue
+		case "**":
 			args.Kwarg = paramArg(p)
+			continue
+		}
+		switch {
 		case seenStar:
 			args.Kwonlyargs = append(args.Kwonlyargs, paramArg(p))
 			if p.Default != nil {
@@ -417,6 +422,25 @@ func emitArguments(params []*parser.Param) *Arguments {
 
 func paramArg(p *parser.Param) *Arg {
 	return &Arg{Pos: pos(p.Pos), Arg: p.Name, Annotation: emitExprOpt(p.Annot)}
+}
+
+// emitCallArgs builds the (Args, Keywords) pair for a Call. The bare
+// `f(x for x in xs)` form folds into a single positional GeneratorExp;
+// otherwise we walk First + Rest as a flat argument list.
+func emitCallArgs(c *parser.CallArgs) ([]ExprNode, []*Keyword) {
+	if c.First == nil {
+		return nil, nil
+	}
+	if len(c.Gen) > 0 {
+		gen := &GeneratorExp{
+			Pos:        pos(c.First.Pos),
+			Elt:        emitExpr(c.First.Posn),
+			Generators: emitComps(c.Gen),
+		}
+		return []ExprNode{gen}, nil
+	}
+	all := append([]*parser.Argument{c.First}, c.Rest...)
+	return emitArgList(all)
 }
 
 // emitArgList splits a participle Argument list into positional bases and
@@ -711,7 +735,7 @@ func applyTrailer(value ExprNode, t *parser.Trailer) ExprNode {
 	case t.Attr != "":
 		return &Attribute{Pos: pos(t.Pos), Value: value, Attr: t.Attr, Ctx: &Load{}}
 	case t.Call != nil:
-		args, kws := emitArgList(t.Call.Args)
+		args, kws := emitCallArgs(t.Call)
 		return &Call{Pos: pos(t.Pos), Func: value, Args: args, Keywords: kws}
 	case t.Sub != nil:
 		return &Subscript{Pos: pos(t.Pos), Value: value, Slice: emitSubscriptList(t.Sub), Ctx: &Load{}}
@@ -765,11 +789,7 @@ func emitAtom(a *parser.Atom) ExprNode {
 	case a.Ellipsis:
 		return &Constant{Pos: p, Value: ConstantValue{Kind: ConstantEllipsis}}
 	case a.List != nil:
-		elts := make([]ExprNode, 0, len(a.List.Elts))
-		for _, e := range a.List.Elts {
-			elts = append(elts, emitStarOrExpr(e))
-		}
-		return &List{Pos: p, Elts: elts, Ctx: &Load{}}
+		return emitList(p, a.List)
 	case a.Dict != nil:
 		return emitDictOrSet(p, a.Dict)
 	case a.Paren != nil:
@@ -778,16 +798,41 @@ func emitAtom(a *parser.Atom) ExprNode {
 	return nil
 }
 
-// emitDictOrSet picks Dict vs Set based on the first item: a `**x` or a
-// `key: value` pair makes it a Dict; anything else is a Set. Dict
-// unpacking renders as a key=None entry in CPython's AST, so we set the
-// nil key explicitly. Set literals accept `*x` (star-unpack) but reject
-// `**x`; mixing them in source is rejected by CPython, not us.
+// emitList turns a ListLit into either a List or a ListComp.
+func emitList(p Pos, l *parser.ListLit) ExprNode {
+	if l.First == nil {
+		return &List{Pos: p, Ctx: &Load{}}
+	}
+	if len(l.Comp) > 0 {
+		if l.First.Star != nil {
+			// `[*x for ...]` is invalid in CPython but we mirror the parse.
+			return &ListComp{Pos: p, Elt: emitStarOrExpr(l.First), Generators: emitComps(l.Comp)}
+		}
+		return &ListComp{Pos: p, Elt: emitExpr(l.First.Expr), Generators: emitComps(l.Comp)}
+	}
+	elts := []ExprNode{emitStarOrExpr(l.First)}
+	for _, e := range l.Rest {
+		elts = append(elts, emitStarOrExpr(e))
+	}
+	return &List{Pos: p, Elts: elts, Ctx: &Load{}}
+}
+
+// emitDictOrSet picks Dict vs Set vs DictComp vs SetComp based on the
+// first item and whether a comprehension follows. A `**x` or a
+// `key: value` pair is a dict; anything else is a set. Dict unpacking
+// renders as a key=None entry in CPython's AST.
 func emitDictOrSet(p Pos, d *parser.DictOrSetLit) ExprNode {
 	if d.First == nil {
 		return &Dict{Pos: p}
 	}
 	isDict := d.First.DStar != nil || d.First.Value != nil
+	if len(d.Comp) > 0 {
+		gens := emitComps(d.Comp)
+		if isDict {
+			return &DictComp{Pos: p, Key: emitExpr(d.First.Key), Value: emitExpr(d.First.Value), Generators: gens}
+		}
+		return &SetComp{Pos: p, Elt: emitDictSetElt(d.First), Generators: gens}
+	}
 	if !isDict {
 		elts := []ExprNode{emitDictSetElt(d.First)}
 		for _, r := range d.Rest {
@@ -812,6 +857,30 @@ func emitDictOrSet(p Pos, d *parser.DictOrSetLit) ExprNode {
 	return &Dict{Pos: p, Keys: keys, Values: values}
 }
 
+// emitComps flattens a list of CompFor clauses into Comprehension nodes.
+// Each `for` becomes its own Comprehension; the trailing `if` filters of
+// that for-clause attach to it as Ifs.
+func emitComps(cs []*parser.CompFor) []*Comprehension {
+	out := make([]*Comprehension, 0, len(cs))
+	for _, c := range cs {
+		ifs := make([]ExprNode, 0, len(c.Ifs))
+		for _, f := range c.Ifs {
+			ifs = append(ifs, emitDisjunction(f))
+		}
+		isAsync := 0
+		if c.Async {
+			isAsync = 1
+		}
+		out = append(out, &Comprehension{
+			Target:  emitTargetList(c.Target, &Store{}),
+			Iter:    emitDisjunction(c.Iter),
+			Ifs:     ifs,
+			IsAsync: isAsync,
+		})
+	}
+	return out
+}
+
 func emitDictSetElt(it *parser.DictItemOrExpr) ExprNode {
 	if it.StarSet != nil {
 		return &Starred{Pos: pos(it.Pos), Value: emitExpr(it.StarSet), Ctx: &Load{}}
@@ -830,25 +899,25 @@ func emitDictSetElt(it *parser.DictItemOrExpr) ExprNode {
 // always fold a single element to its bare expression. PR2 widens
 // ParenLit so the trailing-comma case becomes detectable.
 func emitParen(p Pos, paren *parser.ParenLit) ExprNode {
-	switch len(paren.Elts) {
-	case 0:
+	if paren.First == nil {
 		return &Tuple{Pos: p, Ctx: &Load{}}
-	case 1:
-		// `(*x,)` is a Tuple even with a single element because the comma
-		// is implicit; same idea as `(x,)`. A bare `(*x)` is invalid in
-		// CPython but we mirror the parser shape and let downstream flag.
-		single := paren.Elts[0]
-		if paren.TrailingComma || single.Star != nil {
-			return &Tuple{Pos: p, Elts: []ExprNode{emitStarOrExpr(single)}, Ctx: &Load{}}
-		}
-		return emitExpr(single.Expr)
-	default:
-		elts := make([]ExprNode, 0, len(paren.Elts))
-		for _, e := range paren.Elts {
-			elts = append(elts, emitStarOrExpr(e))
-		}
-		return &Tuple{Pos: p, Elts: elts, Ctx: &Load{}}
 	}
+	if len(paren.Comp) > 0 {
+		return &GeneratorExp{Pos: p, Elt: emitExpr(paren.First.Expr), Generators: emitComps(paren.Comp)}
+	}
+	if len(paren.Rest) == 0 {
+		// `(x)` vs `(x,)`: trailing comma (or a `*x` head) makes a Tuple.
+		if paren.TrailingComma || paren.First.Star != nil {
+			return &Tuple{Pos: p, Elts: []ExprNode{emitStarOrExpr(paren.First)}, Ctx: &Load{}}
+		}
+		return emitExpr(paren.First.Expr)
+	}
+	elts := make([]ExprNode, 0, 1+len(paren.Rest))
+	elts = append(elts, emitStarOrExpr(paren.First))
+	for _, e := range paren.Rest {
+		elts = append(elts, emitStarOrExpr(e))
+	}
+	return &Tuple{Pos: p, Elts: elts, Ctx: &Load{}}
 }
 
 // emitStarOrExpr unwraps a list/tuple element that may be `*expr`.

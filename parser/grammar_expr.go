@@ -166,9 +166,16 @@ type Trailer struct {
 	Sub *SubscriptList `parser:"| LBRACK @@ RBRACK"`
 }
 
+// CallArgs is the argument list of a call. Two shapes:
+//   `f(a, b, c)`           regular argument list
+//   `f(x for x in xs)`     single bare GeneratorExp; the call parens
+//                          double as the genexp parens. Mixing a genexp
+//                          with other args requires its own parens.
 type CallArgs struct {
-	Pos  plexer.Position
-	Args []*Argument `parser:"( @@ ( COMMA @@ )* COMMA? )?"`
+	Pos   plexer.Position
+	First *Argument   `parser:"( @@"`
+	Gen   []*CompFor  `parser:"  ( @@+"`
+	Rest  []*Argument `parser:"  | ( COMMA @@ )+ COMMA? | COMMA )? )?"`
 }
 
 // Argument covers positional, *star, **double-star, and keyword arguments.
@@ -231,9 +238,26 @@ type Atom struct {
 	Paren    *ParenLit     `parser:"| @@"`
 }
 
+// ListLit is `[ ... ]`. The body is either empty, a list-of-elements
+// (with optional trailing comma), or a comprehension `expr for x in xs ...`.
+// The Comp slice being non-empty flips emission from List to ListComp.
 type ListLit struct {
-	Pos  plexer.Position
-	Elts []*StarOrExpr `parser:"LBRACK ( @@ ( COMMA @@ )* COMMA? )? RBRACK"`
+	Pos   plexer.Position
+	First *StarOrExpr   `parser:"LBRACK ( @@"`
+	Comp  []*CompFor    `parser:"  ( @@+"`
+	Rest  []*StarOrExpr `parser:"  | ( COMMA @@ )+ COMMA? | COMMA )? )? RBRACK"`
+}
+
+// CompFor is one comprehension clause: optional `async`, then `for target
+// in iter`, then any number of `if cond` filters bound to that for-clause.
+// Iter and Ifs use Disjunction (not Expression) so a trailing `if` is
+// recognised as another filter rather than a conditional expression.
+type CompFor struct {
+	Pos    plexer.Position
+	Async  bool           `parser:"@'async'? 'for'"`
+	Target *TargetList    `parser:"@@ 'in'"`
+	Iter   *Disjunction   `parser:"@@"`
+	Ifs    []*Disjunction `parser:"( 'if' @@ )*"`
 }
 
 // StarOrExpr is a single element inside a list/set/tuple literal: either
@@ -245,10 +269,14 @@ type StarOrExpr struct {
 	Expr *Expression `parser:"| @@"`
 }
 
+// DictOrSetLit is `{ ... }`. The first item picks dict-vs-set: a `**` or
+// a `key: value` pair makes it a dict, anything else is a set. A trailing
+// comprehension flips Dict->DictComp or Set->SetComp.
 type DictOrSetLit struct {
 	Pos   plexer.Position
 	First *DictItemOrExpr   `parser:"LBRACE ( @@"`
-	Rest  []*DictItemOrExpr `parser:"  ( COMMA @@ )* COMMA? )? RBRACE"`
+	Comp  []*CompFor        `parser:"  ( @@+"`
+	Rest  []*DictItemOrExpr `parser:"  | ( COMMA @@ )+ COMMA? | COMMA )? )? RBRACE"`
 }
 
 // DictItemOrExpr captures one element inside `{ ... }`. Possibilities:
@@ -270,10 +298,16 @@ type DictItemOrExpr struct {
 // source ended with a comma — needed to disambiguate `(x)` (a parenthesized
 // expression) from `(x,)` (a single-element tuple). Both shapes have one
 // element in Elts; only the comma flag tells them apart.
+// ParenLit is `( ... )`. Three shapes:
+//   `(x)`           parenthesized expression: First set, Rest empty, no comma
+//   `(x,)` `(a, b)` Tuple: TrailingComma set or Rest non-empty
+//   `(x for x in xs)` GeneratorExp: Comp non-empty
 type ParenLit struct {
 	Pos           plexer.Position
-	Elts          []*StarOrExpr `parser:"LPAREN ( @@ ( COMMA @@ )*"`
-	TrailingComma bool          `parser:"            @COMMA? )? RPAREN"`
+	First         *StarOrExpr   `parser:"LPAREN ( @@"`
+	Comp          []*CompFor    `parser:"  ( @@+"`
+	Rest          []*StarOrExpr `parser:"  | ( COMMA @@ )+"`
+	TrailingComma bool          `parser:"      @COMMA? | @COMMA )? )? RPAREN"`
 }
 
 // YieldExpr = `yield` [`from` expression | star_expressions]

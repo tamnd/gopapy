@@ -301,12 +301,14 @@ type FuncDef struct {
 // the syntactic form and let downstream flag.
 type Param struct {
 	Pos     plexer.Position
-	Slash   bool        `parser:"  @SLASH"`
-	Double  bool        `parser:"| ( @DOUBLESTAR @NAME"`
-	Star    bool        `parser:"  | @STAR @NAME? )"`
-	Name    string      `parser:"| @NAME"`
-	Annot   *Expression `parser:"  ( COLON @@ )?"`
-	Default *Expression `parser:"  ( EQ @@ )?"`
+	// Kind is one of "" (regular), "/" (PEP 570 marker), "*" (vararg or
+	// bare-star kwonly marker), or "**" (kwarg). Kept as a string instead
+	// of three bools because participle binds at most one capture per
+	// field, and we want both the prefix and the name in one Param shape.
+	Kind    string      `parser:"@( SLASH | DOUBLESTAR | STAR )?"`
+	Name    string      `parser:"@NAME?"`
+	Annot   *Expression `parser:"( COLON @@ )?"`
+	Default *Expression `parser:"( EQ @@ )?"`
 }
 
 type ClassDef struct {
