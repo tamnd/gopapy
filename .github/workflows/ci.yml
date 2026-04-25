@@ -87,3 +87,31 @@ jobs:
         run: |
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
           bin/gopapy check "$PYDIR"
+
+  fuzz:
+    name: fuzz pass
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Print tool versions
+        run: go version
+
+      # 30 s per target keeps the PR-blocking budget under 2 min while
+      # still exercising the corpus mutator past the seed set. Crashes
+      # land in testdata/fuzz/<Name>/ and become permanent regression
+      # seeds in the same PR that fixes them.
+      - name: fuzz lex.Scan
+        run: go test ./lex -run='^$' -fuzz=FuzzScan -fuzztime=30s
+
+      - name: fuzz parser.ParseFile
+        run: go test ./parser -run='^$' -fuzz=FuzzParseFile -fuzztime=30s
+
+      - name: fuzz ast.Emit
+        run: go test ./ast -run='^$' -fuzz=FuzzEmit -fuzztime=30s
