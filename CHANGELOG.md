@@ -9,6 +9,47 @@ changes.
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-04-26
+
+Real-world corner cases. After v0.0.6 the parser claimed a complete
+Python 3.14 grammar surface, but pointing `gopapy check` at the
+CPython stdlib lit up failures. A reduction pass surfaced three
+recurring shapes that no fixture had exercised.
+
+### Added
+
+- Compact-body suite: `def f(): ...`, `class C: pass`,
+  `if cond: x = 1`, `for i in xs: print(i)`. Block grows an
+  `Inline` alternative that takes a SimpleStmts directly after the
+  colon, matching CPython's `simple_stmt` suite shape.
+- Starred subscripts (PEP 646 consumer side): `tuple[*Ts]`,
+  `Callable[[*Args], R]`, `dict[str, *Vs]`. v0.0.5 deferred this;
+  the producer side already worked through TypeVarTuple in a
+  type-param list. Subscript gains a Star bool; the emitter wraps
+  a single starred element in a Tuple to match CPython.
+- Lambda is fixed across the board. The previous `Lambda.Params`
+  reused the function `Param` type, whose optional `: annot` slot
+  greedily ate the lambda body's COLON. Every lambda has been
+  failing to parse since v0.0.1, including the trivial
+  `lambda: 1`. The bug went unnoticed because no fixture covered
+  lambda. New `LambdaParam` type without annotation, plus fixture
+  066 covering positional-only `/`, keyword-only `*`, `*args`,
+  `**kwargs`, defaults, and call-site usage.
+
+### Fixtures
+
+- `064_compact_body.py` — def / class / if / while / for inline bodies
+- `065_starred_subscript.py` — `tuple[*Ts]` and variants
+- `066_lambda.py` — every lambda shape
+
+`tests/run.sh` reports 66 / 66.
+
+### Known limits
+
+A full stdlib pass (zero failures across CPython 3.14's `Lib/`) is
+the v0.0.8 target. v0.0.7 closes the recurring shapes; the long
+tail of one-off failures lands in the next release.
+
 ## [0.0.6] - 2026-04-26
 
 t-strings (PEP 750) and the lexer state machine for nested f-strings
@@ -338,7 +379,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.0.6...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.0.7...HEAD
+[0.0.7]: https://github.com/tamnd/gopapy/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/tamnd/gopapy/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/tamnd/gopapy/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/tamnd/gopapy/compare/v0.0.3...v0.0.4

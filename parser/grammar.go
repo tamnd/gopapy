@@ -349,9 +349,18 @@ type Decorator struct {
 	Expr *Expression `parser:"AT @@ NEWLINE"`
 }
 
+// Block is the body of a compound statement. Two shapes:
+//
+//	def f(): ...                    inline simple statements after the colon
+//	def f():\n    body              the standard indented block
+//
+// The inline form folds one or more SEMI-separated SimpleStmts onto the
+// same line as the colon. CPython grammar calls this `simple_stmt` for
+// the suite; gopapy reuses SimpleStmts.
 type Block struct {
-	Pos  plexer.Position
-	Body []*Statement `parser:"NEWLINE INDENT @@+ DEDENT"`
+	Pos    plexer.Position
+	Body   []*Statement `parser:"  NEWLINE INDENT @@+ DEDENT"`
+	Inline *SimpleStmts `parser:"| @@"`
 }
 
 type IfStmt struct {

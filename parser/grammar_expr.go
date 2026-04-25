@@ -31,8 +31,19 @@ type WalrusExpr struct {
 
 type Lambda struct {
 	Pos    plexer.Position
-	Params []*Param    `parser:"'lambda' ( @@ ( COMMA @@ )* )? COLON"`
-	Body   *Expression `parser:"@@"`
+	Params []*LambdaParam `parser:"'lambda' ( @@ ( COMMA @@ )* )? COLON"`
+	Body   *Expression    `parser:"@@"`
+}
+
+// LambdaParam mirrors Param but without the `: annot` slot — annotations
+// are not allowed inside a lambda signature, and accepting them here makes
+// the grammar swallow the COLON that ends the lambda header. Default values
+// are still allowed.
+type LambdaParam struct {
+	Pos     plexer.Position
+	Kind    string      `parser:"@( SLASH | DOUBLESTAR | STAR )?"`
+	Name    string      `parser:"@NAME?"`
+	Default *Expression `parser:"( EQ @@ )?"`
 }
 
 // Disjunction = `or` chain of Conjunctions.
@@ -206,7 +217,9 @@ type SubscriptList struct {
 
 type Subscript struct {
 	Pos   plexer.Position
-	Lower *Expression `parser:"( @@?"`
+	Star  bool        `parser:"( @STAR"`
+	Lower *Expression `parser:"  @@"`
+	Plain *Expression `parser:"| @@?"`
 	Slice *SliceTail  `parser:"  @@? )!"`
 }
 
