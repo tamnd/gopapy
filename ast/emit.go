@@ -75,6 +75,14 @@ func emitSimple(s *parser.SimpleStmt) StmtNode {
 		return emitFrom(s.From)
 	case s.Yield != nil:
 		return &Expr{Pos: pos, Value: emitYield(s.Yield.Expr)}
+	case s.TypeAlias != nil:
+		t := s.TypeAlias
+		return &TypeAlias{
+			Pos:        pos,
+			Name:       &Name{Pos: pos, Id: t.Name, Ctx: &Store{}},
+			TypeParams: emitTypeParams(t.TypeParams),
+			Value:      emitExpr(t.Value),
+		}
 	case s.Assign != nil:
 		return emitAssign(s.Assign)
 	case s.ExprStmt != nil:
@@ -358,23 +366,48 @@ func emitTry(t *parser.TryStmt) StmtNode {
 
 func emitFuncDef(f *parser.FuncDef) StmtNode {
 	return &FunctionDef{
-		Pos:     pos(f.Pos),
-		Name:    f.Name,
-		Args:    emitArguments(f.Params),
-		Body:    emitBlock(f.Body),
-		Returns: emitExprOpt(f.Returns),
+		Pos:        pos(f.Pos),
+		Name:       f.Name,
+		Args:       emitArguments(f.Params),
+		Body:       emitBlock(f.Body),
+		Returns:    emitExprOpt(f.Returns),
+		TypeParams: emitTypeParams(f.TypeParams),
 	}
 }
 
 func emitClassDef(c *parser.ClassDef) StmtNode {
 	bases, kws := emitArgList(c.Bases)
 	return &ClassDef{
-		Pos:      pos(c.Pos),
-		Name:     c.Name,
-		Bases:    bases,
-		Keywords: kws,
-		Body:     emitBlock(c.Body),
+		Pos:        pos(c.Pos),
+		Name:       c.Name,
+		Bases:      bases,
+		Keywords:   kws,
+		Body:       emitBlock(c.Body),
+		TypeParams: emitTypeParams(c.TypeParams),
 	}
+}
+
+// emitTypeParams turns the parser type-param slice into the AST sum-type
+// slice. The Kind field selects which constructor: "" → TypeVar (with
+// optional bound and default), "*" → TypeVarTuple, "**" → ParamSpec.
+// TypeVarTuple and ParamSpec accept default but not bound.
+func emitTypeParams(tps []*parser.TypeParam) []TypeParamNode {
+	if len(tps) == 0 {
+		return nil
+	}
+	out := make([]TypeParamNode, 0, len(tps))
+	for _, tp := range tps {
+		p := pos(tp.Pos)
+		switch tp.Kind {
+		case "*":
+			out = append(out, &TypeVarTuple{Pos: p, Name: tp.Name, DefaultValue: emitExprOpt(tp.Default)})
+		case "**":
+			out = append(out, &ParamSpec{Pos: p, Name: tp.Name, DefaultValue: emitExprOpt(tp.Default)})
+		default:
+			out = append(out, &TypeVar{Pos: p, Name: tp.Name, Bound: emitExprOpt(tp.Bound), DefaultValue: emitExprOpt(tp.Default)})
+		}
+	}
+	return out
 }
 
 // emitDecorated lifts a decorator stack onto the function or class

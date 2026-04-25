@@ -59,6 +59,7 @@ type SimpleStmt struct {
 	Import   *ImportStmt   `parser:"| @@"`
 	From     *FromStmt     `parser:"| @@"`
 	Yield    *YieldStmt    `parser:"| @@"`
+	TypeAlias *TypeAliasStmt `parser:"| @@"`
 	Assign   *AssignStmt   `parser:"| @@"`
 	ExprStmt *Expression   `parser:"| @@"`
 }
@@ -449,11 +450,30 @@ type FinallyClause struct {
 }
 
 type FuncDef struct {
+	Pos        plexer.Position
+	Name       string       `parser:"'def' @NAME"`
+	TypeParams []*TypeParam `parser:"( LBRACK @@ ( COMMA @@ )* COMMA? RBRACK )?"`
+	Params     []*Param     `parser:"LPAREN ( @@ ( COMMA @@ )* )? RPAREN"`
+	Returns    *Expression  `parser:"( ARROW @@ )?"`
+	Body       *Block       `parser:"COLON @@"`
+}
+
+// TypeParam is one entry in the bracketed type-parameter list of a def,
+// class, or `type` alias (PEP 695). Three shapes:
+//
+//	NAME                          plain TypeVar
+//	NAME : Expression             TypeVar with bound (or constraint tuple)
+//	NAME = Expression             TypeVar with default (PEP 696)
+//	*NAME                         TypeVarTuple
+//	**NAME                        ParamSpec
+//
+// The variants share a struct; emit picks the AST node based on Kind.
+type TypeParam struct {
 	Pos     plexer.Position
-	Name    string      `parser:"'def' @NAME LPAREN"`
-	Params  []*Param    `parser:"( @@ ( COMMA @@ )* )? RPAREN"`
-	Returns *Expression `parser:"( ARROW @@ )?"`
-	Body    *Block      `parser:"COLON @@"`
+	Kind    string      `parser:"@( DOUBLESTAR | STAR )?"`
+	Name    string      `parser:"@NAME"`
+	Bound   *Expression `parser:"( COLON @@ )?"`
+	Default *Expression `parser:"( EQ @@ )?"`
 }
 
 // Param covers one entry in a function parameter list. Five shapes:
@@ -480,8 +500,20 @@ type Param struct {
 }
 
 type ClassDef struct {
-	Pos   plexer.Position
-	Name  string      `parser:"'class' @NAME"`
-	Bases []*Argument `parser:"( LPAREN ( @@ ( COMMA @@ )* )? RPAREN )?"`
-	Body  *Block      `parser:"COLON @@"`
+	Pos        plexer.Position
+	Name       string       `parser:"'class' @NAME"`
+	TypeParams []*TypeParam `parser:"( LBRACK @@ ( COMMA @@ )* COMMA? RBRACK )?"`
+	Bases      []*Argument  `parser:"( LPAREN ( @@ ( COMMA @@ )* )? RPAREN )?"`
+	Body       *Block       `parser:"COLON @@"`
+}
+
+// TypeAliasStmt: PEP 695 `type Name [TypeParams] = Expression`. `type` is a
+// soft keyword recognised at statement position only; the participle
+// alternation in SimpleStmt tries this before falling back to ExprStmt so
+// `type = 1` still parses as an assignment.
+type TypeAliasStmt struct {
+	Pos        plexer.Position
+	Name       string       `parser:"'type' @NAME"`
+	TypeParams []*TypeParam `parser:"( LBRACK @@ ( COMMA @@ )* COMMA? RBRACK )?"`
+	Value      *Expression  `parser:"EQ @@"`
 }
