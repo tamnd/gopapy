@@ -9,13 +9,6 @@ changes.
 
 ## [Unreleased]
 
-### Added
-
-- GitHub Actions workflows for cross-platform builds (linux, macOS,
-  windows; amd64 plus arm64 where it makes sense) and a tag-driven
-  release that uploads tarballs and a zip to the GitHub release page.
-- This CHANGELOG.
-
 ## [0.0.1] - 2026-04-25
 
 First public cut. The bootstrap branch covers enough of CPython 3.14's
@@ -45,6 +38,10 @@ diffs clean against `python3 -c 'import ast; print(ast.dump(...))'`.
   release time.
 - `docs/ARCHITECTURE.md` and `docs/GRAMMAR.md` covering the pipeline
   and which constructs land in this release vs PR2.
+- GitHub Actions workflows: `ci` runs `go test` and the oracle diff on
+  every PR; `build` cross-compiles for linux amd64+arm64, macOS
+  amd64+arm64, and windows amd64; `release` fires on `v*.*.*` tags and
+  publishes archives to the GitHub release page.
 
 ### Grammar covered
 
