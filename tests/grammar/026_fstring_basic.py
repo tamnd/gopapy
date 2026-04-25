@@ -1,0 +1,6 @@
+name = "world"
+a = f"hello {name}"
+b = f"{1 + 2}"
+c = f"{x} and {y}"
+d = f"plain"
+e = f""
