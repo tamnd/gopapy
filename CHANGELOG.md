@@ -11,6 +11,29 @@ changes.
 
 ### Added
 
+- New `gopapy/v1/cst` package: a thin layer above the AST that
+  preserves the original source bytes and the full token stream
+  (including `COMMENT` and `TYPE_COMMENT` tokens that the parser
+  drops). `cst.Parse(filename, src)` returns a `*cst.File` whose
+  `Source()` is byte-equal to the input and whose `Tokens()` exposes
+  every token. Foundation for downstream formatters and codemods.
+- `lex.AllTokens(filename, src)` returns the indent-injected token
+  stream with comments preserved. Used internally by `cst.Parse`.
+
+### Deferred to later versions
+
+The CST is intentionally narrow in v0.1.3. Trivia attachment to
+specific AST nodes, per-node end positions, and a mutation API are
+planned for v0.1.4+ — see notes/Spec/1100/1130 for the rationale.
+
+## [0.1.2] - 2026-04-26
+
+Adds Go fuzz harnesses for the lexer, parser, and AST emitter, plus a
+CI job that runs each one for 30 s per PR. Three real emitter panics
+fell out of the first run; each is now a permanent regression seed.
+
+### Added
+
 - Fuzz harnesses for the lexer (`lex.FuzzScan`), parser
   (`parser.FuzzParseFile`), and AST emitter (`ast.FuzzEmit`). A new
   CI `fuzz` job runs each target for 30 s on every PR.
@@ -20,13 +43,15 @@ changes.
 ### Fixed
 
 - `ast.FromFile` no longer panics on participle parse trees with
-  internally inconsistent fields. Two cases caught by the fuzzer:
+  internally inconsistent fields. Three cases caught by the fuzzer:
   - `not` parsed as a bare expression (the `Not` boolean was set on a
     backtracked alternative); the emitter now requires `Inv` to be
     non-nil before treating it as a unary `not`.
-  - Generator expression with a starred head (`(*x for ...)`) and
-    dict literals mixing `key: value` entries with bare expressions
-    (`{"":0,0}`) — both produced nil dereferences in the emitter.
+  - Generator expression with a starred head (`(*x for ...)`) — emit
+    via `emitStarOrExpr` so a nil `Expr` field is safe.
+  - Dict literal mixing `key: value` and bare-expression items
+    (`{"":0,0}`) — skip the malformed bare item rather than
+    dereferencing nil `Value`.
 
 ## [0.1.1] - 2026-04-26
 
