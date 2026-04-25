@@ -180,8 +180,145 @@ type CompoundStmt struct {
 	For        *ForStmt   `parser:"| @@"`
 	With       *WithStmt  `parser:"| @@"`
 	Try        *TryStmt   `parser:"| @@"`
+	Match      *MatchStmt `parser:"| @@"`
 	FuncDef    *FuncDef   `parser:"| @@"`
 	ClassDef   *ClassDef  `parser:"| @@"`
+}
+
+// MatchStmt is PEP 634 structural pattern matching. `match` is a soft
+// keyword: it lexes as NAME and only acquires statement-keyword status
+// when followed by a subject expression and a colon. If neither is
+// present, parsing falls through to the SimpleStmt alternatives so
+// `match = 1` and `match` (bare expression) still work.
+type MatchStmt struct {
+	Pos     plexer.Position
+	Subject *AssignTarget `parser:"'match' @@ COLON NEWLINE INDENT"`
+	Cases   []*CaseClause `parser:"@@+ DEDENT"`
+}
+
+type CaseClause struct {
+	Pos     plexer.Position
+	Pattern *Pattern    `parser:"'case' @@"`
+	Guard   *Expression `parser:"( 'if' @@ )?"`
+	Body    *Block      `parser:"COLON @@"`
+}
+
+// Pattern is the top of the PEP 634 pattern hierarchy: an OrPattern
+// followed by an optional `as NAME` capture. The grammar nests as
+// Pattern -> OrPattern -> ClosedPattern (with one of eight alternatives).
+type Pattern struct {
+	Pos plexer.Position
+	Or  *OrPattern `parser:"@@"`
+	As  string     `parser:"( 'as' @NAME )?"`
+}
+
+type OrPattern struct {
+	Pos  plexer.Position
+	Head *ClosedPattern   `parser:"@@"`
+	Tail []*ClosedPattern `parser:"( PIPE @@ )*"`
+}
+
+type ClosedPattern struct {
+	Pos      plexer.Position
+	Class    *ClassPattern `parser:"  @@"`
+	Value    *ValuePattern `parser:"| @@"`
+	Sequence *SeqPattern   `parser:"| @@"`
+	Mapping  *MapPattern   `parser:"| @@"`
+	Literal  *LitPattern   `parser:"| @@"`
+	Capture  string        `parser:"| @NAME"`
+	Group    *Pattern      `parser:"| LPAREN @@ RPAREN"`
+}
+
+// ClassPattern is `Name(args)` or `mod.Name(args)`, distinguished from
+// CapturePattern / ValuePattern by the trailing parenthesised arg list.
+type ClassPattern struct {
+	Pos      plexer.Position
+	Cls      *PatDotted     `parser:"@@ LPAREN"`
+	Args     []*PatternArg  `parser:"( @@ ( COMMA @@ )* COMMA? )? RPAREN"`
+}
+
+type PatternArg struct {
+	Pos     plexer.Position
+	Keyword string   `parser:"( @NAME EQ"`
+	Value   *Pattern `parser:"  @@"`
+	Pos1    *Pattern `parser:"| @@ )"`
+}
+
+// ValuePattern is a dotted name (at least two segments). A single NAME
+// is a CapturePattern; only `mod.NAME` and longer count as a value.
+type ValuePattern struct {
+	Pos  plexer.Position
+	Head string   `parser:"@NAME"`
+	Tail []string `parser:"( DOT @NAME )+"`
+}
+
+type PatDotted struct {
+	Pos  plexer.Position
+	Head string   `parser:"@NAME"`
+	Tail []string `parser:"( DOT @NAME )*"`
+}
+
+// SeqPattern is `[ p1, p2, *rest ]` or `( p1, p2 )`. Empty `[]`/`()`
+// also produces an empty MatchSequence.
+type SeqPattern struct {
+	Pos   plexer.Position
+	Brack bool          `parser:"( @LBRACK"`
+	Items []*SeqItem    `parser:"  ( @@ ( COMMA @@ )* COMMA? )? RBRACK"`
+	Paren bool          `parser:"| @LPAREN"`
+	PItems []*SeqItem   `parser:"  ( @@ COMMA ( @@ ( COMMA @@ )* COMMA? )? )? RPAREN )"`
+}
+
+type SeqItem struct {
+	Pos  plexer.Position
+	Star *MatchStarItem `parser:"  @@"`
+	Pat  *Pattern       `parser:"| @@"`
+}
+
+type MatchStarItem struct {
+	Pos  plexer.Position
+	Name string `parser:"STAR @NAME"`
+}
+
+// MapPattern is `{ "k": p1, NAME: p2, **rest }`.
+type MapPattern struct {
+	Pos   plexer.Position
+	Items []*MapItem `parser:"LBRACE ( @@ ( COMMA @@ )* COMMA? )? RBRACE"`
+}
+
+type MapItem struct {
+	Pos     plexer.Position
+	Rest    string   `parser:"  DOUBLESTAR @NAME"`
+	Key     *MapKey  `parser:"| @@ COLON"`
+	Pattern *Pattern `parser:"  @@"`
+}
+
+// MapKey is an expression that resolves to a hashable literal: a literal
+// or a value (dotted) pattern. We accept any Expression and let the
+// emitter validate.
+type MapKey struct {
+	Pos    plexer.Position
+	Sign   string   `parser:"@( PLUS | MINUS )?"`
+	Number string   `parser:"( @NUMBER"`
+	String []string `parser:"| @STRING+"`
+	True   bool     `parser:"| @'True'"`
+	False_ bool     `parser:"| @'False'"`
+	None   bool     `parser:"| @'None'"`
+	Value  *PatDotted `parser:"| @@ )"`
+}
+
+// LitPattern: signed/unsigned numbers, strings, True/False/None.
+// Strings are matched as MatchValue(Constant); True/False/None as
+// MatchSingleton.
+type LitPattern struct {
+	Pos    plexer.Position
+	Sign   string   `parser:"@( PLUS | MINUS )?"`
+	Number string   `parser:"( @NUMBER"`
+	Imag   string   `parser:"  ( @( PLUS | MINUS ) @NUMBER )?"`
+	String []string `parser:"| @STRING+"`
+	True   bool     `parser:"| @'True'"`
+	False_ bool     `parser:"| @'False'"`
+	None   bool     `parser:"| @'None'"`
+	Op     string   `parser:"  )"`
 }
 
 // AsyncStmt is the `async` soft-keyword prefix on def, for, or with.
