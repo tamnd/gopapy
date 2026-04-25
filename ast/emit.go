@@ -773,6 +773,9 @@ func emitParen(p Pos, paren *parser.ParenLit) ExprNode {
 	case 0:
 		return &Tuple{Pos: p, Ctx: &Load{}}
 	case 1:
+		if paren.TrailingComma {
+			return &Tuple{Pos: p, Elts: []ExprNode{emitExpr(paren.Elts[0])}, Ctx: &Load{}}
+		}
 		return emitExpr(paren.Elts[0])
 	default:
 		elts := make([]ExprNode, 0, len(paren.Elts))
@@ -882,44 +885,114 @@ func decodeStringLiteral(raw string) string {
 	return s
 }
 
+// decodeEscapes processes Python's escape sequences inside a string literal:
+//   \\ \' \" \a \b \f \n \r \t \v   single-char escapes
+//   \NNN                             1-3 octal digits, value mod 256
+//   \xHH                             two hex digits, exact
+//   \uHHHH                           four hex digits (BMP code point)
+//   \UHHHHHHHH                       eight hex digits (full code point)
+//   \<newline>                       line continuation, dropped
+// Anything else (e.g. \z, \q) is preserved as-is, matching CPython's
+// "deprecated invalid escape" behavior; \N{name} is not yet implemented
+// and is left intact rather than failing parse.
 func decodeEscapes(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+1 < len(s) {
-			switch s[i+1] {
-			case 'n':
-				b.WriteByte('\n')
-			case 't':
-				b.WriteByte('\t')
-			case 'r':
-				b.WriteByte('\r')
-			case '\\':
-				b.WriteByte('\\')
-			case '\'':
-				b.WriteByte('\'')
-			case '"':
-				b.WriteByte('"')
-			case 'x':
-				if i+3 < len(s) && isHex(s[i+2]) && isHex(s[i+3]) {
-					b.WriteByte(hexNibble(s[i+2])<<4 | hexNibble(s[i+3]))
-					i += 3
-					continue
-				}
-				b.WriteByte('\\')
-				b.WriteByte(s[i+1])
-			case '0', '1', '2', '3', '4', '5', '6', '7':
-				b.WriteByte('\\')
-				b.WriteByte(s[i+1])
-			default:
-				b.WriteByte('\\')
-				b.WriteByte(s[i+1])
-			}
-			i++
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
 			continue
 		}
-		b.WriteByte(s[i])
+		c := s[i+1]
+		switch c {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case 'r':
+			b.WriteByte('\r')
+		case '\\':
+			b.WriteByte('\\')
+		case '\'':
+			b.WriteByte('\'')
+		case '"':
+			b.WriteByte('"')
+		case 'a':
+			b.WriteByte(0x07)
+		case 'b':
+			b.WriteByte(0x08)
+		case 'f':
+			b.WriteByte(0x0c)
+		case 'v':
+			b.WriteByte(0x0b)
+		case '\n':
+			// Backslash-newline is a line continuation: drop both.
+		case 'x':
+			if i+3 < len(s) && isHex(s[i+2]) && isHex(s[i+3]) {
+				b.WriteByte(hexNibble(s[i+2])<<4 | hexNibble(s[i+3]))
+				i += 3
+				continue
+			}
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			// Octal: 1-3 digits, value mod 256.
+			val := int(c - '0')
+			n := 1
+			if i+2 < len(s) && isOctal(s[i+2]) {
+				val = val*8 + int(s[i+2]-'0')
+				n++
+				if i+3 < len(s) && isOctal(s[i+3]) {
+					val = val*8 + int(s[i+3]-'0')
+					n++
+				}
+			}
+			b.WriteByte(byte(val & 0xff))
+			i += n
+			continue
+		case 'u':
+			if i+5 < len(s) && allHex(s[i+2:i+6]) {
+				r := hexValue(s[i+2 : i+6])
+				b.WriteRune(rune(r))
+				i += 5
+				continue
+			}
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case 'U':
+			if i+9 < len(s) && allHex(s[i+2:i+10]) {
+				r := hexValue(s[i+2 : i+10])
+				b.WriteRune(rune(r))
+				i += 9
+				continue
+			}
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		}
+		i++
 	}
 	return b.String()
+}
+
+func isOctal(c byte) bool { return c >= '0' && c <= '7' }
+
+func allHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isHex(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func hexValue(s string) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		n = n<<4 | int(hexNibble(s[i]))
+	}
+	return n
 }
 
 func isHex(c byte) bool {

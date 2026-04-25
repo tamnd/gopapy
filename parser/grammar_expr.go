@@ -235,9 +235,14 @@ type DictItemOrExpr struct {
 	Value *Expression `parser:"( COLON @@ )?"`
 }
 
+// ParenLit is `( expr (, expr)* ,? )`. TrailingComma flips on when the
+// source ended with a comma — needed to disambiguate `(x)` (a parenthesized
+// expression) from `(x,)` (a single-element tuple). Both shapes have one
+// element in Elts; only the comma flag tells them apart.
 type ParenLit struct {
-	Pos  plexer.Position
-	Elts []*Expression `parser:"LPAREN ( @@ ( COMMA @@ )* COMMA? )? RPAREN"`
+	Pos           plexer.Position
+	Elts          []*Expression `parser:"LPAREN ( @@ ( COMMA @@ )*"`
+	TrailingComma bool          `parser:"            @COMMA? )? RPAREN"`
 }
 
 // YieldExpr = `yield` [`from` expression | star_expressions]
