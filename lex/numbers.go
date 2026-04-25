@@ -15,15 +15,21 @@ func (s *Scanner) scanNumber(start Position) (Token, error) {
 		// Leading dot already implies a digit follows — caller checked.
 	}
 	hadDot := false
-	if s.peek(0) == '.' && isDigit(s.peek(1)) {
-		s.advance(1)
-		s.scanDigitRun(false)
-		hadDot = true
-	} else if startOff == s.pos && s.peek(0) == '.' {
-		// `.5` form
-		s.advance(1)
-		s.scanDigitRun(false)
-		hadDot = true
+	if s.peek(0) == '.' {
+		// `5.`, `5.0`, and `.5` all land here. We already consumed the
+		// leading digit run (or none, in the `.5` case where caller checks
+		// digit-after-dot). Accept a fractional run if any digits follow,
+		// but a bare `5.` is also a valid float literal.
+		if startOff == s.pos {
+			// `.5` form — caller guarantees digit after dot.
+			s.advance(1)
+			s.scanDigitRun(false)
+			hadDot = true
+		} else {
+			s.advance(1)
+			s.scanDigitRun(false)
+			hadDot = true
+		}
 	}
 	// Exponent.
 	if c := s.peek(0); c == 'e' || c == 'E' {
@@ -64,7 +70,9 @@ func (s *Scanner) scanRadix(start Position) (Token, error) {
 	for !s.Done() {
 		c := s.peek(0)
 		if c == '_' {
-			if !any || !allow(s.peek(1)) {
+			// PEP 515: underscore allowed right after the base specifier
+			// and between digits, as long as a valid digit follows.
+			if !allow(s.peek(1)) {
 				return Token{}, &Error{Pos: s.Position(), Msg: "invalid underscore in numeric literal"}
 			}
 			s.advance(1)

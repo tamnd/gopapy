@@ -9,6 +9,71 @@ changes.
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-04-25
+
+Completeness pass on the existing surface. The big-rocks releases
+(match, type parameters, t-strings) get their own tags; this one
+closes the long tail of literal forms and small statement shapes
+that were tripping `gopapy check` on real code.
+
+The fixtures in `tests/grammar/` are restored to the
+one-construct-per-file convention. Two-file consolidation made the
+diff smaller but the failure messages worse, since a single typo
+inside a 90-line fixture would mask everything else in the topic.
+With one file per construct, a CI failure points straight at the
+construct that broke.
+
+### Added
+
+- Multi-target assignment: `a = b = c = 1`. The chain still parses
+  through a single AssignStmt and emits one Assign with N targets.
+- Starred LHS targets: `x, *rest = xs`, `*head, tail = xs`,
+  `first, *middle, last = xs`. The assignment LHS is now a real
+  comma-separated target list, not a single Expression.
+- Exception groups (PEP 654): `try ... except* TypeError as eg:`.
+  The parser keeps `except` and `except*` distinct via a Star bool
+  on ExceptClause, and emitTry promotes the wrapper to TryStar when
+  any handler uses the star form.
+- `assert e` and `assert e, msg` already worked, but are now in the
+  fixture corpus to lock the shape.
+- `raise X from None` round-trips correctly. None / True / False are
+  resolved to Constant in the emitter even when they came through
+  the NAME token alternative, fixing the `cause=Name(id='None')`
+  vs `cause=Constant(value=None)` regression for free everywhere.
+- Numeric literal completeness: `0x_ff_ee` (underscore right after
+  the radix prefix), bare-trailing-dot floats `5.`, complex `1j` /
+  `0J`, plus the existing `1_000_000` / `1.5e-3` forms re-confirmed.
+- All hex / oct / bin literals normalise to decimal in the AST dump,
+  matching CPython (`0xff` → `Constant(value=255)`). Big literals
+  go through math/big so values past uint64 still come out right.
+- Float repr matches CPython: `5.0` not `5`, `10000000000.0` not
+  `1e+10`, scientific kept only outside [1e-4, 1e16). Complex imag
+  drops the trailing `.0` for whole values (`1j`, not `1.0j`).
+- String prefix completeness across all legal cross-products of
+  `b`/`B`/`r`/`R`/`u`/`U`/`f`/`F`. Raw strings (`r"..."`) keep their
+  backslash escapes literal instead of decoding them. The kind
+  field on Constant is set to `'u'` only for the lowercase prefix,
+  matching CPython's quirk that `U"x"` produces no kind.
+- Triple-quoted strings, including the f-string variant, round trip
+  with embedded newlines and mixed quote styles.
+- Recursive f-string format spec: `f"{x:>{width}.{prec}f}"` parses
+  the inner `{width}` and `{prec}` chunks as real FormattedValues
+  inside the spec's JoinedStr.
+- Slice step variants (`a[::]`, `a[::-1]`, `a[1::2]`) and subscript
+  with Ellipsis (`m[..., 0]`, `m[1:2, ..., ::2]`).
+
+### Fixtures
+
+- `031_multi_assign.py` through `044_subscript_ellipsis.py`. One
+  topic per file, deliberately small. Total corpus is now 44/44.
+
+### Known limits
+
+`match` / `case`, type parameters and `type` aliases (PEP 695),
+t-strings (PEP 750), and the lexer state machine that fully handles
+nested f-strings inside interpolations are deferred to v0.0.4 and
+beyond per the roadmap.
+
 ## [0.0.2] - 2026-04-25
 
 Second cut. The bootstrap surface widens to cover the constructs that
@@ -117,6 +182,7 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/tamnd/gopapy/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/tamnd/gopapy/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/tamnd/gopapy/releases/tag/v0.0.1

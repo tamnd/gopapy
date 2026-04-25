@@ -141,12 +141,30 @@ type YieldStmt struct {
 // which operator showed up between targets and value.
 type AssignStmt struct {
 	Pos    plexer.Position
-	Target *Expression   `parser:"@@"`
-	Annot  *Expression   `parser:"( COLON @@"`
-	AnnVal *Expression   `parser:"  ( EQ @@ )? )?"`
-	Aug    string        `parser:"  ( @( PLUSEQ | MINUSEQ | STAREQ | SLASHEQ | DOUBLESLEQ | PERCENTEQ | ATEQ | AMPEQ | PIPEEQ | CARETEQ | LSHIFTEQ | RSHIFTEQ | DOUBLESTAREQ )"`
-	AugVal *Expression   `parser:"    @@"`
-	More   []*Expression `parser:"  | ( EQ @@ )+ )?"`
+	Target *AssignTarget   `parser:"@@"`
+	Annot  *Expression     `parser:"( COLON @@"`
+	AnnVal *Expression     `parser:"  ( EQ @@ )? )?"`
+	Aug    string          `parser:"  ( @( PLUSEQ | MINUSEQ | STAREQ | SLASHEQ | DOUBLESLEQ | PERCENTEQ | ATEQ | AMPEQ | PIPEEQ | CARETEQ | LSHIFTEQ | RSHIFTEQ | DOUBLESTAREQ )"`
+	AugVal *Expression     `parser:"    @@"`
+	More   []*AssignTarget `parser:"  | ( EQ @@ )+ )?"`
+}
+
+// AssignTarget is the comma-separated expression list that appears on either
+// side of an `=` in an assignment. Each item may be prefixed with `*` for a
+// starred target (`a, *rest = xs`) or for a starred RHS element. With more
+// than one item the AST emits a Tuple; a single item emits as the inner
+// expression directly.
+type AssignTarget struct {
+	Pos      plexer.Position
+	Head     *StarExpr   `parser:"@@"`
+	Tail     []*StarExpr `parser:"( COMMA @@ )*"`
+	HasTrail bool        `parser:"@COMMA?"`
+}
+
+type StarExpr struct {
+	Pos  plexer.Position
+	Star bool        `parser:"@STAR?"`
+	Expr *Expression `parser:"@@"`
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +300,8 @@ type TryStmt struct {
 
 type ExceptClause struct {
 	Pos  plexer.Position
-	Type *Expression `parser:"'except' ( @@"`
+	Star bool        `parser:"'except' @STAR?"`
+	Type *Expression `parser:"( @@"`
 	Name string      `parser:"  ( 'as' @NAME )? )?"`
 	Body *Block      `parser:"COLON @@"`
 }

@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"math/big"
 	"strconv"
 	"strings"
 
@@ -158,7 +159,7 @@ func emitAssign(a *parser.AssignStmt) StmtNode {
 	switch {
 	case a.Annot != nil:
 		// AnnAssign. Simple=1 only when the target is a bare Name.
-		target := withCtx(emitExpr(a.Target), &Store{})
+		target := withCtx(emitAssignTarget(a.Target, false), &Store{})
 		simple := 0
 		if _, ok := target.(*Name); ok {
 			simple = 1
@@ -173,28 +174,53 @@ func emitAssign(a *parser.AssignStmt) StmtNode {
 	case a.Aug != "":
 		return &AugAssign{
 			Pos:    p,
-			Target: withCtx(emitExpr(a.Target), &Store{}),
+			Target: withCtx(emitAssignTarget(a.Target, false), &Store{}),
 			Op:     augOp(a.Aug),
 			Value:  emitExpr(a.AugVal),
 		}
 	case len(a.More) > 0:
-		// Chained `a = b = c = expr`. The final expression is the rvalue;
-		// every preceding capture (Target plus all but the last in More)
-		// becomes a Store target.
-		all := append([]*parser.Expression{a.Target}, a.More...)
-		val := emitExpr(all[len(all)-1])
+		// Chained `a = b = c = expr`. The final element is the rvalue;
+		// every preceding element becomes a Store target.
+		all := append([]*parser.AssignTarget{a.Target}, a.More...)
+		val := emitAssignTarget(all[len(all)-1], true)
 		targets := make([]ExprNode, 0, len(all)-1)
 		for _, t := range all[:len(all)-1] {
-			targets = append(targets, withCtx(emitExpr(t), &Store{}))
+			targets = append(targets, withCtx(emitAssignTarget(t, false), &Store{}))
 		}
 		return &Assign{Pos: p, Targets: targets, Value: val}
 	default:
-		// Bare expression statement reuses Assign's target slot — but
-		// SimpleStmt routes those through ExprStmt, not here. Reaching
-		// this branch means the parser captured Target with no operator,
-		// which only happens during partial parses; treat it as Expr.
-		return &Expr{Pos: p, Value: emitExpr(a.Target)}
+		// Bare expression statement: AssignStmt matched but no `=`/`:`/aug
+		// operator showed up. Emit as an Expr.
+		return &Expr{Pos: p, Value: emitAssignTarget(a.Target, true)}
 	}
+}
+
+// emitAssignTarget collapses a parser.AssignTarget into a single ExprNode.
+// A single-item list with no trailing comma and no star unwraps to the
+// inner expression. Multiple items (or any trailing comma, or a leading
+// star) emit as a Tuple. The loadCtx flag is informational; callers that
+// need Store context wrap the result themselves.
+func emitAssignTarget(t *parser.AssignTarget, loadCtx bool) ExprNode {
+	_ = loadCtx
+	if t == nil {
+		return nil
+	}
+	if len(t.Tail) == 0 && !t.HasTrail && !t.Head.Star {
+		return emitExpr(t.Head.Expr)
+	}
+	elts := make([]ExprNode, 0, 1+len(t.Tail))
+	elts = append(elts, emitStarExpr(t.Head))
+	for _, item := range t.Tail {
+		elts = append(elts, emitStarExpr(item))
+	}
+	return &Tuple{Pos: pos(t.Pos), Elts: elts, Ctx: &Load{}}
+}
+
+func emitStarExpr(s *parser.StarExpr) ExprNode {
+	if s.Star {
+		return &Starred{Pos: pos(s.Pos), Value: emitExpr(s.Expr), Ctx: &Load{}}
+	}
+	return emitExpr(s.Expr)
 }
 
 func augOp(op string) OperatorNode {
@@ -297,8 +323,12 @@ func emitIf(s *parser.IfStmt) StmtNode {
 }
 
 func emitTry(t *parser.TryStmt) StmtNode {
+	star := false
 	handlers := make([]ExcepthandlerNode, 0, len(t.Handlers))
 	for _, h := range t.Handlers {
+		if h.Star {
+			star = true
+		}
 		handlers = append(handlers, &ExceptHandler{
 			Pos:  pos(h.Pos),
 			Type: emitExprOpt(h.Type),
@@ -306,16 +336,22 @@ func emitTry(t *parser.TryStmt) StmtNode {
 			Body: emitBlock(h.Body),
 		})
 	}
-	out := &Try{
-		Pos:      pos(t.Pos),
-		Body:     emitBlock(t.Body),
-		Handlers: handlers,
-		Orelse:   emitElse(t.Else),
-	}
+	body := emitBlock(t.Body)
+	orelse := emitElse(t.Else)
+	var finalBody []StmtNode
 	if t.Finally != nil {
-		out.Finalbody = emitBlock(t.Finally.Body)
+		finalBody = emitBlock(t.Finally.Body)
 	}
-	return out
+	if star {
+		return &TryStar{
+			Pos: pos(t.Pos), Body: body, Handlers: handlers,
+			Orelse: orelse, Finalbody: finalBody,
+		}
+	}
+	return &Try{
+		Pos: pos(t.Pos), Body: body, Handlers: handlers,
+		Orelse: orelse, Finalbody: finalBody,
+	}
 }
 
 func emitFuncDef(f *parser.FuncDef) StmtNode {
@@ -831,6 +867,14 @@ func emitAtom(a *parser.Atom) ExprNode {
 	p := pos(a.Pos)
 	switch {
 	case a.Name != "":
+		switch a.Name {
+		case "None":
+			return &Constant{Pos: p, Value: ConstantValue{Kind: ConstantNone}}
+		case "True":
+			return &Constant{Pos: p, Value: ConstantValue{Kind: ConstantBool, Bool: true}}
+		case "False":
+			return &Constant{Pos: p, Value: ConstantValue{Kind: ConstantBool, Bool: false}}
+		}
 		return &Name{Pos: p, Id: a.Name, Ctx: &Load{}}
 	case a.Number != "":
 		return &Constant{Pos: p, Value: numberConstant(a.Number)}
@@ -1009,11 +1053,46 @@ func numberConstant(text string) ConstantValue {
 		f, _ := strconv.ParseFloat(t, 64)
 		return ConstantValue{Kind: ConstantFloat, Float: f}
 	}
-	return ConstantValue{Kind: ConstantInt, Int: t}
+	// Normalise the integer to decimal: CPython's ast.dump emits the
+	// numeric value of `0xff` as `255`, not the source spelling.
+	return ConstantValue{Kind: ConstantInt, Int: normalizeIntLiteral(t)}
 }
 
 func isHexInt(s string) bool {
 	return len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')
+}
+
+// normalizeIntLiteral converts the underscore-stripped source spelling of
+// an integer (decimal, 0x, 0o, 0b) into a base-10 string. For values that
+// fit in a uint64 we use strconv; for arbitrarily large literals we fall
+// back to math/big so the output matches CPython for any input size.
+func normalizeIntLiteral(t string) string {
+	base := 10
+	body := t
+	if len(body) >= 2 && body[0] == '0' {
+		switch body[1] {
+		case 'x', 'X':
+			base, body = 16, body[2:]
+		case 'o', 'O':
+			base, body = 8, body[2:]
+		case 'b', 'B':
+			base, body = 2, body[2:]
+		}
+	}
+	if base == 10 {
+		// Strip a redundant leading-zero run for things like `0` -> `0`,
+		// `00` -> `0`. Plain decimal literals already come through as
+		// their canonical form.
+		return body
+	}
+	if v, err := strconv.ParseUint(body, base, 64); err == nil {
+		return strconv.FormatUint(v, 10)
+	}
+	bi := new(big.Int)
+	if _, ok := bi.SetString(body, base); ok {
+		return bi.String()
+	}
+	return t
 }
 
 // stringConstant concatenates adjacent string literals (Python's implicit
@@ -1024,12 +1103,16 @@ func isHexInt(s string) bool {
 func stringConstant(p Pos, parts []string) ExprNode {
 	isBytes := false
 	hasF := false
+	hasU := false
 	for _, raw := range parts {
 		if hasStringPrefix(raw, 'b') {
 			isBytes = true
 		}
 		if hasStringPrefix(raw, 'f') {
 			hasF = true
+		}
+		if hasLowerStringPrefix(raw, 'u') {
+			hasU = true
 		}
 	}
 	if hasF {
@@ -1042,7 +1125,27 @@ func stringConstant(p Pos, parts []string) ExprNode {
 	if isBytes {
 		return &Constant{Pos: p, Value: ConstantValue{Kind: ConstantBytes, Bytes: []byte(b.String())}}
 	}
-	return &Constant{Pos: p, Value: ConstantValue{Kind: ConstantStr, Str: b.String()}}
+	c := &Constant{Pos: p, Value: ConstantValue{Kind: ConstantStr, Str: b.String()}}
+	if hasU {
+		c.Kind = "u"
+	}
+	return c
+}
+
+// hasLowerStringPrefix is the case-sensitive variant: matches only the
+// lowercase form of the prefix letter. Needed because CPython distinguishes
+// `u"x"` (kind='u') from `U"x"` (no kind) in the AST.
+func hasLowerStringPrefix(raw string, want byte) bool {
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c == '\'' || c == '"' {
+			return false
+		}
+		if c == want {
+			return true
+		}
+	}
+	return false
 }
 
 // hasStringPrefix reports whether the raw STRING token carries the given
@@ -1068,6 +1171,7 @@ func hasStringPrefix(raw string, want byte) bool {
 // but the rich set (octal, hex, unicode names, ...) lands in PR2 along
 // with f/t-string interpolation.
 func decodeStringLiteral(raw string) string {
+	raw0 := raw
 	s := raw
 	for len(s) > 0 {
 		c := s[0]
@@ -1076,14 +1180,21 @@ func decodeStringLiteral(raw string) string {
 		}
 		s = s[1:]
 	}
+	isRaw := hasStringPrefix(raw0, 'r')
 	if len(s) >= 6 && (strings.HasPrefix(s, `"""`) || strings.HasPrefix(s, `'''`)) {
 		quote := s[:3]
 		body := strings.TrimPrefix(s, quote)
 		body = strings.TrimSuffix(body, quote)
+		if isRaw {
+			return body
+		}
 		return decodeEscapes(body)
 	}
 	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') {
 		body := s[1 : len(s)-1]
+		if isRaw {
+			return body
+		}
 		return decodeEscapes(body)
 	}
 	return s

@@ -64,7 +64,10 @@ func ParseExpression(src string) (*Expression, error) {
 	case s.Assign != nil && s.Assign.Annot == nil && s.Assign.Aug == "" && len(s.Assign.More) == 0:
 		// Bare expression that parsed through the assignment alternative
 		// because Assign is tried first. Unwrap the Target.
-		return s.Assign.Target, nil
+		t := s.Assign.Target
+		if t != nil && len(t.Tail) == 0 && !t.HasTrail && !t.Head.Star {
+			return t.Head.Expr, nil
+		}
 	}
 	return nil, fmt.Errorf("not an expression: %q", src)
 }
