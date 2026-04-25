@@ -74,9 +74,15 @@ func (it *Indent) Next() (Token, error) {
 		}
 
 		// First non-NEWLINE token on a line: compare its column against the
-		// indent stack and emit INDENT or DEDENT(s) accordingly.
-		if it.lineStart && it.bracket == 0 {
+		// indent stack and emit INDENT or DEDENT(s) accordingly. Inside open
+		// brackets the indent check is suppressed, but lineStart still has
+		// to be cleared so a later closer doesn't trigger a retroactive
+		// indent dance against some inner token's column.
+		if it.lineStart {
 			it.lineStart = false
+			if it.bracket > 0 {
+				return tok, nil
+			}
 			col := tok.Pos.Col
 			top := it.indents[len(it.indents)-1]
 			if col > top {
