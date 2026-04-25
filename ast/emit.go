@@ -442,6 +442,14 @@ func emitExprOpt(e *parser.Expression) ExprNode {
 }
 
 func emitExpr(e *parser.Expression) ExprNode {
+	if e.Walrus != nil {
+		w := e.Walrus
+		return &NamedExpr{
+			Pos:    pos(w.Pos),
+			Target: &Name{Pos: pos(w.Pos), Id: w.Name, Ctx: &Store{}},
+			Value:  emitExpr(w.Value),
+		}
+	}
 	if e.Lambda != nil {
 		l := e.Lambda
 		return &Lambda{Pos: pos(l.Pos), Args: emitArguments(l.Params), Body: emitExpr(l.Body)}

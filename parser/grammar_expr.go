@@ -5,13 +5,28 @@ import (
 )
 
 // Expression is the top-level expression rule, encompassing the conditional
-// expression (`X if C else Y`) and lambda. Lower precedence than disjunction.
+// expression (`X if C else Y`), lambda, and the walrus assignment expression
+// (NAME := expr). Walrus binds looser than the conditional but tighter than
+// a bare assignment statement.
 type Expression struct {
+	Pos     plexer.Position
+	Walrus  *WalrusExpr  `parser:"  @@"`
+	Lambda  *Lambda      `parser:"| @@"`
+	Body    *Disjunction `parser:"| @@"`
+	IfTest  *Disjunction `parser:"  ( 'if' @@"`
+	IfElse  *Expression  `parser:"    'else' @@ )?"`
+}
+
+// WalrusExpr is `NAME := expr`. The CPython grammar restricts walrus to
+// specific positions (call args, comprehension conditions, parenthesized
+// expressions, ...). gopapy follows the leniency of participle: we accept
+// walrus anywhere an Expression appears and rely on a downstream pass to
+// flag misuse, which mirrors how CPython itself reports the SyntaxError
+// only after parse.
+type WalrusExpr struct {
 	Pos    plexer.Position
-	Lambda *Lambda      `parser:"  @@"`
-	Body   *Disjunction `parser:"| @@"`
-	IfTest *Disjunction `parser:"  ( 'if' @@"`
-	IfElse *Expression  `parser:"    'else' @@ )?"`
+	Name   string      `parser:"@NAME WALRUS"`
+	Value  *Expression `parser:"@@"`
 }
 
 type Lambda struct {
