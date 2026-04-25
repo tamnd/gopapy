@@ -12,8 +12,28 @@ func emitMatch(m *parser.MatchStmt) StmtNode {
 	subject := emitAssignTarget(m.Subject, true)
 	cases := make([]*MatchCase, 0, len(m.Cases))
 	for _, c := range m.Cases {
+		var pat PatternNode
+		emitItem := func(it *parser.SeqItem) PatternNode {
+			if it.Star != nil {
+				name := it.Star.Name
+				if name == "_" {
+					name = ""
+				}
+				return &MatchStar{Pos: pos(it.Pos), Name: name}
+			}
+			return emitPattern(it.Pat)
+		}
+		if len(c.OpenItems) > 0 || c.OpenTrail {
+			pats := []PatternNode{emitItem(c.Head)}
+			for _, it := range c.OpenItems {
+				pats = append(pats, emitItem(it))
+			}
+			pat = &MatchSequence{Pos: pos(c.Head.Pos), Patterns: pats}
+		} else {
+			pat = emitItem(c.Head)
+		}
 		cases = append(cases, &MatchCase{
-			Pattern: emitPattern(c.Pattern),
+			Pattern: pat,
 			Guard:   emitExprOpt(c.Guard),
 			Body:    emitBlock(c.Body),
 		})
@@ -139,11 +159,22 @@ func emitMapPattern(m *parser.MapPattern) PatternNode {
 func emitMapKey(k *parser.MapKey) ExprNode {
 	switch {
 	case k.Number != "":
-		c := &Constant{Pos: pos(k.Pos), Value: numberConstant(k.Number)}
+		p := pos(k.Pos)
+		var val ExprNode = &Constant{Pos: p, Value: numberConstant(k.Number)}
 		if k.Sign == "-" {
-			return &UnaryOp{Pos: pos(k.Pos), Op: &USub{}, Operand: c}
+			val = &UnaryOp{Pos: p, Op: &USub{}, Operand: val}
+		} else if k.Sign == "+" {
+			val = &UnaryOp{Pos: p, Op: &UAdd{}, Operand: val}
 		}
-		return c
+		if k.Imag != "" {
+			imag := &Constant{Pos: p, Value: numberConstant(k.Imag)}
+			var op OperatorNode = &Add{}
+			if k.ImagOp == "-" {
+				op = &Sub{}
+			}
+			val = &BinOp{Pos: p, Left: val, Op: op, Right: imag}
+		}
+		return val
 	case len(k.String) > 0:
 		return stringConstant(pos(k.Pos), k.String)
 	case k.True:

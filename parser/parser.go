@@ -21,7 +21,7 @@ func build() *participle.Parser[File] {
 	}
 	p, err := participle.Build[File](
 		participle.Lexer(NewLexerDefinition()),
-		participle.UseLookahead(8),
+		participle.UseLookahead(128),
 		// participle's default is to elide whitespace; we don't want that —
 		// our lexer already strips whitespace, and we need to see every
 		// token (especially NEWLINE/INDENT/DEDENT) verbatim.

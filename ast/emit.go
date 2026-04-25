@@ -98,13 +98,13 @@ func emitReturn(r *parser.ReturnStmt) StmtNode {
 		return &Return{Pos: p}
 	case 1:
 		if r.TrailingComma {
-			return &Return{Pos: p, Value: &Tuple{Pos: p, Elts: []ExprNode{emitExpr(r.Values[0])}, Ctx: &Load{}}}
+			return &Return{Pos: p, Value: &Tuple{Pos: p, Elts: []ExprNode{emitStarOrExpr(r.Values[0])}, Ctx: &Load{}}}
 		}
-		return &Return{Pos: p, Value: emitExpr(r.Values[0])}
+		return &Return{Pos: p, Value: emitStarOrExpr(r.Values[0])}
 	default:
 		elts := make([]ExprNode, 0, len(r.Values))
 		for _, v := range r.Values {
-			elts = append(elts, emitExpr(v))
+			elts = append(elts, emitStarOrExpr(v))
 		}
 		return &Return{Pos: p, Value: &Tuple{Pos: p, Elts: elts, Ctx: &Load{}}}
 	}
@@ -183,11 +183,19 @@ func emitAssign(a *parser.AssignStmt) StmtNode {
 			Simple:     simple,
 		}
 	case a.Aug != "":
+		val := emitExpr(a.AugVal)
+		if len(a.AugRest) > 0 {
+			elts := []ExprNode{val}
+			for _, e := range a.AugRest {
+				elts = append(elts, emitExpr(e))
+			}
+			val = &Tuple{Pos: pos(a.AugVal.Pos), Elts: elts, Ctx: &Load{}}
+		}
 		return &AugAssign{
 			Pos:    p,
 			Target: withCtx(emitAssignTarget(a.Target, false), &Store{}),
 			Op:     augOp(a.Aug),
-			Value:  emitExpr(a.AugVal),
+			Value:  val,
 		}
 	case len(a.More) > 0:
 		// Chained `a = b = c = expr`. The final element is the rvalue;
@@ -297,9 +305,9 @@ func emitCompound(c *parser.CompoundStmt) StmtNode {
 		}
 	case c.With != nil:
 		w := c.With
-		raw := w.Items
-		if !w.Paren {
-			raw = w.BareItems
+		raw := w.BareItems
+		if w.Group != nil {
+			raw = w.Group.Items
 		}
 		items := make([]*Withitem, 0, len(raw))
 		for _, it := range raw {
@@ -342,9 +350,17 @@ func emitTry(t *parser.TryStmt) StmtNode {
 		if h.Star {
 			star = true
 		}
+		typ := emitExprOpt(h.Type)
+		if len(h.TypeRest) > 0 {
+			elts := []ExprNode{typ}
+			for _, e := range h.TypeRest {
+				elts = append(elts, emitExpr(e))
+			}
+			typ = &Tuple{Pos: pos(h.Pos), Elts: elts, Ctx: &Load{}}
+		}
 		handlers = append(handlers, &ExceptHandler{
 			Pos:  pos(h.Pos),
-			Type: emitExprOpt(h.Type),
+			Type: typ,
 			Name: h.Name,
 			Body: emitBlock(h.Body),
 		})
@@ -457,9 +473,9 @@ func emitAsync(a *parser.AsyncStmt) StmtNode {
 		}
 	case a.With != nil:
 		w := a.With
-		raw := w.Items
-		if !w.Paren {
-			raw = w.BareItems
+		raw := w.BareItems
+		if w.Group != nil {
+			raw = w.Group.Items
 		}
 		items := make([]*Withitem, 0, len(raw))
 		for _, it := range raw {
@@ -487,13 +503,13 @@ func emitAsyncFuncDef(f *parser.FuncDef) *AsyncFunctionDef {
 // a Tuple. CPython's grammar treats `for ... in star_expressions:` so the
 // iterator is implicitly comma-separated.
 func emitForIter(f *parser.ForStmt) ExprNode {
-	if len(f.IterRest) == 0 {
-		return emitExpr(f.Iter)
+	if len(f.IterRest) == 0 && f.Iter.Star == nil {
+		return emitStarOrExpr(f.Iter)
 	}
 	elts := make([]ExprNode, 0, 1+len(f.IterRest))
-	elts = append(elts, emitExpr(f.Iter))
+	elts = append(elts, emitStarOrExpr(f.Iter))
 	for _, e := range f.IterRest {
-		elts = append(elts, emitExpr(e))
+		elts = append(elts, emitStarOrExpr(e))
 	}
 	return &Tuple{Pos: pos(f.Pos), Elts: elts, Ctx: &Load{}}
 }
@@ -569,7 +585,11 @@ func emitArguments(params []*parser.Param) *Arguments {
 }
 
 func paramArg(p *parser.Param) *Arg {
-	return &Arg{Pos: pos(p.Pos), Arg: p.Name, Annotation: emitExprOpt(p.Annot)}
+	annot := emitExprOpt(p.Annot)
+	if annot != nil && p.StarAnnot {
+		annot = &Starred{Pos: pos(p.Pos), Value: annot, Ctx: &Load{}}
+	}
+	return &Arg{Pos: pos(p.Pos), Arg: p.Name, Annotation: annot}
 }
 
 // emitCallArgs builds the (Args, Keywords) pair for a Call. The bare
@@ -649,6 +669,9 @@ func emitExprOpt(e *parser.Expression) ExprNode {
 }
 
 func emitExpr(e *parser.Expression) ExprNode {
+	if e.Yield != nil {
+		return emitYield(e.Yield)
+	}
 	if e.Walrus != nil {
 		w := e.Walrus
 		return &NamedExpr{
@@ -1106,12 +1129,12 @@ func emitYield(y *parser.YieldExpr) ExprNode {
 		return &YieldFrom{Pos: p, Value: emitExpr(y.From)}
 	}
 	if y.Val != nil {
-		val := emitExpr(y.Val)
+		val := emitStarOrExpr(y.Val)
 		if len(y.ValRest) > 0 {
 			elts := make([]ExprNode, 0, 1+len(y.ValRest))
 			elts = append(elts, val)
 			for _, e := range y.ValRest {
-				elts = append(elts, emitExpr(e))
+				elts = append(elts, emitStarOrExpr(e))
 			}
 			val = &Tuple{Pos: p, Elts: elts, Ctx: &Load{}}
 		}
