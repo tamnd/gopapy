@@ -10,13 +10,20 @@ package lex
 // emission until the matching closer. Backslash-NL is already handled by the
 // scanner. Blank lines are ignored.
 type Indent struct {
-	scan       *Scanner
-	indents    []int   // indent stack; always starts with 0
-	pending    []Token // queue of tokens to emit before the next physical scan
-	bracket    int     // open bracket depth
-	lineStart  bool    // true when the next token is the first non-WS on a line
-	colHint    int     // column of the first significant token on the current line
-	emittedEnd bool
+	scan    *Scanner
+	indents []int // indent stack; always starts with 0
+	// pending is a FIFO queue of tokens to emit before the next physical
+	// scan. pendingHead is the index of the next token to emit; the slice
+	// is reset to length 0 (preserving the backing array) when the head
+	// catches up with the tail. This avoids the alloc-storm that
+	// `pending = pending[1:]` produces on a 1800-file corpus, where the
+	// header slide leaks the prefix and the next append reallocates.
+	pending     []Token
+	pendingHead int
+	bracket     int  // open bracket depth
+	lineStart   bool // true when the next token is the first non-WS on a line
+	colHint     int  // column of the first significant token on the current line
+	emittedEnd  bool
 	// keepComments toggles whether COMMENT and TYPE_COMMENT tokens are
 	// passed through. The parser path leaves it false (the grammar has
 	// no rule that consumes COMMENT). The cst package sets it true so
@@ -34,10 +41,8 @@ func NewIndent(s *Scanner) *Indent {
 // Next returns the next logical token, or EOF after ENDMARKER has been
 // emitted.
 func (it *Indent) Next() (Token, error) {
-	if len(it.pending) > 0 {
-		t := it.pending[0]
-		it.pending = it.pending[1:]
-		return t, nil
+	if it.pendingHead < len(it.pending) {
+		return it.dequeue(), nil
 	}
 	if it.emittedEnd {
 		return Token{Kind: EOF}, nil
@@ -126,10 +131,17 @@ func (it *Indent) Next() (Token, error) {
 // queue appends a token to the pending queue.
 func (it *Indent) queue(t Token) { it.pending = append(it.pending, t) }
 
-// dequeue removes and returns the head of the pending queue.
+// dequeue removes and returns the head of the pending queue. When the
+// head catches up with the tail the slice is reset (preserving the
+// backing array) so subsequent queues reuse capacity instead of
+// allocating.
 func (it *Indent) dequeue() Token {
-	t := it.pending[0]
-	it.pending = it.pending[1:]
+	t := it.pending[it.pendingHead]
+	it.pendingHead++
+	if it.pendingHead == len(it.pending) {
+		it.pending = it.pending[:0]
+		it.pendingHead = 0
+	}
 	return t
 }
 

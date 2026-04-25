@@ -20,24 +20,31 @@ import (
 	"github.com/tamnd/gopapy/v1/lex"
 )
 
-// definition adapts our lex package to participle's lexer.Definition.
+// definition adapts our lex package to participle's lexer.Definition. It
+// also satisfies lexer.BytesDefinition and lexer.StringDefinition so
+// participle's Parse{Bytes,String} skips a Reader round-trip and a
+// follow-up io.ReadAll.
 type definition struct{}
 
 // NewLexerDefinition returns a participle lexer.Definition that reads Python
 // source via lex.Scanner + lex.Indent.
 func NewLexerDefinition() plexer.Definition { return &definition{} }
 
-// Symbols maps participle's symbolic token names to our lex.Kind values
-// (which we cast to participle's TokenType). The grammar refers to tokens
-// by these symbol names, e.g. `@@NAME` captures a NAME token.
-func (definition) Symbols() map[string]plexer.TokenType {
-	out := map[string]plexer.TokenType{}
+// symbolsCache is built once at package init from tokenSymbols. participle
+// calls Symbols() on the lexer per ParseFile (via getElidedTypes), so a
+// fresh map allocation per call is real cost on a 1800-file corpus.
+var symbolsCache = func() map[string]plexer.TokenType {
+	m := make(map[string]plexer.TokenType, len(tokenSymbols)+1)
 	for k, name := range tokenSymbols {
-		out[name] = plexer.TokenType(k)
+		m[name] = plexer.TokenType(k)
 	}
-	out["EOF"] = plexer.EOF
-	return out
-}
+	m["EOF"] = plexer.EOF
+	return m
+}()
+
+// Symbols returns the cached symbol table. The map must not be mutated by
+// callers; participle treats it as read-only.
+func (definition) Symbols() map[string]plexer.TokenType { return symbolsCache }
 
 // Lex reads from r and returns a participle Lexer over our logical token
 // stream (NEWLINE/INDENT/DEDENT injected, comments dropped).
@@ -47,6 +54,21 @@ func (definition) Lex(filename string, r io.Reader) (plexer.Lexer, error) {
 		return nil, err
 	}
 	it := lex.NewIndent(lex.NewScanner(src, filename))
+	return &lexerAdapter{it: it, filename: filename}, nil
+}
+
+// LexBytes is the BytesDefinition fast path: participle's ParseBytes
+// hands us the raw byte slice directly, skipping the bytes.NewReader +
+// io.ReadAll round-trip.
+func (definition) LexBytes(filename string, src []byte) (plexer.Lexer, error) {
+	it := lex.NewIndent(lex.NewScanner(src, filename))
+	return &lexerAdapter{it: it, filename: filename}, nil
+}
+
+// LexString is the StringDefinition fast path. The conversion to []byte
+// is one allocation; the alternative path costs at least three.
+func (definition) LexString(filename string, src string) (plexer.Lexer, error) {
+	it := lex.NewIndent(lex.NewScanner([]byte(src), filename))
 	return &lexerAdapter{it: it, filename: filename}, nil
 }
 

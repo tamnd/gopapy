@@ -120,3 +120,25 @@ jobs:
 
       - name: fuzz ast.Emit
         run: go test ./ast -run='^$' -fuzz=FuzzEmit -fuzztime=30s
+
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Print tool versions
+        run: go version
+
+      # Print parser/lex/symbols benchmark numbers on every PR. This is
+      # an information channel for reviewers, not a hard gate — see
+      # notes/Spec/1100/1132 for why hard alloc-budget gating is
+      # deferred to the next version.
+      - name: go test -bench
+        run: go test -run='^$' -bench=. -benchtime=3x -benchmem ./lex ./parser ./symbols
