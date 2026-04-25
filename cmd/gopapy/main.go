@@ -92,6 +92,9 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 		if !strings.HasSuffix(path, ".py") {
 			return nil
 		}
+		if isIntentionalBadFixture(path) {
+			return nil
+		}
 		if _, perr := parseFile(path); perr != nil {
 			failed++
 			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, perr)
@@ -114,6 +117,15 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("%d files failed to parse", failed)
 	}
 	return nil
+}
+
+// isIntentionalBadFixture reports whether path is a CPython test fixture
+// that is *meant* to be unparseable. The naming convention `bad_*.py` /
+// `badsyntax_*.py` is used by CPython's own tokenizer/parser tests to ship
+// deliberate syntax errors.
+func isIntentionalBadFixture(path string) bool {
+	base := filepath.Base(path)
+	return strings.HasPrefix(base, "bad_") || strings.HasPrefix(base, "badsyntax_")
 }
 
 func usage(w io.Writer) {
