@@ -235,6 +235,8 @@ func augOp(op string) OperatorNode {
 
 func emitCompound(c *parser.CompoundStmt) StmtNode {
 	switch {
+	case c.Async != nil:
+		return emitAsync(c.Async)
 	case c.Decorated != nil:
 		return emitDecorated(c.Decorated)
 	case c.If != nil:
@@ -339,13 +341,18 @@ func emitClassDef(c *parser.ClassDef) StmtNode {
 
 // emitDecorated lifts a decorator stack onto the function or class
 // definition that follows. CPython models decorators as a list field on
-// the def/class node, in source order.
+// the def/class node, in source order. `@deco / async def` becomes an
+// AsyncFunctionDef with the same decorator list.
 func emitDecorated(d *parser.Decorated) StmtNode {
 	decos := make([]ExprNode, 0, len(d.Decorators))
 	for _, dec := range d.Decorators {
 		decos = append(decos, emitExpr(dec.Expr))
 	}
 	switch {
+	case d.FuncDef != nil && d.Async:
+		fd := emitAsyncFuncDef(d.FuncDef)
+		fd.DecoratorList = decos
+		return fd
 	case d.FuncDef != nil:
 		fd := emitFuncDef(d.FuncDef).(*FunctionDef)
 		fd.DecoratorList = decos
@@ -356,6 +363,50 @@ func emitDecorated(d *parser.Decorated) StmtNode {
 		return cd
 	}
 	return nil
+}
+
+// emitAsync turns a bare `async def/for/with` into the matching async
+// AST node. Decorated async defs go through emitDecorated instead so the
+// decorator list is preserved.
+func emitAsync(a *parser.AsyncStmt) StmtNode {
+	switch {
+	case a.FuncDef != nil:
+		return emitAsyncFuncDef(a.FuncDef)
+	case a.For != nil:
+		f := a.For
+		return &AsyncFor{
+			Pos:    pos(a.Pos),
+			Target: emitTargetList(f.Target, &Store{}),
+			Iter:   emitExpr(f.Iter),
+			Body:   emitBlock(f.Body),
+			Orelse: emitElse(f.Else),
+		}
+	case a.With != nil:
+		w := a.With
+		raw := w.Items
+		if !w.Paren {
+			raw = w.BareItems
+		}
+		items := make([]*Withitem, 0, len(raw))
+		for _, it := range raw {
+			items = append(items, &Withitem{
+				ContextExpr:  emitExpr(it.Context),
+				OptionalVars: ifNotNil(it.Vars, func(e *parser.Expression) ExprNode { return withCtx(emitExpr(e), &Store{}) }),
+			})
+		}
+		return &AsyncWith{Pos: pos(a.Pos), Items: items, Body: emitBlock(w.Body)}
+	}
+	return nil
+}
+
+func emitAsyncFuncDef(f *parser.FuncDef) *AsyncFunctionDef {
+	return &AsyncFunctionDef{
+		Pos:     pos(f.Pos),
+		Name:    f.Name,
+		Args:    emitArguments(f.Params),
+		Body:    emitBlock(f.Body),
+		Returns: emitExprOpt(f.Returns),
+	}
 }
 
 func emitBlock(b *parser.Block) []StmtNode {
@@ -387,6 +438,11 @@ func emitArguments(params []*parser.Param) *Arguments {
 	args := &Arguments{}
 	seenStar := false
 	for _, p := range params {
+		// Param is all-optional fields, so participle can match zero
+		// tokens for an empty `()` parameter list. Skip those.
+		if p.Kind == "" && p.Name == "" {
+			continue
+		}
 		switch p.Kind {
 		case "/":
 			args.Posonlyargs = append(args.Posonlyargs, args.Args...)

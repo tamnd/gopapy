@@ -155,7 +155,8 @@ type AssignStmt struct {
 
 type CompoundStmt struct {
 	Pos        plexer.Position
-	Decorated  *Decorated `parser:"  @@"`
+	Async      *AsyncStmt `parser:"  @@"`
+	Decorated  *Decorated `parser:"| @@"`
 	If         *IfStmt    `parser:"| @@"`
 	While      *WhileStmt `parser:"| @@"`
 	For        *ForStmt   `parser:"| @@"`
@@ -165,6 +166,16 @@ type CompoundStmt struct {
 	ClassDef   *ClassDef  `parser:"| @@"`
 }
 
+// AsyncStmt is the `async` soft-keyword prefix on def, for, or with.
+// Each form reuses the existing non-async sub-rule and the AST emitter
+// swaps in the AsyncFunctionDef / AsyncFor / AsyncWith node types.
+type AsyncStmt struct {
+	Pos     plexer.Position
+	FuncDef *FuncDef  `parser:"'async' ( @@"`
+	For     *ForStmt  `parser:"  | @@"`
+	With    *WithStmt `parser:"  | @@ )"`
+}
+
 // Decorated is one or more `@expr NEWLINE` lines followed by a function or
 // class definition. The expressions can be any callable: a name, a dotted
 // path, or a call. CPython's grammar (3.9+) accepts `@expr` rather than the
@@ -172,6 +183,7 @@ type CompoundStmt struct {
 type Decorated struct {
 	Pos        plexer.Position
 	Decorators []*Decorator `parser:"@@+"`
+	Async      bool         `parser:"( @'async' )?"`
 	FuncDef    *FuncDef     `parser:"( @@"`
 	ClassDef   *ClassDef    `parser:"| @@ )"`
 }
