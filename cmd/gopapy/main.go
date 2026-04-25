@@ -84,7 +84,7 @@ func parseFile(path string) (*parser.File, error) {
 // pointed at a corpus and produce a quick health number.
 func checkDir(dir string, stdout, stderr io.Writer) error {
 	var passed, failed int
-	const gcEvery = 64
+	const gcEvery = 16
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
