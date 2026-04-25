@@ -353,12 +353,23 @@ func emitElse(e *parser.ElseClause) []StmtNode {
 // only the trailing run of positional defaults goes in Defaults.
 func emitArguments(params []*parser.Param) *Arguments {
 	args := &Arguments{}
+	seenStar := false
 	for _, p := range params {
 		switch {
 		case p.Star:
-			args.Vararg = paramArg(p)
+			seenStar = true
+			if p.Name != "" {
+				args.Vararg = paramArg(p)
+			}
 		case p.Double:
 			args.Kwarg = paramArg(p)
+		case seenStar:
+			args.Kwonlyargs = append(args.Kwonlyargs, paramArg(p))
+			if p.Default != nil {
+				args.KwDefaults = append(args.KwDefaults, emitExpr(p.Default))
+			} else {
+				args.KwDefaults = append(args.KwDefaults, nil)
+			}
 		default:
 			args.Args = append(args.Args, paramArg(p))
 			if p.Default != nil {
@@ -810,11 +821,37 @@ func isHexInt(s string) bool {
 // them naively here. F-strings and t-strings get deferred to PR2 — they
 // still flow through here as literal STRING tokens.
 func stringConstant(p Pos, parts []string) ExprNode {
+	isBytes := false
+	for _, raw := range parts {
+		if hasStringPrefix(raw, 'b') {
+			isBytes = true
+			break
+		}
+	}
 	var b strings.Builder
 	for _, raw := range parts {
 		b.WriteString(decodeStringLiteral(raw))
 	}
+	if isBytes {
+		return &Constant{Pos: p, Value: ConstantValue{Kind: ConstantBytes, Bytes: []byte(b.String())}}
+	}
 	return &Constant{Pos: p, Value: ConstantValue{Kind: ConstantStr, Str: b.String()}}
+}
+
+// hasStringPrefix reports whether the raw STRING token carries the given
+// prefix letter (case-insensitive) before its opening quote.
+func hasStringPrefix(raw string, want byte) bool {
+	want |= 0x20
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c == '\'' || c == '"' {
+			return false
+		}
+		if c|0x20 == want {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeStringLiteral strips the leading prefix and matching quote pair
@@ -862,6 +899,17 @@ func decodeEscapes(s string) string {
 				b.WriteByte('\'')
 			case '"':
 				b.WriteByte('"')
+			case 'x':
+				if i+3 < len(s) && isHex(s[i+2]) && isHex(s[i+3]) {
+					b.WriteByte(hexNibble(s[i+2])<<4 | hexNibble(s[i+3]))
+					i += 3
+					continue
+				}
+				b.WriteByte('\\')
+				b.WriteByte(s[i+1])
+			case '0', '1', '2', '3', '4', '5', '6', '7':
+				b.WriteByte('\\')
+				b.WriteByte(s[i+1])
 			default:
 				b.WriteByte('\\')
 				b.WriteByte(s[i+1])
@@ -872,6 +920,19 @@ func decodeEscapes(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+func isHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c|0x20 >= 'a' && c|0x20 <= 'f')
+}
+
+func hexNibble(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	default:
+		return c|0x20 - 'a' + 10
+	}
 }
 
 // withCtx replaces the Ctx field of Name/Attribute/Subscript/Starred/
