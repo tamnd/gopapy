@@ -80,7 +80,10 @@ jobs:
           go version
           python3 --version
 
+      - name: build gopapy
+        run: go build -o bin/gopapy ./cmd/gopapy
+
       - name: gopapy check stdlib
         run: |
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
-          go run ./cmd/gopapy check "$PYDIR"
+          bin/gopapy check "$PYDIR"
