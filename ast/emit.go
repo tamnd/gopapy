@@ -481,6 +481,9 @@ func emitAsyncFuncDef(f *parser.FuncDef) *AsyncFunctionDef {
 }
 
 func emitBlock(b *parser.Block) []StmtNode {
+	if b.Inline != nil {
+		return emitSimples(b.Inline)
+	}
 	out := make([]StmtNode, 0, len(b.Body))
 	for _, st := range b.Body {
 		out = append(out, emitStatements(st)...)
@@ -638,7 +641,16 @@ func emitExpr(e *parser.Expression) ExprNode {
 	}
 	if e.Lambda != nil {
 		l := e.Lambda
-		return &Lambda{Pos: pos(l.Pos), Args: emitArguments(l.Params), Body: emitExpr(l.Body)}
+		params := make([]*parser.Param, 0, len(l.Params))
+		for _, lp := range l.Params {
+			params = append(params, &parser.Param{
+				Pos:     lp.Pos,
+				Kind:    lp.Kind,
+				Name:    lp.Name,
+				Default: lp.Default,
+			})
+		}
+		return &Lambda{Pos: pos(l.Pos), Args: emitArguments(params), Body: emitExpr(l.Body)}
 	}
 	body := emitDisjunction(e.Body)
 	if e.IfTest != nil {
@@ -871,7 +883,7 @@ func applyTrailer(value ExprNode, t *parser.Trailer) ExprNode {
 }
 
 func emitSubscriptList(sl *parser.SubscriptList) ExprNode {
-	if len(sl.Items) == 1 {
+	if len(sl.Items) == 1 && !sl.Items[0].Star {
 		return emitSubscript(sl.Items[0])
 	}
 	elts := make([]ExprNode, 0, len(sl.Items))
@@ -882,12 +894,19 @@ func emitSubscriptList(sl *parser.SubscriptList) ExprNode {
 }
 
 func emitSubscript(s *parser.Subscript) ExprNode {
+	if s.Star {
+		return &Starred{Pos: pos(s.Pos), Value: emitExpr(s.Lower), Ctx: &Load{}}
+	}
+	expr := s.Plain
+	if expr == nil {
+		expr = s.Lower
+	}
 	if s.Slice == nil {
-		return emitExpr(s.Lower)
+		return emitExpr(expr)
 	}
 	out := &Slice{Pos: pos(s.Pos)}
-	if s.Lower != nil {
-		out.Lower = emitExpr(s.Lower)
+	if expr != nil {
+		out.Lower = emitExpr(expr)
 	}
 	if s.Slice.Upper != nil {
 		out.Upper = emitExpr(s.Slice.Upper)
