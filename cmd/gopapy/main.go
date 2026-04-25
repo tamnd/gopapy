@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/tamnd/gopapy/v1/ast"
@@ -83,6 +84,7 @@ func parseFile(path string) (*parser.File, error) {
 // pointed at a corpus and produce a quick health number.
 func checkDir(dir string, stdout, stderr io.Writer) error {
 	var passed, failed int
+	const gcEvery = 64
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -95,6 +97,12 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, perr)
 		} else {
 			passed++
+		}
+		// Free per-file parse trees promptly. participle holds a lot of
+		// transient state per file; without periodic GC the resident set
+		// climbs into multi-GB territory on a 1800-file corpus.
+		if (passed+failed)%gcEvery == 0 {
+			runtime.GC()
 		}
 		return nil
 	})

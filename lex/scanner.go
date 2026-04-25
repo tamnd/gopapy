@@ -186,7 +186,22 @@ var operatorTable = []opRow{
 
 func isDigit(c byte) bool      { return c >= '0' && c <= '9' }
 func isIdentStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
-func isIdentPart(r rune) bool  { return isIdentStart(r) || unicode.IsDigit(r) }
+func isIdentPart(r rune) bool {
+	if isIdentStart(r) || unicode.IsDigit(r) {
+		return true
+	}
+	// Combining marks (Mn, Mc) and connector punctuation (Pc) are part
+	// of an identifier per UAX #31. The tag-character block
+	// (U+E0100..U+E01EF) is listed in Other_ID_Continue and is allowed
+	// by Python in identifiers.
+	if unicode.IsMark(r) || unicode.Is(unicode.Pc, r) {
+		return true
+	}
+	if r >= 0xE0100 && r <= 0xE01EF {
+		return true
+	}
+	return false
+}
 
 func isStringPrefix(s string) bool {
 	if len(s) > 2 {

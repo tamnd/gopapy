@@ -61,8 +61,18 @@ changes.
 - `for x in *a, *b, *c:` — starred elements in the implicit-tuple
   iterable.
 - Match or-pattern with deep paren-tuples and signed-number literals;
-  parser lookahead bumped from 8 to 128 so the discrimination
+  parser lookahead bumped from 8 to 96 so the discrimination
   succeeds on the four-alternation forms used in `test_patma.py`.
+- PEP 3131 / UAX #31 identifier continuation: combining marks (Mn,
+  Mc), connector punctuation (Pc), and the tag-character block
+  (U+E0100..U+E01EF) are accepted as identifier continuation
+  characters. Previously, encountering one of these mid-identifier
+  broke the lexer out of NAME and triggered exponential backtracking
+  in the operator alternatives, making `test_unicode_identifiers.py`
+  burn 70+ GB of RAM before completing.
+- `gopapy check DIR` now forces a `runtime.GC()` every 64 files to
+  keep the resident set bounded on large corpora. Without this, the
+  `stdlib-parse` CI job exceeded the 7 GB free-runner memory limit.
 - Unparser now pads with a space when an f-string interpolation's
   inner expression starts or ends with `{`/`}` (e.g. dict literals)
   so the round-tripped source doesn't lex its braces as `{{`/`}}`
