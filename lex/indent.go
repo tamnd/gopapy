@@ -19,7 +19,9 @@ type Indent struct {
 	emittedEnd bool
 }
 
-// NewIndent wraps a Scanner.
+// NewIndent wraps a Scanner and returns an Indent that yields the
+// logical token stream Python's grammar consumes (NEWLINE, INDENT,
+// DEDENT, ENDMARKER injected; comments dropped).
 func NewIndent(s *Scanner) *Indent {
 	return &Indent{scan: s, indents: []int{0}, lineStart: true}
 }

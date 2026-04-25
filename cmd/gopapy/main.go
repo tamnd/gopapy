@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tamnd/gopapy/ast"
-	"github.com/tamnd/gopapy/parser"
+	"github.com/tamnd/gopapy/v1/ast"
+	"github.com/tamnd/gopapy/v1/parser"
 )
 
-const version = "0.0.9"
+const version = "0.1.0"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {

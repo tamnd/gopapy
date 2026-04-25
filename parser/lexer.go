@@ -1,5 +1,14 @@
 // Package parser turns a Python token stream into a tree shaped by
 // participle, then emits an AST compatible with CPython's ast module.
+//
+// The exported entry points ParseFile, ParseString, ParseExpression,
+// and ParseReader are stable from v0.1.0 onward within the v1 module
+// path: signatures and behavior do not change. The grammar tracks
+// CPython's PEG grammar; new syntax may add fields or node variants in
+// patch releases but will not rename or remove existing ones.
+//
+// The returned tree is participle-shaped. Convert it to the canonical
+// Python AST with ast.FromFile.
 package parser
 
 import (
@@ -8,7 +17,7 @@ import (
 
 	plexer "github.com/alecthomas/participle/v2/lexer"
 
-	"github.com/tamnd/gopapy/lex"
+	"github.com/tamnd/gopapy/v1/lex"
 )
 
 // definition adapts our lex package to participle's lexer.Definition.

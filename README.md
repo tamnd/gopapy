@@ -19,6 +19,25 @@ This is the bootstrap branch. Track scope and progress in
 [`docs/GRAMMAR.md`](docs/GRAMMAR.md). For a tour of the pipeline see
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## Stability
+
+From v0.1.0 onward, gopapy promises three things to downstream callers
+so you can pin to v0.1 and trust the surface won't move under you:
+
+- **AST node types are frozen.** No renames, no field removals, no
+  field-type changes. New optional fields and new node variants for
+  upstream-CPython grammar growth are allowed and land in patch
+  releases.
+- **Public parser entry points are stable.** `parser.ParseFile`,
+  `parser.ParseString`, `parser.ParseExpression`, `parser.ParseReader`,
+  `ast.Dump`, `ast.Unparse`, `ast.FromFile`, `lex.NewScanner`, and
+  `lex.NewIndent` keep their current signatures and behavior.
+- **The Go module path is `github.com/tamnd/gopapy/v1`.** Future
+  breaking changes will move to `/v2`, so the import path itself
+  enforces the contract.
+
+Internal helpers under `internal/` are exempt and may move freely.
+
 ## Quick start
 
 ```sh

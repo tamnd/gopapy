@@ -33,22 +33,25 @@ func build() *participle.Parser[File] {
 	return p
 }
 
-// ParseFile parses src as a Python module body. filename is used only for
-// error messages.
+// ParseFile parses src as a Python module body and returns the
+// participle parse tree. filename is used only for error messages.
+// On a syntax error the returned error is a participle.Error with
+// position information.
 func ParseFile(filename string, src []byte) (*File, error) {
 	p := build()
 	return p.ParseBytes(filename, src)
 }
 
-// ParseString is a convenience wrapper around ParseFile.
+// ParseString is a convenience wrapper around ParseFile that takes
+// src as a string instead of a byte slice.
 func ParseString(filename, src string) (*File, error) {
 	return ParseFile(filename, []byte(src))
 }
 
-// ParseExpression parses src as a single Python expression. Used by the
-// AST emitter to recurse into f-string interpolation bodies. The source
-// is wrapped as a one-liner so it goes through the file parser, then the
-// resulting Expression is fished out.
+// ParseExpression parses src as a single Python expression and returns
+// the participle Expression node. The source is wrapped as a one-line
+// statement and run through the file grammar, then unwrapped. An error
+// is returned if src does not parse as a bare expression.
 func ParseExpression(src string) (*Expression, error) {
 	f, err := ParseFile("<fstring>", []byte(src+"\n"))
 	if err != nil {
@@ -72,9 +75,10 @@ func ParseExpression(src string) (*Expression, error) {
 	return nil, fmt.Errorf("not an expression: %q", src)
 }
 
-// ParseReader parses from a byte slice presented as a buffer (kept here for
-// API symmetry with the std library — in practice all callers have bytes
-// already).
+// ParseReader parses src as a Python module body. It clones src before
+// parsing so callers may reuse or mutate the buffer afterward. Provided
+// for API symmetry with the standard library; if you already own the
+// bytes, ParseFile is cheaper.
 func ParseReader(filename string, src []byte) (*File, error) {
 	return ParseFile(filename, bytes.Clone(src))
 }

@@ -1,4 +1,4 @@
-module github.com/tamnd/gopapy
+module github.com/tamnd/gopapy/v1
 
 go 1.26
 
