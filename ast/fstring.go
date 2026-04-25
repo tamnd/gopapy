@@ -272,7 +272,8 @@ func getStringPrefix(raw string) string {
 
 func hasFPrefix(prefix string) bool {
 	for i := 0; i < len(prefix); i++ {
-		if prefix[i]|0x20 == 'f' {
+		c := prefix[i] | 0x20
+		if c == 'f' || c == 't' {
 			return true
 		}
 	}

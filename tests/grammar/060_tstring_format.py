@@ -1,0 +1,5 @@
+a = t"{x!r}"
+b = t"{x!s}"
+c = t"{x!a}"
+d = t"{x:>5}"
+e = t"{x:.{prec}f}"
