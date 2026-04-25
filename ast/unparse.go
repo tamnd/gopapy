@@ -1357,7 +1357,16 @@ func (p *printer) templateStrInner(values []ExprNode) {
 
 func (p *printer) formattedValueInner(fv *FormattedValue) {
 	p.write("{")
-	p.write(unparseInline(fv.Value))
+	body := unparseInline(fv.Value)
+	if len(body) > 0 && body[0] == '{' {
+		// Pad with a space so the leading `{` isn't lexed as `{{` escape.
+		p.write(" ")
+	}
+	p.write(body)
+	if len(body) > 0 && body[len(body)-1] == '}' && fv.FormatSpec == nil && fv.Conversion <= 0 {
+		// Same trailing-space rule for `}` so `}}` doesn't escape.
+		p.write(" ")
+	}
 	if fv.Conversion > 0 {
 		p.write("!")
 		p.write(string(rune(fv.Conversion)))
@@ -1373,7 +1382,14 @@ func (p *printer) formattedValueInner(fv *FormattedValue) {
 
 func (p *printer) interpolationInner(it *Interpolation) {
 	p.write("{")
-	p.write(unparseInline(it.Value))
+	body := unparseInline(it.Value)
+	if len(body) > 0 && body[0] == '{' {
+		p.write(" ")
+	}
+	p.write(body)
+	if len(body) > 0 && body[len(body)-1] == '}' && it.FormatSpec == nil && it.Conversion <= 0 {
+		p.write(" ")
+	}
 	if it.Conversion > 0 {
 		p.write("!")
 		p.write(string(rune(it.Conversion)))

@@ -7,13 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/tamnd/gopapy/v1/ast"
 	"github.com/tamnd/gopapy/v1/parser"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -83,6 +84,7 @@ func parseFile(path string) (*parser.File, error) {
 // pointed at a corpus and produce a quick health number.
 func checkDir(dir string, stdout, stderr io.Writer) error {
 	var passed, failed int
+	const gcEvery = 16
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -90,11 +92,20 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 		if !strings.HasSuffix(path, ".py") {
 			return nil
 		}
+		if isIntentionalBadFixture(path) {
+			return nil
+		}
 		if _, perr := parseFile(path); perr != nil {
 			failed++
 			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, perr)
 		} else {
 			passed++
+		}
+		// Free per-file parse trees promptly. participle holds a lot of
+		// transient state per file; without periodic GC the resident set
+		// climbs into multi-GB territory on a 1800-file corpus.
+		if (passed+failed)%gcEvery == 0 {
+			runtime.GC()
 		}
 		return nil
 	})
@@ -106,6 +117,15 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("%d files failed to parse", failed)
 	}
 	return nil
+}
+
+// isIntentionalBadFixture reports whether path is a CPython test fixture
+// that is *meant* to be unparseable. The naming convention `bad_*.py` /
+// `badsyntax_*.py` is used by CPython's own tokenizer/parser tests to ship
+// deliberate syntax errors.
+func isIntentionalBadFixture(path string) bool {
+	base := filepath.Base(path)
+	return strings.HasPrefix(base, "bad_") || strings.HasPrefix(base, "badsyntax_")
 }
 
 func usage(w io.Writer) {

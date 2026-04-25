@@ -18,8 +18,45 @@ type Scanner struct {
 
 // NewScanner returns a Scanner over src. filename is used only for error
 // messages.
+//
+// A leading UTF-8 BOM (EF BB BF) is silently skipped; CPython's tokenizer
+// does the same. Carriage returns are normalised to newlines so CRLF and
+// bare-CR line endings tokenise the same as LF.
 func NewScanner(src []byte, filename string) *Scanner {
+	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
+		src = src[3:]
+	}
+	if hasCarriageReturn(src) {
+		src = normalizeNewlines(src)
+	}
 	return &Scanner{src: src, line: 1, filename: filename}
+}
+
+func hasCarriageReturn(src []byte) bool {
+	for _, b := range src {
+		if b == '\r' {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeNewlines converts CRLF and bare CR to LF, matching CPython's
+// universal-newlines behaviour for source files.
+func normalizeNewlines(src []byte) []byte {
+	out := make([]byte, 0, len(src))
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if c == '\r' {
+			out = append(out, '\n')
+			if i+1 < len(src) && src[i+1] == '\n' {
+				i++
+			}
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // Position reports the current scanner position.
@@ -102,8 +139,18 @@ func (s *Scanner) Scan() (Token, error) {
 		return s.scanNumber(start)
 	case c == '.' && isDigit(s.peek(1)):
 		return s.scanNumber(start)
-	case isIdentStart(rune(c)) || c >= 0x80:
+	case c < 0x80 && isIdentStart(rune(c)):
 		return s.scanNameOrString(start)
+	case c >= 0x80:
+		// Multi-byte UTF-8 lead. Decode and check whether the rune is a
+		// legal identifier start; otherwise reject explicitly so we don't
+		// loop forever on a character we can't classify.
+		r, n := utf8.DecodeRune(s.src[s.pos:])
+		if isIdentStart(r) {
+			return s.scanNameOrString(start)
+		}
+		s.advance(n)
+		return Token{}, &Error{Pos: start, Msg: "unexpected character " + quoteRune(r)}
 	case c == '"' || c == '\'':
 		return s.scanString(start, "")
 	}
@@ -186,7 +233,22 @@ var operatorTable = []opRow{
 
 func isDigit(c byte) bool      { return c >= '0' && c <= '9' }
 func isIdentStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
-func isIdentPart(r rune) bool  { return isIdentStart(r) || unicode.IsDigit(r) }
+func isIdentPart(r rune) bool {
+	if isIdentStart(r) || unicode.IsDigit(r) {
+		return true
+	}
+	// Combining marks (Mn, Mc) and connector punctuation (Pc) are part
+	// of an identifier per UAX #31. The tag-character block
+	// (U+E0100..U+E01EF) is listed in Other_ID_Continue and is allowed
+	// by Python in identifiers.
+	if unicode.IsMark(r) || unicode.Is(unicode.Pc, r) {
+		return true
+	}
+	if r >= 0xE0100 && r <= 0xE01EF {
+		return true
+	}
+	return false
+}
 
 func isStringPrefix(s string) bool {
 	if len(s) > 2 {

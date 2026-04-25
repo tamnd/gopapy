@@ -70,7 +70,7 @@ type SimpleStmt struct {
 // the trailing comma to disambiguate.
 type ReturnStmt struct {
 	Pos           plexer.Position
-	Values        []*Expression `parser:"'return' ( @@ ( COMMA @@ )*"`
+	Values        []*StarOrExpr `parser:"'return' ( @@ ( COMMA @@ )*"`
 	TrailingComma bool          `parser:"  @COMMA? )?"`
 }
 
@@ -81,8 +81,9 @@ type RaiseStmt struct {
 }
 
 type DelStmt struct {
-	Pos     plexer.Position
-	Targets []*Expression `parser:"'del' @@ ( COMMA @@ )*"`
+	Pos           plexer.Position
+	Targets       []*Expression `parser:"'del' @@ ( COMMA @@ )*"`
+	TrailingComma bool          `parser:"@COMMA?"`
 }
 
 type GlobalStmt struct {
@@ -148,9 +149,10 @@ type AssignStmt struct {
 	Target *AssignTarget   `parser:"@@"`
 	Annot  *Expression     `parser:"( COLON @@"`
 	AnnVal *Expression     `parser:"  ( EQ @@ )? )?"`
-	Aug    string          `parser:"  ( @( PLUSEQ | MINUSEQ | STAREQ | SLASHEQ | DOUBLESLEQ | PERCENTEQ | ATEQ | AMPEQ | PIPEEQ | CARETEQ | LSHIFTEQ | RSHIFTEQ | DOUBLESTAREQ )"`
-	AugVal *Expression     `parser:"    @@"`
-	More   []*AssignTarget `parser:"  | ( EQ @@ )+ )?"`
+	Aug     string          `parser:"  ( @( PLUSEQ | MINUSEQ | STAREQ | SLASHEQ | DOUBLESLEQ | PERCENTEQ | ATEQ | AMPEQ | PIPEEQ | CARETEQ | LSHIFTEQ | RSHIFTEQ | DOUBLESTAREQ )"`
+	AugVal  *Expression     `parser:"    @@"`
+	AugRest []*Expression   `parser:"    ( COMMA @@ )* COMMA?"`
+	More    []*AssignTarget `parser:"  | ( EQ @@ )+ )?"`
 }
 
 // AssignTarget is the comma-separated expression list that appears on either
@@ -200,11 +202,17 @@ type MatchStmt struct {
 	Cases   []*CaseClause `parser:"@@+ DEDENT"`
 }
 
+// CaseClause: a `case` followed by a SeqItem (which may be a `*name`
+// star pattern) and an optional comma-list of more SeqItems for the
+// "open sequence" form (e.g. `case 0, *x:` or `case *x, 2,:`), then
+// an optional `if` guard and the colon-introduced body.
 type CaseClause struct {
-	Pos     plexer.Position
-	Pattern *Pattern    `parser:"'case' @@"`
-	Guard   *Expression `parser:"( 'if' @@ )?"`
-	Body    *Block      `parser:"COLON @@"`
+	Pos       plexer.Position
+	Head      *SeqItem    `parser:"'case' @@"`
+	OpenItems []*SeqItem  `parser:"( COMMA @@ ( COMMA @@ )* COMMA? )?"`
+	OpenTrail bool        `parser:"@COMMA?"`
+	Guard     *Expression `parser:"( 'if' @@ )?"`
+	Body      *Block      `parser:"COLON @@"`
 }
 
 // Pattern is the top of the PEP 634 pattern hierarchy: an OrPattern
@@ -303,6 +311,8 @@ type MapKey struct {
 	Pos    plexer.Position
 	Sign   string   `parser:"@( PLUS | MINUS )?"`
 	Number string   `parser:"( @NUMBER"`
+	ImagOp string   `parser:"  ( @( PLUS | MINUS )"`
+	Imag   string   `parser:"    @NUMBER )?"`
 	String []string `parser:"| @STRING+"`
 	True   bool     `parser:"| @'True'"`
 	False_ bool     `parser:"| @'False'"`
@@ -399,8 +409,8 @@ type WhileStmt struct {
 type ForStmt struct {
 	Pos      plexer.Position
 	Target   *TargetList   `parser:"'for' @@ 'in'"`
-	Iter     *Expression   `parser:"@@"`
-	IterRest []*Expression `parser:"( COMMA @@ )* COMMA?"`
+	Iter     *StarOrExpr   `parser:"@@"`
+	IterRest []*StarOrExpr `parser:"( COMMA @@ )* COMMA?"`
 	Body     *Block        `parser:"COLON @@"`
 	Else     *ElseClause   `parser:"@@?"`
 }
@@ -409,10 +419,15 @@ type ForStmt struct {
 // targets with no trailing comma is a Tuple in the AST; a single target
 // stays as the underlying expression.
 type TargetList struct {
-	Pos       plexer.Position
-	Head      *TargetAtom   `parser:"@@"`
-	Tail      []*TargetAtom `parser:"( COMMA @@ )*"`
-	HasTrail  bool          `parser:"@COMMA?"`
+	Pos plexer.Position
+	Head *TargetAtom `parser:"@@"`
+	// The negative lookahead `(?! COMMA 'in')` prevents the loop from
+	// eating a trailing comma immediately followed by `in`. Without it,
+	// `for x, in xs:` would consume the comma into the loop, then fail to
+	// match a TargetAtom on the keyword `in`, and participle's greedy `*`
+	// does not back the comma out for the trailing `@COMMA?` to claim.
+	Tail     []*TargetAtom `parser:"( (?! COMMA 'in') COMMA @@ )*"`
+	HasTrail bool          `parser:"@COMMA?"`
 }
 
 // TargetAtom captures a single assignment target. `*x` is allowed for
@@ -427,12 +442,23 @@ type TargetAtom struct {
 // (`with a, b as c:`) and the parenthesized form added in PEP 617
 // (`with (a, b as c, d):`), with an optional trailing comma inside the
 // parens. The two forms produce identical AST shapes.
+// WithStmt accepts both the bare comma-separated form
+// (`with a, b as c:`) and the parenthesized form added in PEP 617
+// (`with (a, b as c, d):`). The paren branch commits only when the
+// closing `)` is immediately followed by `:`, so a single
+// parenthesised context expression followed by `as`
+// (`with (p / 'fileA').open('r') as f:`) routes to the bare branch
+// where Expression naturally swallows the parens.
 type WithStmt struct {
-	Pos        plexer.Position
-	Paren      bool        `parser:"'with' ( @LPAREN"`
-	Items      []*WithItem `parser:"  @@ ( COMMA @@ )* COMMA? RPAREN"`
-	BareItems  []*WithItem `parser:"| @@ ( COMMA @@ )* )"`
-	Body       *Block      `parser:"COLON @@"`
+	Pos       plexer.Position
+	Group     *WithGroup  `parser:"'with' ( @@"`
+	BareItems []*WithItem `parser:"        | @@ ( COMMA @@ )* )"`
+	Body      *Block      `parser:"COLON @@"`
+}
+
+type WithGroup struct {
+	Pos   plexer.Position
+	Items []*WithItem `parser:"LPAREN @@ ( COMMA @@ )* COMMA? RPAREN (?= COLON)"`
 }
 
 type WithItem struct {
@@ -450,11 +476,12 @@ type TryStmt struct {
 }
 
 type ExceptClause struct {
-	Pos  plexer.Position
-	Star bool        `parser:"'except' @STAR?"`
-	Type *Expression `parser:"( @@"`
-	Name string      `parser:"  ( 'as' @NAME )? )?"`
-	Body *Block      `parser:"COLON @@"`
+	Pos      plexer.Position
+	Star     bool          `parser:"'except' @STAR?"`
+	Type     *Expression   `parser:"( @@"`
+	TypeRest []*Expression `parser:"  ( COMMA @@ )*"`
+	Name     string        `parser:"  ( 'as' @NAME )? )?"`
+	Body     *Block        `parser:"COLON @@"`
 }
 
 type FinallyClause struct {
@@ -506,10 +533,11 @@ type Param struct {
 	// bare-star kwonly marker), or "**" (kwarg). Kept as a string instead
 	// of three bools because participle binds at most one capture per
 	// field, and we want both the prefix and the name in one Param shape.
-	Kind    string      `parser:"@( SLASH | DOUBLESTAR | STAR )?"`
-	Name    string      `parser:"@NAME?"`
-	Annot   *Expression `parser:"( COLON @@ )?"`
-	Default *Expression `parser:"( EQ @@ )?"`
+	Kind      string      `parser:"@( SLASH | DOUBLESTAR | STAR )?"`
+	Name      string      `parser:"@NAME?"`
+	StarAnnot bool        `parser:"( COLON @STAR?"`
+	Annot     *Expression `parser:"  @@ )?"`
+	Default   *Expression `parser:"( EQ @@ )?"`
 }
 
 type ClassDef struct {

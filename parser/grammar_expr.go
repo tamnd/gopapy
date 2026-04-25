@@ -10,7 +10,8 @@ import (
 // a bare assignment statement.
 type Expression struct {
 	Pos     plexer.Position
-	Walrus  *WalrusExpr  `parser:"  @@"`
+	Yield   *YieldExpr   `parser:"  @@"`
+	Walrus  *WalrusExpr  `parser:"| @@"`
 	Lambda  *Lambda      `parser:"| @@"`
 	Body    *Disjunction `parser:"| @@"`
 	IfTest  *Disjunction `parser:"  ( 'if' @@"`
@@ -338,6 +339,6 @@ type ParenLit struct {
 type YieldExpr struct {
 	Pos     plexer.Position
 	From    *Expression   `parser:"'yield' ( 'from' @@"`
-	Val     *Expression   `parser:"  | @@"`
-	ValRest []*Expression `parser:"    ( COMMA @@ )* COMMA? )?"`
+	Val     *StarOrExpr   `parser:"  | @@"`
+	ValRest []*StarOrExpr `parser:"    ( COMMA @@ )* COMMA? )?"`
 }

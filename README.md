@@ -50,6 +50,14 @@ echo '1 + 2' | tee /tmp/x.py
 `gopapy check DIR` walks every `.py` under `DIR` and reports a pass/fail
 summary, which is convenient for pointing the parser at a corpus.
 
+## Stdlib parse
+
+gopapy parses the entire CPython 3.14 standard library without error,
+and the `stdlib-parse` job in CI re-runs `gopapy check` against the
+local Python 3.14 stdlib on every push to keep that rate at 100%. This
+is a parse-only guarantee; structural AST equivalence with CPython is
+covered by the oracle-diff fixture set under `tests/grammar/`.
+
 ## Tests
 
 ```sh
