@@ -300,6 +300,8 @@ func emitCompound(c *parser.CompoundStmt) StmtNode {
 		return &With{Pos: pos(w.Pos), Items: items, Body: emitBlock(w.Body)}
 	case c.Try != nil:
 		return emitTry(c.Try)
+	case c.Match != nil:
+		return emitMatch(c.Match)
 	case c.FuncDef != nil:
 		return emitFuncDef(c.FuncDef)
 	case c.ClassDef != nil:
