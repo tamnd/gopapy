@@ -10,13 +10,18 @@ package lex
 // emission until the matching closer. Backslash-NL is already handled by the
 // scanner. Blank lines are ignored.
 type Indent struct {
-	scan      *Scanner
-	indents   []int  // indent stack; always starts with 0
-	pending   []Token // queue of tokens to emit before the next physical scan
-	bracket   int    // open bracket depth
-	lineStart bool   // true when the next token is the first non-WS on a line
-	colHint   int    // column of the first significant token on the current line
+	scan       *Scanner
+	indents    []int   // indent stack; always starts with 0
+	pending    []Token // queue of tokens to emit before the next physical scan
+	bracket    int     // open bracket depth
+	lineStart  bool    // true when the next token is the first non-WS on a line
+	colHint    int     // column of the first significant token on the current line
 	emittedEnd bool
+	// keepComments toggles whether COMMENT and TYPE_COMMENT tokens are
+	// passed through. The parser path leaves it false (the grammar has
+	// no rule that consumes COMMENT). The cst package sets it true so
+	// it can show comments to downstream tools.
+	keepComments bool
 }
 
 // NewIndent wraps a Scanner and returns an Indent that yields the
@@ -45,8 +50,12 @@ func (it *Indent) Next() (Token, error) {
 
 		// Drop comments. TYPE_COMMENT is recognised by the scanner but
 		// no grammar rule consumes it yet, so we drop those too rather
-		// than letting them break the parse.
+		// than letting them break the parse. The cst package flips
+		// keepComments so it can preserve them.
 		if tok.Kind == COMMENT || tok.Kind == TYPE_COMMENT {
+			if it.keepComments {
+				return tok, nil
+			}
 			continue
 		}
 
