@@ -9,6 +9,48 @@ changes.
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-04-26
+
+Stdlib pass. v0.0.7 brought corner cases caught by reading code; v0.0.8
+turns the corpus on itself and clears most of what `gopapy check`
+flagged when pointed at the CPython 3.14 stdlib. Failure count went
+from ~275 to under 20 (remaining items are unparenthesized
+context-manager + odd PEP 646 unpack positions, deferred to v0.0.9).
+
+### Added
+
+- `for x in a, b:` — bare-tuple iterator. CPython's grammar allows
+  comma-separated star-expressions after `in`; `ForStmt` now captures
+  the rest into `IterRest` and the emitter folds them into a Tuple.
+  Fixes `for op in '+', '-':` and similar patterns scattered through
+  the stdlib.
+- `yield a, b` — bare-tuple yield value. `YieldExpr` grows `ValRest`;
+  the emitter wraps a single yield value with a comma into a Tuple.
+- `return x,` — single-element tuple return. `ReturnStmt` tracks the
+  trailing comma so the emitter can wrap a single value as Tuple.
+- `class C(A, B,):` — trailing comma in class bases.
+- F-string format-spec mode. After a top-level `:` inside an
+  interpolation, the scanner switches to literal mode so `{x:#x}` and
+  similar format specs scan correctly. Previously the `#` was
+  swallowed as a comment, eating the closing `}` and the rest of the
+  line.
+
+### Fixed
+
+- `(a, b) = c` and other parenthesized statements at the top of a
+  block. `lex/indent.go` was incrementing the bracket counter before
+  the line-start indent check, so a `(` opening the line evaded
+  INDENT processing. The bracket count is now snapshotted before the
+  line-start check.
+- `# type: ignore[...]` no longer breaks the parse. The scanner still
+  tags TYPE_COMMENT separately from regular comments, but the indent
+  layer drops them rather than forwarding to the parser, since no
+  grammar rule consumes them yet.
+- `Subscript` grammar restructured. The v0.0.7 `Plain | Slice` shape
+  could match zero tokens, tripping participle's no-progress guard
+  on `]` after a sequence. Three explicit alternatives now: `*expr`,
+  `expr (slice-tail)?`, and bare slice.
+
 ## [0.0.7] - 2026-04-26
 
 Real-world corner cases. After v0.0.6 the parser claimed a complete

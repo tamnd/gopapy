@@ -3,8 +3,8 @@ package lex
 // Indent processes a stream of physical tokens (from Scanner) and produces
 // the logical token stream Python's grammar references: with NEWLINE
 // emitted at the end of each logical line, INDENT/DEDENT around indented
-// blocks, comments dropped (except TYPE_COMMENT, which is forwarded), and
-// a single ENDMARKER at EOF.
+// blocks, comments dropped (including TYPE_COMMENT, until a consumer is
+// added for them), and a single ENDMARKER at EOF.
 //
 // Logical lines collapse over open brackets — `(`, `[`, `{` suppress NEWLINE
 // emission until the matching closer. Backslash-NL is already handled by the
@@ -41,8 +41,10 @@ func (it *Indent) Next() (Token, error) {
 			return Token{}, err
 		}
 
-		// Drop pure comments. TYPE_COMMENT is forwarded.
-		if tok.Kind == COMMENT {
+		// Drop comments. TYPE_COMMENT is recognised by the scanner but
+		// no grammar rule consumes it yet, so we drop those too rather
+		// than letting them break the parse.
+		if tok.Kind == COMMENT || tok.Kind == TYPE_COMMENT {
 			continue
 		}
 
@@ -50,7 +52,11 @@ func (it *Indent) Next() (Token, error) {
 			return it.flushAtEnd()
 		}
 
-		// Track open/close brackets to suppress NEWLINE inside them.
+		// Track open/close brackets to suppress NEWLINE inside them. The
+		// bracket count is incremented *after* the lineStart check below,
+		// so a `(` that opens a logical line still triggers indent
+		// processing against its own column.
+		preBracket := it.bracket
 		switch tok.Kind {
 		case LPAREN, LBRACK, LBRACE:
 			it.bracket++
@@ -61,7 +67,7 @@ func (it *Indent) Next() (Token, error) {
 		}
 
 		if tok.Kind == NEWLINE {
-			if it.bracket > 0 {
+			if preBracket > 0 {
 				// inside brackets: ignore NEWLINE entirely
 				continue
 			}
@@ -80,7 +86,7 @@ func (it *Indent) Next() (Token, error) {
 		// indent dance against some inner token's column.
 		if it.lineStart {
 			it.lineStart = false
-			if it.bracket > 0 {
+			if preBracket > 0 {
 				return tok, nil
 			}
 			col := tok.Pos.Col

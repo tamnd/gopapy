@@ -65,10 +65,13 @@ type SimpleStmt struct {
 }
 
 // ReturnStmt: `return` followed by an optional expression list. Multiple
-// values fold into a Tuple at AST emit time.
+// values fold into a Tuple at AST emit time. A single value followed by a
+// trailing comma (`return x,`) is the one-element tuple form, so we track
+// the trailing comma to disambiguate.
 type ReturnStmt struct {
-	Pos    plexer.Position
-	Values []*Expression `parser:"'return' ( @@ ( COMMA @@ )* )?"`
+	Pos           plexer.Position
+	Values        []*Expression `parser:"'return' ( @@ ( COMMA @@ )*"`
+	TrailingComma bool          `parser:"  @COMMA? )?"`
 }
 
 type RaiseStmt struct {
@@ -359,8 +362,8 @@ type Decorator struct {
 // the suite; gopapy reuses SimpleStmts.
 type Block struct {
 	Pos    plexer.Position
-	Body   []*Statement `parser:"  NEWLINE INDENT @@+ DEDENT"`
-	Inline *SimpleStmts `parser:"| @@"`
+	Body   []*Statement `parser:"  ( NEWLINE INDENT @@+ DEDENT"`
+	Inline *SimpleStmts `parser:"  | @@ )"`
 }
 
 type IfStmt struct {
@@ -394,11 +397,12 @@ type WhileStmt struct {
 // Expression's Comparison rule. We use a dedicated TargetList that bottoms
 // out at BitOr so `in` stays available as the loop separator.
 type ForStmt struct {
-	Pos    plexer.Position
-	Target *TargetList `parser:"'for' @@ 'in'"`
-	Iter   *Expression `parser:"@@ COLON"`
-	Body   *Block      `parser:"@@"`
-	Else   *ElseClause `parser:"@@?"`
+	Pos      plexer.Position
+	Target   *TargetList   `parser:"'for' @@ 'in'"`
+	Iter     *Expression   `parser:"@@"`
+	IterRest []*Expression `parser:"( COMMA @@ )* COMMA?"`
+	Body     *Block        `parser:"COLON @@"`
+	Else     *ElseClause   `parser:"@@?"`
 }
 
 // TargetList is one or more comma-separated target atoms. A bare list of
@@ -512,7 +516,7 @@ type ClassDef struct {
 	Pos        plexer.Position
 	Name       string       `parser:"'class' @NAME"`
 	TypeParams []*TypeParam `parser:"( LBRACK @@ ( COMMA @@ )* COMMA? RBRACK )?"`
-	Bases      []*Argument  `parser:"( LPAREN ( @@ ( COMMA @@ )* )? RPAREN )?"`
+	Bases      []*Argument  `parser:"( LPAREN ( @@ ( COMMA @@ )* COMMA? )? RPAREN )?"`
 	Body       *Block       `parser:"COLON @@"`
 }
 

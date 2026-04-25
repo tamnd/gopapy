@@ -35,19 +35,20 @@ func (s *Scanner) scanInterpolatedString(start Position, prefix string) (Token, 
 	}
 	raw := isRawPrefix(prefix)
 	depth := 0
+	inSpec := false // format-spec mode (after `:` at outermost interpolation)
 	for {
 		if s.Done() {
 			return Token{}, &Error{Pos: start, Msg: "unterminated string literal"}
 		}
 		c := s.peek(0)
-		if c == '\\' && !raw {
+		if c == '\\' && !raw && !inSpec {
 			s.advance(1)
 			if !s.Done() {
 				s.advance(1)
 			}
 			continue
 		}
-		if c == '\\' && raw {
+		if c == '\\' && raw && !inSpec {
 			s.advance(2)
 			continue
 		}
@@ -83,6 +84,31 @@ func (s *Scanner) scanInterpolatedString(start Position, prefix string) (Token, 
 			s.advance(1)
 			continue
 		}
+		// Format-spec mode: characters are literal text except for a
+		// nested `{` (recursive replacement field), the matching `}`
+		// that ends the interpolation, and a newline that terminates a
+		// non-triple-quoted f-string.
+		if inSpec {
+			switch c {
+			case '{':
+				depth++
+				s.advance(1)
+			case '}':
+				depth--
+				s.advance(1)
+				if depth == 0 {
+					inSpec = false
+				}
+			case '\n':
+				if !triple {
+					return Token{}, &Error{Pos: start, Msg: "unterminated string literal"}
+				}
+				s.advance(1)
+			default:
+				s.advance(1)
+			}
+			continue
+		}
 		// Inside an interpolation expression. Track nesting; recurse into
 		// nested string literals so a `"` inside doesn't escape us.
 		switch c {
@@ -95,6 +121,11 @@ func (s *Scanner) scanInterpolatedString(start Position, prefix string) (Token, 
 		case '\'', '"':
 			if err := s.skipNestedString(start); err != nil {
 				return Token{}, err
+			}
+		case ':':
+			s.advance(1)
+			if depth == 1 {
+				inSpec = true
 			}
 		case '#':
 			// Comment inside an interpolation expression: only legal in
