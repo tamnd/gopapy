@@ -235,6 +235,8 @@ func augOp(op string) OperatorNode {
 
 func emitCompound(c *parser.CompoundStmt) StmtNode {
 	switch {
+	case c.Decorated != nil:
+		return emitDecorated(c.Decorated)
 	case c.If != nil:
 		return emitIf(c.If)
 	case c.While != nil:
@@ -256,8 +258,12 @@ func emitCompound(c *parser.CompoundStmt) StmtNode {
 		}
 	case c.With != nil:
 		w := c.With
-		items := make([]*Withitem, 0, len(w.Items))
-		for _, it := range w.Items {
+		raw := w.Items
+		if !w.Paren {
+			raw = w.BareItems
+		}
+		items := make([]*Withitem, 0, len(raw))
+		for _, it := range raw {
 			items = append(items, &Withitem{
 				ContextExpr:  emitExpr(it.Context),
 				OptionalVars: ifNotNil(it.Vars, func(e *parser.Expression) ExprNode { return withCtx(emitExpr(e), &Store{}) }),
@@ -331,6 +337,27 @@ func emitClassDef(c *parser.ClassDef) StmtNode {
 	}
 }
 
+// emitDecorated lifts a decorator stack onto the function or class
+// definition that follows. CPython models decorators as a list field on
+// the def/class node, in source order.
+func emitDecorated(d *parser.Decorated) StmtNode {
+	decos := make([]ExprNode, 0, len(d.Decorators))
+	for _, dec := range d.Decorators {
+		decos = append(decos, emitExpr(dec.Expr))
+	}
+	switch {
+	case d.FuncDef != nil:
+		fd := emitFuncDef(d.FuncDef).(*FunctionDef)
+		fd.DecoratorList = decos
+		return fd
+	case d.ClassDef != nil:
+		cd := emitClassDef(d.ClassDef).(*ClassDef)
+		cd.DecoratorList = decos
+		return cd
+	}
+	return nil
+}
+
 func emitBlock(b *parser.Block) []StmtNode {
 	out := make([]StmtNode, 0, len(b.Body))
 	for _, st := range b.Body {
@@ -351,11 +378,19 @@ func emitElse(e *parser.ElseClause) []StmtNode {
 // markers; everything lives in Args, *vararg, or **kwarg as recognised
 // by Param.Star and Param.Double. Defaults follow CPython's convention:
 // only the trailing run of positional defaults goes in Defaults.
+// emitArguments turns the participle Param list into the Arguments product
+// type. The list is walked in source order. A `/` flips already-collected
+// positional args into Posonlyargs (PEP 570). A `*` (with or without name)
+// flips subsequent regular params into Kwonlyargs (PEP 3102). `**name`
+// becomes Kwarg.
 func emitArguments(params []*parser.Param) *Arguments {
 	args := &Arguments{}
 	seenStar := false
 	for _, p := range params {
 		switch {
+		case p.Slash:
+			args.Posonlyargs = append(args.Posonlyargs, args.Args...)
+			args.Args = nil
 		case p.Star:
 			seenStar = true
 			if p.Name != "" {
