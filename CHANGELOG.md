@@ -9,6 +9,56 @@ changes.
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-04-25
+
+Second cut. The bootstrap surface widens to cover the constructs that
+trip up real `.py` files in the wild: comprehensions, decorators, async
+statements, walrus, parenthesized with, positional-only parameters,
+star-unpacking in collection literals, the full Python escape table,
+and a working f-string emitter for the common cases.
+
+### Added
+
+- Walrus assignment (`x := expr`) at any expression position. Parses
+  through to a NamedExpr with Store context on the target name.
+- Star-unpacking in list, tuple, set, and dict literals (`[*xs, 1]`,
+  `{**a, **b}`, `(*xs,)`).
+- Decorators on `def` and `class`. Multiple `@expr` lines stack onto
+  the following definition. `async def` works under decorators too.
+- Parenthesized `with` form (PEP 617): `with (a, b as c):`. Bare
+  comma-separated items still work.
+- Positional-only `/` marker (PEP 570) and bare-star `*` keyword-only
+  marker (PEP 3102). emitArguments splits into Posonlyargs / Args /
+  Kwonlyargs / KwDefaults exactly as CPython does.
+- Single-element tuple disambiguation: `(x,)` is a Tuple, `(x)` is a
+  parenthesized expression. The parser captures the trailing comma.
+- List, set, dict, and generator comprehensions, including chained
+  `for` clauses and trailing `if` filters. `async for` flips the
+  comprehension's `is_async` flag.
+- The single-genexp call form: `f(x for x in xs)` folds directly to a
+  Call with one GeneratorExp arg, no extra parens needed.
+- `async def`, `async for`, `async with` recognised via a soft-keyword
+  prefix. `await` was already in place; it composes inside `async def`.
+- f-string emission: any string-concat run with an `f` prefix turns
+  into a JoinedStr. Interpolation chunks support `{expr}`, `{expr!r}`,
+  `{expr!s}`, `{expr!a}`, `{expr:format_spec}`, `{{` / `}}` literal
+  braces, and the debug `{x=}` shorthand.
+- Octal `\NNN`, `\uHHHH`, `\UHHHHHHHH`, `\a`, `\b`, `\f`, `\v`, and
+  backslash-newline line continuations in string literals.
+- Sixteen new round-trip fixtures under `tests/grammar/` (015–030)
+  exercising every construct above. The harness is now at 30/30.
+
+### Known limits
+
+The f-string emitter does brace-balanced text scanning but does not
+yet handle nested f-strings inside an interpolation, triple-quoted
+f-strings with embedded triples, or recursive parsing of brace nesting
+that crosses string boundaries inside the expression. The lexer state
+machine that fixes these is tracked for v0.0.3.
+
+`match` statements, type parameters (PEP 695), `type` aliases, and
+t-strings (PEP 750) remain deferred — each warrants its own PR.
+
 ## [0.0.1] - 2026-04-25
 
 First public cut. The bootstrap branch covers enough of CPython 3.14's
@@ -67,5 +117,6 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/tamnd/gopapy/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/tamnd/gopapy/releases/tag/v0.0.1
