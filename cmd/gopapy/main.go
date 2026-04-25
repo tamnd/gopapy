@@ -13,7 +13,7 @@ import (
 	"github.com/tamnd/gopapy/parser"
 )
 
-const version = "0.0.8"
+const version = "0.0.9"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -49,6 +49,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(stdout, ast.Dump(ast.FromFile(f)))
+		return nil
+	case "unparse":
+		if len(args) < 2 {
+			return fmt.Errorf("unparse: missing FILE argument")
+		}
+		f, err := parseFile(args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(stdout, ast.Unparse(ast.FromFile(f)))
 		return nil
 	case "check":
 		if len(args) < 2 {
@@ -104,6 +114,7 @@ func usage(w io.Writer) {
 Commands:
   parse FILE    Parse a Python source file; exit non-zero on error.
   dump  FILE    Print AST in ast.dump style.
+  unparse FILE  Round-trip the file through Unparse and print the result.
   check DIR     Parse every .py under DIR, summarise failures.
   version       Print the gopapy version.
   help          Show this message.
