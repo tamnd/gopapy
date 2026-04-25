@@ -1,0 +1,22 @@
+# Build artefacts
+/gopapy
+/bin/
+*.exe
+*.test
+*.out
+
+# Go workspace
+/vendor/
+/go.work
+/go.work.sum
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Test artefacts
+*.expected.json.tmp
+/coverage.out
