@@ -88,6 +88,11 @@ jobs:
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
           bin/gopapy check "$PYDIR"
 
+      - name: gopapy symbols stdlib
+        run: |
+          PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
+          bin/gopapy symbols "$PYDIR"
+
   fuzz:
     name: fuzz pass
     runs-on: ubuntu-latest
