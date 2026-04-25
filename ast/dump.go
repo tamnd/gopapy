@@ -2,10 +2,54 @@ package ast
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
 )
+
+// pyFloatRepr matches CPython's float repr: fixed notation for values in
+// [1e-4, 1e16), scientific outside, and an explicit ".0" when the fixed
+// form has no fractional part. NaN/Inf follow Python's "nan"/"inf" form.
+func pyFloatRepr(f float64) string {
+	if math.IsNaN(f) {
+		return "nan"
+	}
+	if math.IsInf(f, 1) {
+		return "inf"
+	}
+	if math.IsInf(f, -1) {
+		return "-inf"
+	}
+	if f == 0 {
+		if math.Signbit(f) {
+			return "-0.0"
+		}
+		return "0.0"
+	}
+	abs := math.Abs(f)
+	if abs < 1e-4 || abs >= 1e16 {
+		return strconv.FormatFloat(f, 'e', -1, 64)
+	}
+	s := strconv.FormatFloat(f, 'f', -1, 64)
+	if !strings.Contains(s, ".") {
+		s += ".0"
+	}
+	return s
+}
+
+// pyComplexRepr matches CPython's repr for the imaginary part of a complex
+// constant: integral values show as `1j`, not `1.0j`. Otherwise it follows
+// the float repr rules.
+func pyComplexRepr(f float64) string {
+	if f == math.Trunc(f) && !math.IsInf(f, 0) && !math.IsNaN(f) {
+		abs := math.Abs(f)
+		if abs == 0 || (abs >= 1e-4 && abs < 1e16) {
+			return strconv.FormatFloat(f, 'f', -1, 64)
+		}
+	}
+	return pyFloatRepr(f)
+}
 
 // Dump renders a node in the same shape CPython's ast.dump(tree) produces.
 // The default form is the compact one — matching ast.dump(tree).
@@ -156,9 +200,9 @@ func dumpConstant(b *strings.Builder, c ConstantValue) {
 	case ConstantInt:
 		b.WriteString(c.Int)
 	case ConstantFloat:
-		b.WriteString(strconv.FormatFloat(c.Float, 'g', -1, 64))
+		b.WriteString(pyFloatRepr(c.Float))
 	case ConstantComplex:
-		b.WriteString(strconv.FormatFloat(c.Imag, 'g', -1, 64))
+		b.WriteString(pyComplexRepr(c.Imag))
 		b.WriteByte('j')
 	case ConstantStr:
 		b.WriteString(pyRepr(c.Str))
