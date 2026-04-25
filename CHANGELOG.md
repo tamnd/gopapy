@@ -9,6 +9,49 @@ changes.
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-04-26
+
+t-strings (PEP 750) and the lexer state machine for nested f-strings
+with the same quote character (PEP 701). With this release the
+parser covers the full Python 3.14 grammar surface; remaining work
+is polish, edge cases, and downstream tooling.
+
+### Added
+
+- t-strings: `t"hello {name}"` lowers to TemplateStr with
+  Interpolation values. The Interpolation node carries the original
+  expression source text in `str` per the PEP 750 AST shape.
+- All t-string prefix variants (`t`, `T`, `rt`, `tr`, `Rt`, `rT`,
+  `Tr`, `tR`) and triple-quoted t-strings.
+- Conversion specifiers (`!r`, `!s`, `!a`), format specs, recursive
+  format-spec parsing (`{x:.{prec}f}`), and the debug `{x=}`
+  shorthand all work in t-strings the same way they do in f-strings.
+- PEP 701 nested f-strings: `f"{"hello"}"`, `f"{f"{"deep"}"}"`,
+  `f"{x + "y"}"`. The lexer now tracks brace depth inside
+  interpolations and recurses into nested string literals so an
+  inner `"` no longer closes the outer string.
+- Cross t-string / f-string nesting: `t"{f"{x}"}"` and
+  `f"{t"{x}"}"` both parse and emit the right node mix.
+
+### Lexer
+
+`scanInterpolatedString` replaces the flat-string path for f/t
+prefixes. It tracks brace depth (`{` opens, `}` closes, doubled
+forms escape) and, when depth > 0, recursively skips nested string
+literals via `skipNestedString` / `skipNestedInterpolation`. The
+outer scanner still emits a single STRING token; splitting the body
+remains the emitter's job.
+
+### Fixtures
+
+- `059_tstring_basic.py` — empty, no-interp, single and multi-interp
+- `060_tstring_format.py` — conversions, format specs, recursive
+- `061_tstring_triple.py` — triple-quoted, multi-line
+- `062_fstring_pep701.py` — same-quote nesting, expression-with-string
+- `063_fstring_nested_deep.py` — three-deep, mixed t / f
+
+`tests/run.sh` reports 63 / 63.
+
 ## [0.0.5] - 2026-04-25
 
 Type parameters and `type` aliases (PEP 695, with PEP 696 defaults).
@@ -295,7 +338,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.0.5...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.0.6...HEAD
+[0.0.6]: https://github.com/tamnd/gopapy/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/tamnd/gopapy/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/tamnd/gopapy/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/tamnd/gopapy/compare/v0.0.2...v0.0.3

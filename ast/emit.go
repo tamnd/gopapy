@@ -1138,6 +1138,7 @@ func normalizeIntLiteral(t string) string {
 func stringConstant(p Pos, parts []string) ExprNode {
 	isBytes := false
 	hasF := false
+	hasT := false
 	hasU := false
 	for _, raw := range parts {
 		if hasStringPrefix(raw, 'b') {
@@ -1146,9 +1147,15 @@ func stringConstant(p Pos, parts []string) ExprNode {
 		if hasStringPrefix(raw, 'f') {
 			hasF = true
 		}
+		if hasStringPrefix(raw, 't') {
+			hasT = true
+		}
 		if hasLowerStringPrefix(raw, 'u') {
 			hasU = true
 		}
+	}
+	if hasT {
+		return emitTString(p, parts)
 	}
 	if hasF {
 		return emitFString(p, parts)
