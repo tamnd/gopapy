@@ -12,9 +12,10 @@ import (
 
 	"github.com/tamnd/gopapy/v1/ast"
 	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.1"
+const version = "0.1.4"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -66,6 +67,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("check: missing DIR argument")
 		}
 		return checkDir(args[1], stdout, stderr)
+	case "symbols":
+		if len(args) < 2 {
+			return fmt.Errorf("symbols: missing PATH argument")
+		}
+		return symbolsCmd(args[1], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q (try 'gopapy help')", args[0])
 	}
@@ -119,6 +125,126 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// symbolsCmd builds a symbol table for one file or every .py under a
+// directory. The contract from the v0.1.4 spec is "Build never panics
+// on stdlib"; semantic warnings on individual files do not fail the run.
+// Parse failures are still counted (a file that won't parse can't have
+// its symbols built), and Build panics propagate as test failures.
+func symbolsCmd(path string, stdout, stderr io.Writer) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		f, err := parseFile(path)
+		if err != nil {
+			return err
+		}
+		mod := symbols.Build(ast.FromFile(f))
+		printSymbolModule(stdout, path, mod)
+		return nil
+	}
+	var passed, parseFailed, panicked int
+	const gcEvery = 16
+	walkErr := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(p, ".py") {
+			return nil
+		}
+		if isIntentionalBadFixture(p) {
+			return nil
+		}
+		f, perr := parseFile(p)
+		if perr != nil {
+			parseFailed++
+			return nil
+		}
+		if err := buildSymbolsSafe(ast.FromFile(f)); err != nil {
+			panicked++
+			fmt.Fprintf(stderr, "PANIC %s: %v\n", p, err)
+		} else {
+			passed++
+		}
+		if (passed+parseFailed+panicked)%gcEvery == 0 {
+			runtime.GC()
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+	fmt.Fprintf(stdout, "%d passed, %d parse-failed, %d panicked\n", passed, parseFailed, panicked)
+	if panicked > 0 {
+		return fmt.Errorf("%d files panicked in symbols.Build", panicked)
+	}
+	return nil
+}
+
+// buildSymbolsSafe runs symbols.Build with panic recovery so the harness
+// can keep going across a 1800-file corpus and report every offender.
+func buildSymbolsSafe(mod *ast.Module) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	_ = symbols.Build(mod)
+	return nil
+}
+
+// printSymbolModule writes a compact one-scope-per-line dump for a single
+// file invocation. The format prioritises being grep-friendly over being
+// pretty.
+func printSymbolModule(w io.Writer, path string, mod *symbols.Module) {
+	fmt.Fprintf(w, "# %s\n", path)
+	var walk func(s *symbols.Scope, depth int)
+	walk = func(s *symbols.Scope, depth int) {
+		indent := strings.Repeat("  ", depth)
+		fmt.Fprintf(w, "%s%s %q\n", indent, s.Kind, s.Name)
+		for name, sym := range s.Symbols {
+			fmt.Fprintf(w, "%s  %s flags=%s\n", indent, name, flagString(sym.Flags))
+		}
+		for _, c := range s.Children {
+			walk(c, depth+1)
+		}
+	}
+	walk(mod.Root, 0)
+	for _, d := range mod.Diagnostics {
+		fmt.Fprintf(w, "  diag %d:%d: %s\n", d.Pos.Lineno, d.Pos.ColOffset, d.Msg)
+	}
+}
+
+// flagString renders a BindFlag as a comma-separated list. Unflagged
+// names render as "-".
+func flagString(f symbols.BindFlag) string {
+	parts := []string{}
+	pairs := []struct {
+		f symbols.BindFlag
+		s string
+	}{
+		{symbols.FlagBound, "bound"},
+		{symbols.FlagUsed, "used"},
+		{symbols.FlagParam, "param"},
+		{symbols.FlagGlobal, "global"},
+		{symbols.FlagNonlocal, "nonlocal"},
+		{symbols.FlagAnnotation, "ann"},
+		{symbols.FlagImport, "import"},
+		{symbols.FlagFree, "free"},
+		{symbols.FlagCell, "cell"},
+	}
+	for _, p := range pairs {
+		if f&p.f != 0 {
+			parts = append(parts, p.s)
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ",")
+}
+
 // isIntentionalBadFixture reports whether path is a CPython test fixture
 // that is *meant* to be unparseable. The naming convention `bad_*.py` /
 // `badsyntax_*.py` is used by CPython's own tokenizer/parser tests to ship
@@ -136,6 +262,7 @@ Commands:
   dump  FILE    Print AST in ast.dump style.
   unparse FILE  Round-trip the file through Unparse and print the result.
   check DIR     Parse every .py under DIR, summarise failures.
+  symbols PATH  Build a symbol table for FILE, or report panics across DIR.
   version       Print the gopapy version.
   help          Show this message.
 `)

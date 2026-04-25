@@ -9,6 +9,72 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-04-26
+
+Adds a Python symbol table on top of the AST. Every binding site is
+recorded with its source position; every name in every scope is
+classified as local, parameter, global, nonlocal, free, cell, or
+import. Mirrors what CPython's `_symtable` module exposes, scoped
+to what's needed by linters, refactoring tools, and the still-deferred
+type checker.
+
+### Added
+
+- New `gopapy/v1/symbols` package. `symbols.Build(*ast.Module)
+  *symbols.Module` walks the AST and returns a tree of `*Scope`
+  objects (Module / Function / Class / Lambda / Comprehension) with
+  per-name `*Binding` entries. Each Binding carries a `BindFlag`
+  bitfield (`Bound`, `Used`, `Param`, `Global`, `Nonlocal`,
+  `Annotation`, `Import`, `Free`, `Cell`) and the full list of
+  bind/use source positions.
+- `Scope.Resolve(name)` walks up the scope chain (skipping class
+  scopes per Python's nested-scope rule) and returns the binding
+  scope plus a flag indicating whether the lookup crossed a function
+  boundary — i.e. whether it's a free-variable reference.
+- Walrus targets (`:=`) inside a comprehension bind in the enclosing
+  function or module scope, matching PEP 572 semantics rather than
+  the comprehension's own scope.
+- New `gopapy symbols PATH` CLI subcommand. With a file argument it
+  dumps the scope tree and per-name flags. With a directory it walks
+  every `.py` (skipping `bad_*.py` / `badsyntax_*.py` fixtures) and
+  reports a pass / parse-failed / panicked summary, recovering from
+  any panic so the harness reports every offender in one run.
+- New CI step `gopapy symbols stdlib` runs the above against the
+  CPython 3.14 standard library on every push. The contract is
+  zero `Build` panics; semantic warnings (e.g. `global x` plus
+  `nonlocal x`) land in `Module.Diagnostics` and do not fail CI.
+
+### Classified
+
+- Function and class bodies; lambda expressions; list / set / dict /
+  generator comprehensions.
+- Assignment targets (including tuple, list, and starred unpack),
+  augmented assignment, annotated assignment, for-loop target,
+  with-as target, except-as target, walrus.
+- Function parameters across all positions: positional-only,
+  positional, `*args`, keyword-only, `**kwargs`, plus their
+  annotations and defaults (defaults evaluated in the enclosing
+  scope, parameters bound in the function scope).
+- `def` and `class` definition names; type-alias targets
+  (`type X = ...`); type parameters (`def f[T](): ...`).
+- `import a.b.c` binds `a`; `from x import y as z` binds `z`;
+  `from x import *` is a no-op at the symbol level.
+- Match patterns: capture, sequence-rest, mapping-rest, class
+  pattern, star pattern, as pattern.
+
+### Deferred
+
+- Type inference; cross-module resolution; runtime semantics
+  (`__all__`, `globals()`); stub support. The symbol table is the
+  ground for these; building any of them is its own version.
+
+## [0.1.3] - 2026-04-26
+
+Adds a source-faithful concrete syntax tree layer above the AST.
+Downstream formatters and codemods need access to the original bytes
+and the full token stream — including comments — that the parser
+discards on its way to a typed AST. `cst.Parse` exposes both.
+
 ### Added
 
 - New `gopapy/v1/cst` package: a thin layer above the AST that
@@ -20,11 +86,12 @@ changes.
 - `lex.AllTokens(filename, src)` returns the indent-injected token
   stream with comments preserved. Used internally by `cst.Parse`.
 
-### Deferred to later versions
+### Deferred
 
-The CST is intentionally narrow in v0.1.3. Trivia attachment to
-specific AST nodes, per-node end positions, and a mutation API are
-planned for v0.1.4+ — see notes/Spec/1100/1130 for the rationale.
+Trivia attachment to specific AST nodes, per-node end positions, and
+a mutation API are planned for later versions — see
+notes/Spec/1100/1130 for the rationale on shipping the minimum
+useful surface first.
 
 ## [0.1.2] - 2026-04-26
 
@@ -641,7 +708,11 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/tamnd/gopapy/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/tamnd/gopapy/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/tamnd/gopapy/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/tamnd/gopapy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/tamnd/gopapy/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/tamnd/gopapy/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/tamnd/gopapy/compare/v0.0.7...v0.0.8
