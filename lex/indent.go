@@ -1,0 +1,143 @@
+package lex
+
+// Indent processes a stream of physical tokens (from Scanner) and produces
+// the logical token stream Python's grammar references: with NEWLINE
+// emitted at the end of each logical line, INDENT/DEDENT around indented
+// blocks, comments dropped (except TYPE_COMMENT, which is forwarded), and
+// a single ENDMARKER at EOF.
+//
+// Logical lines collapse over open brackets — `(`, `[`, `{` suppress NEWLINE
+// emission until the matching closer. Backslash-NL is already handled by the
+// scanner. Blank lines are ignored.
+type Indent struct {
+	scan      *Scanner
+	indents   []int  // indent stack; always starts with 0
+	pending   []Token // queue of tokens to emit before the next physical scan
+	bracket   int    // open bracket depth
+	lineStart bool   // true when the next token is the first non-WS on a line
+	colHint   int    // column of the first significant token on the current line
+	emittedEnd bool
+}
+
+// NewIndent wraps a Scanner.
+func NewIndent(s *Scanner) *Indent {
+	return &Indent{scan: s, indents: []int{0}, lineStart: true}
+}
+
+// Next returns the next logical token, or EOF after ENDMARKER has been
+// emitted.
+func (it *Indent) Next() (Token, error) {
+	if len(it.pending) > 0 {
+		t := it.pending[0]
+		it.pending = it.pending[1:]
+		return t, nil
+	}
+	if it.emittedEnd {
+		return Token{Kind: EOF}, nil
+	}
+	for {
+		tok, err := it.scan.Scan()
+		if err != nil {
+			return Token{}, err
+		}
+
+		// Drop pure comments. TYPE_COMMENT is forwarded.
+		if tok.Kind == COMMENT {
+			continue
+		}
+
+		if tok.Kind == EOF {
+			return it.flushAtEnd()
+		}
+
+		// Track open/close brackets to suppress NEWLINE inside them.
+		switch tok.Kind {
+		case LPAREN, LBRACK, LBRACE:
+			it.bracket++
+		case RPAREN, RBRACK, RBRACE:
+			if it.bracket > 0 {
+				it.bracket--
+			}
+		}
+
+		if tok.Kind == NEWLINE {
+			if it.bracket > 0 {
+				// inside brackets: ignore NEWLINE entirely
+				continue
+			}
+			if it.lineStart {
+				// blank line at top of new logical line: ignore
+				continue
+			}
+			it.lineStart = true
+			return tok, nil
+		}
+
+		// First non-NEWLINE token on a line: compare its column against the
+		// indent stack and emit INDENT or DEDENT(s) accordingly.
+		if it.lineStart && it.bracket == 0 {
+			it.lineStart = false
+			col := tok.Pos.Col
+			top := it.indents[len(it.indents)-1]
+			if col > top {
+				it.indents = append(it.indents, col)
+				it.queue(Token{Kind: INDENT, Pos: tok.Pos, End: tok.Pos})
+			} else if col < top {
+				for col < it.indents[len(it.indents)-1] {
+					it.indents = it.indents[:len(it.indents)-1]
+					it.queue(Token{Kind: DEDENT, Pos: tok.Pos, End: tok.Pos})
+				}
+				if col != it.indents[len(it.indents)-1] {
+					return Token{}, &Error{Pos: tok.Pos, Msg: "unindent does not match any outer indentation level"}
+				}
+			}
+			// queue the token after any indent dance
+			it.queue(tok)
+			return it.dequeue(), nil
+		}
+
+		return tok, nil
+	}
+}
+
+// queue appends a token to the pending queue.
+func (it *Indent) queue(t Token) { it.pending = append(it.pending, t) }
+
+// dequeue removes and returns the head of the pending queue.
+func (it *Indent) dequeue() Token {
+	t := it.pending[0]
+	it.pending = it.pending[1:]
+	return t
+}
+
+// flushAtEnd emits a final NEWLINE (if needed), all outstanding DEDENTs, then
+// ENDMARKER.
+func (it *Indent) flushAtEnd() (Token, error) {
+	pos := it.scan.Position()
+	if !it.lineStart {
+		it.queue(Token{Kind: NEWLINE, Value: "\n", Pos: pos, End: pos})
+		it.lineStart = true
+	}
+	for len(it.indents) > 1 {
+		it.indents = it.indents[:len(it.indents)-1]
+		it.queue(Token{Kind: DEDENT, Pos: pos, End: pos})
+	}
+	it.queue(Token{Kind: ENDMARKER, Pos: pos, End: pos})
+	it.emittedEnd = true
+	return it.dequeue(), nil
+}
+
+// All drains the iterator into a slice. Useful for tests and tooling.
+func (it *Indent) All() ([]Token, error) {
+	var out []Token
+	for {
+		t, err := it.Next()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+		if t.Kind == ENDMARKER {
+			return out, nil
+		}
+	}
+}
