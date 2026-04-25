@@ -97,6 +97,9 @@ func emitReturn(r *parser.ReturnStmt) StmtNode {
 	case 0:
 		return &Return{Pos: p}
 	case 1:
+		if r.TrailingComma {
+			return &Return{Pos: p, Value: &Tuple{Pos: p, Elts: []ExprNode{emitExpr(r.Values[0])}, Ctx: &Load{}}}
+		}
 		return &Return{Pos: p, Value: emitExpr(r.Values[0])}
 	default:
 		elts := make([]ExprNode, 0, len(r.Values))
@@ -288,7 +291,7 @@ func emitCompound(c *parser.CompoundStmt) StmtNode {
 		return &For{
 			Pos:    pos(f.Pos),
 			Target: emitTargetList(f.Target, &Store{}),
-			Iter:   emitExpr(f.Iter),
+			Iter:   emitForIter(f),
 			Body:   emitBlock(f.Body),
 			Orelse: emitElse(f.Else),
 		}
@@ -448,7 +451,7 @@ func emitAsync(a *parser.AsyncStmt) StmtNode {
 		return &AsyncFor{
 			Pos:    pos(a.Pos),
 			Target: emitTargetList(f.Target, &Store{}),
-			Iter:   emitExpr(f.Iter),
+			Iter:   emitForIter(f),
 			Body:   emitBlock(f.Body),
 			Orelse: emitElse(f.Else),
 		}
@@ -478,6 +481,21 @@ func emitAsyncFuncDef(f *parser.FuncDef) *AsyncFunctionDef {
 		Body:    emitBlock(f.Body),
 		Returns: emitExprOpt(f.Returns),
 	}
+}
+
+// emitForIter folds the bare-tuple iterator form (`for x in a, b:`) into
+// a Tuple. CPython's grammar treats `for ... in star_expressions:` so the
+// iterator is implicitly comma-separated.
+func emitForIter(f *parser.ForStmt) ExprNode {
+	if len(f.IterRest) == 0 {
+		return emitExpr(f.Iter)
+	}
+	elts := make([]ExprNode, 0, 1+len(f.IterRest))
+	elts = append(elts, emitExpr(f.Iter))
+	for _, e := range f.IterRest {
+		elts = append(elts, emitExpr(e))
+	}
+	return &Tuple{Pos: pos(f.Pos), Elts: elts, Ctx: &Load{}}
 }
 
 func emitBlock(b *parser.Block) []StmtNode {
@@ -897,22 +915,22 @@ func emitSubscript(s *parser.Subscript) ExprNode {
 	if s.Star {
 		return &Starred{Pos: pos(s.Pos), Value: emitExpr(s.Lower), Ctx: &Load{}}
 	}
-	expr := s.Plain
-	if expr == nil {
-		expr = s.Lower
+	tail := s.Slice
+	if tail == nil {
+		tail = s.BareSlice
 	}
-	if s.Slice == nil {
-		return emitExpr(expr)
+	if tail == nil {
+		return emitExpr(s.Plain)
 	}
 	out := &Slice{Pos: pos(s.Pos)}
-	if expr != nil {
-		out.Lower = emitExpr(expr)
+	if s.Plain != nil {
+		out.Lower = emitExpr(s.Plain)
 	}
-	if s.Slice.Upper != nil {
-		out.Upper = emitExpr(s.Slice.Upper)
+	if tail.Upper != nil {
+		out.Upper = emitExpr(tail.Upper)
 	}
-	if s.Slice.Step != nil && s.Slice.Step.Value != nil {
-		out.Step = emitExpr(s.Slice.Step.Value)
+	if tail.Step != nil && tail.Step.Value != nil {
+		out.Step = emitExpr(tail.Step.Value)
 	}
 	return out
 }
@@ -1088,7 +1106,16 @@ func emitYield(y *parser.YieldExpr) ExprNode {
 		return &YieldFrom{Pos: p, Value: emitExpr(y.From)}
 	}
 	if y.Val != nil {
-		return &Yield{Pos: p, Value: emitExpr(y.Val)}
+		val := emitExpr(y.Val)
+		if len(y.ValRest) > 0 {
+			elts := make([]ExprNode, 0, 1+len(y.ValRest))
+			elts = append(elts, val)
+			for _, e := range y.ValRest {
+				elts = append(elts, emitExpr(e))
+			}
+			val = &Tuple{Pos: p, Elts: elts, Ctx: &Load{}}
+		}
+		return &Yield{Pos: p, Value: val}
 	}
 	return &Yield{Pos: p}
 }

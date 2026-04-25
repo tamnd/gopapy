@@ -215,12 +215,19 @@ type SubscriptList struct {
 	Items []*Subscript `parser:"@@ ( COMMA @@ )* COMMA?"`
 }
 
+// Subscript has three shapes, kept as explicit alternatives so participle
+// never sees a branch that can match zero tokens (which trips its no-progress
+// guard):
+//   `*expr`                  Star + Lower
+//   `expr` / `expr:...`      Plain (+ optional Slice)
+//   `:upper?:step?`          BareSlice (Plain absent — pure colon slice)
 type Subscript struct {
-	Pos   plexer.Position
-	Star  bool        `parser:"( @STAR"`
-	Lower *Expression `parser:"  @@"`
-	Plain *Expression `parser:"| @@?"`
-	Slice *SliceTail  `parser:"  @@? )!"`
+	Pos       plexer.Position
+	Star      bool        `parser:"( @STAR"`
+	Lower     *Expression `parser:"  @@"`
+	Plain     *Expression `parser:"| @@"`
+	Slice     *SliceTail  `parser:"  @@?"`
+	BareSlice *SliceTail  `parser:"| @@ )"`
 }
 
 // SliceTail is `: upper? (: step?)?` — only present if the subscript actually
@@ -324,8 +331,13 @@ type ParenLit struct {
 }
 
 // YieldExpr = `yield` [`from` expression | star_expressions]
+//
+// ValRest captures the bare-tuple form (`yield a, b`). The emitter folds
+// Val + ValRest into a single Tuple expression, matching CPython's
+// `yield_stmt: 'yield' [star_expressions]` shape.
 type YieldExpr struct {
-	Pos  plexer.Position
-	From *Expression `parser:"'yield' ( 'from' @@"`
-	Val  *Expression `parser:"  | @@ )?"`
+	Pos     plexer.Position
+	From    *Expression   `parser:"'yield' ( 'from' @@"`
+	Val     *Expression   `parser:"  | @@"`
+	ValRest []*Expression `parser:"    ( COMMA @@ )* COMMA? )?"`
 }
