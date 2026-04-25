@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+
+  oracle:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Build CLI
+        run: go build -o gopapy ./cmd/gopapy
+      - name: Run oracle diff
+        run: |
+          if [ -x tests/run.sh ]; then
+            ./tests/run.sh
+          else
+            echo "tests/run.sh not yet present, skipping"
+          fi

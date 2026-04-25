@@ -16,7 +16,30 @@ later". Output node shape is generated from
 so it cannot drift from upstream.
 
 This is the bootstrap branch. Track scope and progress in
-[`docs/GRAMMAR.md`](docs/GRAMMAR.md).
+[`docs/GRAMMAR.md`](docs/GRAMMAR.md). For a tour of the pipeline see
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Quick start
+
+```sh
+go build ./cmd/gopapy
+echo '1 + 2' | tee /tmp/x.py
+./gopapy dump /tmp/x.py
+# Module(body=[Expr(value=BinOp(left=Constant(value=1), op=Add(), right=Constant(value=2)))])
+```
+
+`gopapy check DIR` walks every `.py` under `DIR` and reports a pass/fail
+summary, which is convenient for pointing the parser at a corpus.
+
+## Tests
+
+```sh
+go test ./...        # unit tests across lex, parser, ast
+tests/run.sh         # cross-validate against CPython's ast.dump
+```
+
+`tests/run.sh` requires `python3` on PATH; it shells out to
+`internal/oracle/oracle.py` for the reference output.
 
 ## License
 
