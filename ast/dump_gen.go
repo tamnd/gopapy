@@ -8,9 +8,10 @@ package ast
 // scalar fields print their Go value; node fields recurse; seq fields render
 // as Python lists.
 type FieldInfo struct {
-	Name   string // ASDL/Python field name (e.g. "decorator_list")
-	GoName string // Go field name           (e.g. "DecoratorList")
-	Kind   FieldKind
+	Name     string // ASDL/Python field name (e.g. "decorator_list")
+	GoName   string // Go field name           (e.g. "DecoratorList")
+	Kind     FieldKind
+	Optional bool // ASDL ? marker; sequence fields are implicitly optional.
 }
 
 type FieldKind uint8
@@ -34,8 +35,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Alias": {
 		PyName: "alias",
 		Fields: []FieldInfo{
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
-			{Name: "asname", GoName: "Asname", Kind: FieldScalar},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: false},
+			{Name: "asname", GoName: "Asname", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -47,9 +48,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Arg": {
 		PyName: "arg",
 		Fields: []FieldInfo{
-			{Name: "arg", GoName: "Arg", Kind: FieldScalar},
-			{Name: "annotation", GoName: "Annotation", Kind: FieldNode},
-			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar},
+			{Name: "arg", GoName: "Arg", Kind: FieldScalar, Optional: false},
+			{Name: "annotation", GoName: "Annotation", Kind: FieldNode, Optional: true},
+			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -61,13 +62,13 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Arguments": {
 		PyName: "arguments",
 		Fields: []FieldInfo{
-			{Name: "posonlyargs", GoName: "Posonlyargs", Kind: FieldSeq},
-			{Name: "args", GoName: "Args", Kind: FieldSeq},
-			{Name: "vararg", GoName: "Vararg", Kind: FieldNode},
-			{Name: "kwonlyargs", GoName: "Kwonlyargs", Kind: FieldSeq},
-			{Name: "kw_defaults", GoName: "KwDefaults", Kind: FieldOptSeq},
-			{Name: "kwarg", GoName: "Kwarg", Kind: FieldNode},
-			{Name: "defaults", GoName: "Defaults", Kind: FieldSeq},
+			{Name: "posonlyargs", GoName: "Posonlyargs", Kind: FieldSeq, Optional: true},
+			{Name: "args", GoName: "Args", Kind: FieldSeq, Optional: true},
+			{Name: "vararg", GoName: "Vararg", Kind: FieldNode, Optional: true},
+			{Name: "kwonlyargs", GoName: "Kwonlyargs", Kind: FieldSeq, Optional: true},
+			{Name: "kw_defaults", GoName: "KwDefaults", Kind: FieldOptSeq, Optional: true},
+			{Name: "kwarg", GoName: "Kwarg", Kind: FieldNode, Optional: true},
+			{Name: "defaults", GoName: "Defaults", Kind: FieldSeq, Optional: true},
 		},
 	},
 	"And": {
@@ -109,18 +110,18 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Comprehension": {
 		PyName: "comprehension",
 		Fields: []FieldInfo{
-			{Name: "target", GoName: "Target", Kind: FieldNode},
-			{Name: "iter", GoName: "Iter", Kind: FieldNode},
-			{Name: "ifs", GoName: "Ifs", Kind: FieldSeq},
-			{Name: "is_async", GoName: "IsAsync", Kind: FieldScalar},
+			{Name: "target", GoName: "Target", Kind: FieldNode, Optional: false},
+			{Name: "iter", GoName: "Iter", Kind: FieldNode, Optional: false},
+			{Name: "ifs", GoName: "Ifs", Kind: FieldSeq, Optional: true},
+			{Name: "is_async", GoName: "IsAsync", Kind: FieldScalar, Optional: false},
 		},
 	},
 	"ExceptHandler": {
 		PyName: "ExceptHandler",
 		Fields: []FieldInfo{
-			{Name: "type", GoName: "Type", Kind: FieldNode},
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
+			{Name: "type", GoName: "Type", Kind: FieldNode, Optional: true},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: true},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -132,8 +133,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"BoolOp": {
 		PyName: "BoolOp",
 		Fields: []FieldInfo{
-			{Name: "op", GoName: "Op", Kind: FieldNode},
-			{Name: "values", GoName: "Values", Kind: FieldSeq},
+			{Name: "op", GoName: "Op", Kind: FieldNode, Optional: false},
+			{Name: "values", GoName: "Values", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -145,8 +146,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"NamedExpr": {
 		PyName: "NamedExpr",
 		Fields: []FieldInfo{
-			{Name: "target", GoName: "Target", Kind: FieldNode},
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "target", GoName: "Target", Kind: FieldNode, Optional: false},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -158,9 +159,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"BinOp": {
 		PyName: "BinOp",
 		Fields: []FieldInfo{
-			{Name: "left", GoName: "Left", Kind: FieldNode},
-			{Name: "op", GoName: "Op", Kind: FieldNode},
-			{Name: "right", GoName: "Right", Kind: FieldNode},
+			{Name: "left", GoName: "Left", Kind: FieldNode, Optional: false},
+			{Name: "op", GoName: "Op", Kind: FieldNode, Optional: false},
+			{Name: "right", GoName: "Right", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -172,8 +173,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"UnaryOp": {
 		PyName: "UnaryOp",
 		Fields: []FieldInfo{
-			{Name: "op", GoName: "Op", Kind: FieldNode},
-			{Name: "operand", GoName: "Operand", Kind: FieldNode},
+			{Name: "op", GoName: "Op", Kind: FieldNode, Optional: false},
+			{Name: "operand", GoName: "Operand", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -185,8 +186,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Lambda": {
 		PyName: "Lambda",
 		Fields: []FieldInfo{
-			{Name: "args", GoName: "Args", Kind: FieldNode},
-			{Name: "body", GoName: "Body", Kind: FieldNode},
+			{Name: "args", GoName: "Args", Kind: FieldNode, Optional: false},
+			{Name: "body", GoName: "Body", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -198,9 +199,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"IfExp": {
 		PyName: "IfExp",
 		Fields: []FieldInfo{
-			{Name: "test", GoName: "Test", Kind: FieldNode},
-			{Name: "body", GoName: "Body", Kind: FieldNode},
-			{Name: "orelse", GoName: "Orelse", Kind: FieldNode},
+			{Name: "test", GoName: "Test", Kind: FieldNode, Optional: false},
+			{Name: "body", GoName: "Body", Kind: FieldNode, Optional: false},
+			{Name: "orelse", GoName: "Orelse", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -212,8 +213,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Dict": {
 		PyName: "Dict",
 		Fields: []FieldInfo{
-			{Name: "keys", GoName: "Keys", Kind: FieldOptSeq},
-			{Name: "values", GoName: "Values", Kind: FieldSeq},
+			{Name: "keys", GoName: "Keys", Kind: FieldOptSeq, Optional: true},
+			{Name: "values", GoName: "Values", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -225,7 +226,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Set": {
 		PyName: "Set",
 		Fields: []FieldInfo{
-			{Name: "elts", GoName: "Elts", Kind: FieldSeq},
+			{Name: "elts", GoName: "Elts", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -237,8 +238,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"ListComp": {
 		PyName: "ListComp",
 		Fields: []FieldInfo{
-			{Name: "elt", GoName: "Elt", Kind: FieldNode},
-			{Name: "generators", GoName: "Generators", Kind: FieldSeq},
+			{Name: "elt", GoName: "Elt", Kind: FieldNode, Optional: false},
+			{Name: "generators", GoName: "Generators", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -250,8 +251,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"SetComp": {
 		PyName: "SetComp",
 		Fields: []FieldInfo{
-			{Name: "elt", GoName: "Elt", Kind: FieldNode},
-			{Name: "generators", GoName: "Generators", Kind: FieldSeq},
+			{Name: "elt", GoName: "Elt", Kind: FieldNode, Optional: false},
+			{Name: "generators", GoName: "Generators", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -263,9 +264,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"DictComp": {
 		PyName: "DictComp",
 		Fields: []FieldInfo{
-			{Name: "key", GoName: "Key", Kind: FieldNode},
-			{Name: "value", GoName: "Value", Kind: FieldNode},
-			{Name: "generators", GoName: "Generators", Kind: FieldSeq},
+			{Name: "key", GoName: "Key", Kind: FieldNode, Optional: false},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
+			{Name: "generators", GoName: "Generators", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -277,8 +278,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"GeneratorExp": {
 		PyName: "GeneratorExp",
 		Fields: []FieldInfo{
-			{Name: "elt", GoName: "Elt", Kind: FieldNode},
-			{Name: "generators", GoName: "Generators", Kind: FieldSeq},
+			{Name: "elt", GoName: "Elt", Kind: FieldNode, Optional: false},
+			{Name: "generators", GoName: "Generators", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -290,7 +291,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Await": {
 		PyName: "Await",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -302,7 +303,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Yield": {
 		PyName: "Yield",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -314,7 +315,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"YieldFrom": {
 		PyName: "YieldFrom",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -326,9 +327,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Compare": {
 		PyName: "Compare",
 		Fields: []FieldInfo{
-			{Name: "left", GoName: "Left", Kind: FieldNode},
-			{Name: "ops", GoName: "Ops", Kind: FieldSeq},
-			{Name: "comparators", GoName: "Comparators", Kind: FieldSeq},
+			{Name: "left", GoName: "Left", Kind: FieldNode, Optional: false},
+			{Name: "ops", GoName: "Ops", Kind: FieldSeq, Optional: true},
+			{Name: "comparators", GoName: "Comparators", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -340,9 +341,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Call": {
 		PyName: "Call",
 		Fields: []FieldInfo{
-			{Name: "func", GoName: "Func", Kind: FieldNode},
-			{Name: "args", GoName: "Args", Kind: FieldSeq},
-			{Name: "keywords", GoName: "Keywords", Kind: FieldSeq},
+			{Name: "func", GoName: "Func", Kind: FieldNode, Optional: false},
+			{Name: "args", GoName: "Args", Kind: FieldSeq, Optional: true},
+			{Name: "keywords", GoName: "Keywords", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -354,9 +355,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"FormattedValue": {
 		PyName: "FormattedValue",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
-			{Name: "conversion", GoName: "Conversion", Kind: FieldScalar},
-			{Name: "format_spec", GoName: "FormatSpec", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
+			{Name: "conversion", GoName: "Conversion", Kind: FieldScalar, Optional: false},
+			{Name: "format_spec", GoName: "FormatSpec", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -368,10 +369,10 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Interpolation": {
 		PyName: "Interpolation",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
-			{Name: "str", GoName: "Str", Kind: FieldScalar},
-			{Name: "conversion", GoName: "Conversion", Kind: FieldScalar},
-			{Name: "format_spec", GoName: "FormatSpec", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
+			{Name: "str", GoName: "Str", Kind: FieldScalar, Optional: false},
+			{Name: "conversion", GoName: "Conversion", Kind: FieldScalar, Optional: false},
+			{Name: "format_spec", GoName: "FormatSpec", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -383,7 +384,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"JoinedStr": {
 		PyName: "JoinedStr",
 		Fields: []FieldInfo{
-			{Name: "values", GoName: "Values", Kind: FieldSeq},
+			{Name: "values", GoName: "Values", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -395,7 +396,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"TemplateStr": {
 		PyName: "TemplateStr",
 		Fields: []FieldInfo{
-			{Name: "values", GoName: "Values", Kind: FieldSeq},
+			{Name: "values", GoName: "Values", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -407,8 +408,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Constant": {
 		PyName: "Constant",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldScalar},
-			{Name: "kind", GoName: "Kind", Kind: FieldScalar},
+			{Name: "value", GoName: "Value", Kind: FieldScalar, Optional: false},
+			{Name: "kind", GoName: "Kind", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -420,9 +421,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Attribute": {
 		PyName: "Attribute",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
-			{Name: "attr", GoName: "Attr", Kind: FieldScalar},
-			{Name: "ctx", GoName: "Ctx", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
+			{Name: "attr", GoName: "Attr", Kind: FieldScalar, Optional: false},
+			{Name: "ctx", GoName: "Ctx", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -434,9 +435,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Subscript": {
 		PyName: "Subscript",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
-			{Name: "slice", GoName: "Slice", Kind: FieldNode},
-			{Name: "ctx", GoName: "Ctx", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
+			{Name: "slice", GoName: "Slice", Kind: FieldNode, Optional: false},
+			{Name: "ctx", GoName: "Ctx", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -448,8 +449,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Starred": {
 		PyName: "Starred",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
-			{Name: "ctx", GoName: "Ctx", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
+			{Name: "ctx", GoName: "Ctx", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -461,8 +462,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Name": {
 		PyName: "Name",
 		Fields: []FieldInfo{
-			{Name: "id", GoName: "Id", Kind: FieldScalar},
-			{Name: "ctx", GoName: "Ctx", Kind: FieldNode},
+			{Name: "id", GoName: "Id", Kind: FieldScalar, Optional: false},
+			{Name: "ctx", GoName: "Ctx", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -474,8 +475,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"List": {
 		PyName: "List",
 		Fields: []FieldInfo{
-			{Name: "elts", GoName: "Elts", Kind: FieldSeq},
-			{Name: "ctx", GoName: "Ctx", Kind: FieldNode},
+			{Name: "elts", GoName: "Elts", Kind: FieldSeq, Optional: true},
+			{Name: "ctx", GoName: "Ctx", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -487,8 +488,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Tuple": {
 		PyName: "Tuple",
 		Fields: []FieldInfo{
-			{Name: "elts", GoName: "Elts", Kind: FieldSeq},
-			{Name: "ctx", GoName: "Ctx", Kind: FieldNode},
+			{Name: "elts", GoName: "Elts", Kind: FieldSeq, Optional: true},
+			{Name: "ctx", GoName: "Ctx", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -500,9 +501,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Slice": {
 		PyName: "Slice",
 		Fields: []FieldInfo{
-			{Name: "lower", GoName: "Lower", Kind: FieldNode},
-			{Name: "upper", GoName: "Upper", Kind: FieldNode},
-			{Name: "step", GoName: "Step", Kind: FieldNode},
+			{Name: "lower", GoName: "Lower", Kind: FieldNode, Optional: true},
+			{Name: "upper", GoName: "Upper", Kind: FieldNode, Optional: true},
+			{Name: "step", GoName: "Step", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -523,8 +524,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Keyword": {
 		PyName: "keyword",
 		Fields: []FieldInfo{
-			{Name: "arg", GoName: "Arg", Kind: FieldScalar},
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "arg", GoName: "Arg", Kind: FieldScalar, Optional: true},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -536,35 +537,35 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"MatchCase": {
 		PyName: "match_case",
 		Fields: []FieldInfo{
-			{Name: "pattern", GoName: "Pattern", Kind: FieldNode},
-			{Name: "guard", GoName: "Guard", Kind: FieldNode},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
+			{Name: "pattern", GoName: "Pattern", Kind: FieldNode, Optional: false},
+			{Name: "guard", GoName: "Guard", Kind: FieldNode, Optional: true},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
 		},
 	},
 	"Module": {
 		PyName: "Module",
 		Fields: []FieldInfo{
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "type_ignores", GoName: "TypeIgnores", Kind: FieldSeq},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "type_ignores", GoName: "TypeIgnores", Kind: FieldSeq, Optional: true},
 		},
 	},
 	"Interactive": {
 		PyName: "Interactive",
 		Fields: []FieldInfo{
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
 		},
 	},
 	"Expression": {
 		PyName: "Expression",
 		Fields: []FieldInfo{
-			{Name: "body", GoName: "Body", Kind: FieldNode},
+			{Name: "body", GoName: "Body", Kind: FieldNode, Optional: false},
 		},
 	},
 	"FunctionType": {
 		PyName: "FunctionType",
 		Fields: []FieldInfo{
-			{Name: "argtypes", GoName: "Argtypes", Kind: FieldSeq},
-			{Name: "returns", GoName: "Returns", Kind: FieldNode},
+			{Name: "argtypes", GoName: "Argtypes", Kind: FieldSeq, Optional: true},
+			{Name: "returns", GoName: "Returns", Kind: FieldNode, Optional: false},
 		},
 	},
 	"Add": {
@@ -609,7 +610,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"MatchValue": {
 		PyName: "MatchValue",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -621,7 +622,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"MatchSingleton": {
 		PyName: "MatchSingleton",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldScalar},
+			{Name: "value", GoName: "Value", Kind: FieldScalar, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -633,7 +634,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"MatchSequence": {
 		PyName: "MatchSequence",
 		Fields: []FieldInfo{
-			{Name: "patterns", GoName: "Patterns", Kind: FieldSeq},
+			{Name: "patterns", GoName: "Patterns", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -645,9 +646,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"MatchMapping": {
 		PyName: "MatchMapping",
 		Fields: []FieldInfo{
-			{Name: "keys", GoName: "Keys", Kind: FieldSeq},
-			{Name: "patterns", GoName: "Patterns", Kind: FieldSeq},
-			{Name: "rest", GoName: "Rest", Kind: FieldScalar},
+			{Name: "keys", GoName: "Keys", Kind: FieldSeq, Optional: true},
+			{Name: "patterns", GoName: "Patterns", Kind: FieldSeq, Optional: true},
+			{Name: "rest", GoName: "Rest", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -659,10 +660,10 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"MatchClass": {
 		PyName: "MatchClass",
 		Fields: []FieldInfo{
-			{Name: "cls", GoName: "Cls", Kind: FieldNode},
-			{Name: "patterns", GoName: "Patterns", Kind: FieldSeq},
-			{Name: "kwd_attrs", GoName: "KwdAttrs", Kind: FieldSeq},
-			{Name: "kwd_patterns", GoName: "KwdPatterns", Kind: FieldSeq},
+			{Name: "cls", GoName: "Cls", Kind: FieldNode, Optional: false},
+			{Name: "patterns", GoName: "Patterns", Kind: FieldSeq, Optional: true},
+			{Name: "kwd_attrs", GoName: "KwdAttrs", Kind: FieldSeq, Optional: true},
+			{Name: "kwd_patterns", GoName: "KwdPatterns", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -674,7 +675,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"MatchStar": {
 		PyName: "MatchStar",
 		Fields: []FieldInfo{
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -686,8 +687,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"MatchAs": {
 		PyName: "MatchAs",
 		Fields: []FieldInfo{
-			{Name: "pattern", GoName: "Pattern", Kind: FieldNode},
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
+			{Name: "pattern", GoName: "Pattern", Kind: FieldNode, Optional: true},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -699,7 +700,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"MatchOr": {
 		PyName: "MatchOr",
 		Fields: []FieldInfo{
-			{Name: "patterns", GoName: "Patterns", Kind: FieldSeq},
+			{Name: "patterns", GoName: "Patterns", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -711,13 +712,13 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"FunctionDef": {
 		PyName: "FunctionDef",
 		Fields: []FieldInfo{
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
-			{Name: "args", GoName: "Args", Kind: FieldNode},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "decorator_list", GoName: "DecoratorList", Kind: FieldSeq},
-			{Name: "returns", GoName: "Returns", Kind: FieldNode},
-			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar},
-			{Name: "type_params", GoName: "TypeParams", Kind: FieldSeq},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: false},
+			{Name: "args", GoName: "Args", Kind: FieldNode, Optional: false},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "decorator_list", GoName: "DecoratorList", Kind: FieldSeq, Optional: true},
+			{Name: "returns", GoName: "Returns", Kind: FieldNode, Optional: true},
+			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar, Optional: true},
+			{Name: "type_params", GoName: "TypeParams", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -729,13 +730,13 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"AsyncFunctionDef": {
 		PyName: "AsyncFunctionDef",
 		Fields: []FieldInfo{
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
-			{Name: "args", GoName: "Args", Kind: FieldNode},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "decorator_list", GoName: "DecoratorList", Kind: FieldSeq},
-			{Name: "returns", GoName: "Returns", Kind: FieldNode},
-			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar},
-			{Name: "type_params", GoName: "TypeParams", Kind: FieldSeq},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: false},
+			{Name: "args", GoName: "Args", Kind: FieldNode, Optional: false},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "decorator_list", GoName: "DecoratorList", Kind: FieldSeq, Optional: true},
+			{Name: "returns", GoName: "Returns", Kind: FieldNode, Optional: true},
+			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar, Optional: true},
+			{Name: "type_params", GoName: "TypeParams", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -747,12 +748,12 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"ClassDef": {
 		PyName: "ClassDef",
 		Fields: []FieldInfo{
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
-			{Name: "bases", GoName: "Bases", Kind: FieldSeq},
-			{Name: "keywords", GoName: "Keywords", Kind: FieldSeq},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "decorator_list", GoName: "DecoratorList", Kind: FieldSeq},
-			{Name: "type_params", GoName: "TypeParams", Kind: FieldSeq},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: false},
+			{Name: "bases", GoName: "Bases", Kind: FieldSeq, Optional: true},
+			{Name: "keywords", GoName: "Keywords", Kind: FieldSeq, Optional: true},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "decorator_list", GoName: "DecoratorList", Kind: FieldSeq, Optional: true},
+			{Name: "type_params", GoName: "TypeParams", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -764,7 +765,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Return": {
 		PyName: "Return",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -776,7 +777,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Delete": {
 		PyName: "Delete",
 		Fields: []FieldInfo{
-			{Name: "targets", GoName: "Targets", Kind: FieldSeq},
+			{Name: "targets", GoName: "Targets", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -788,9 +789,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Assign": {
 		PyName: "Assign",
 		Fields: []FieldInfo{
-			{Name: "targets", GoName: "Targets", Kind: FieldSeq},
-			{Name: "value", GoName: "Value", Kind: FieldNode},
-			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar},
+			{Name: "targets", GoName: "Targets", Kind: FieldSeq, Optional: true},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
+			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -802,9 +803,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"TypeAlias": {
 		PyName: "TypeAlias",
 		Fields: []FieldInfo{
-			{Name: "name", GoName: "Name", Kind: FieldNode},
-			{Name: "type_params", GoName: "TypeParams", Kind: FieldSeq},
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "name", GoName: "Name", Kind: FieldNode, Optional: false},
+			{Name: "type_params", GoName: "TypeParams", Kind: FieldSeq, Optional: true},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -816,9 +817,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"AugAssign": {
 		PyName: "AugAssign",
 		Fields: []FieldInfo{
-			{Name: "target", GoName: "Target", Kind: FieldNode},
-			{Name: "op", GoName: "Op", Kind: FieldNode},
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "target", GoName: "Target", Kind: FieldNode, Optional: false},
+			{Name: "op", GoName: "Op", Kind: FieldNode, Optional: false},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -830,10 +831,10 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"AnnAssign": {
 		PyName: "AnnAssign",
 		Fields: []FieldInfo{
-			{Name: "target", GoName: "Target", Kind: FieldNode},
-			{Name: "annotation", GoName: "Annotation", Kind: FieldNode},
-			{Name: "value", GoName: "Value", Kind: FieldNode},
-			{Name: "simple", GoName: "Simple", Kind: FieldScalar},
+			{Name: "target", GoName: "Target", Kind: FieldNode, Optional: false},
+			{Name: "annotation", GoName: "Annotation", Kind: FieldNode, Optional: false},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: true},
+			{Name: "simple", GoName: "Simple", Kind: FieldScalar, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -845,11 +846,11 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"For": {
 		PyName: "For",
 		Fields: []FieldInfo{
-			{Name: "target", GoName: "Target", Kind: FieldNode},
-			{Name: "iter", GoName: "Iter", Kind: FieldNode},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq},
-			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar},
+			{Name: "target", GoName: "Target", Kind: FieldNode, Optional: false},
+			{Name: "iter", GoName: "Iter", Kind: FieldNode, Optional: false},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq, Optional: true},
+			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -861,11 +862,11 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"AsyncFor": {
 		PyName: "AsyncFor",
 		Fields: []FieldInfo{
-			{Name: "target", GoName: "Target", Kind: FieldNode},
-			{Name: "iter", GoName: "Iter", Kind: FieldNode},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq},
-			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar},
+			{Name: "target", GoName: "Target", Kind: FieldNode, Optional: false},
+			{Name: "iter", GoName: "Iter", Kind: FieldNode, Optional: false},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq, Optional: true},
+			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -877,9 +878,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"While": {
 		PyName: "While",
 		Fields: []FieldInfo{
-			{Name: "test", GoName: "Test", Kind: FieldNode},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq},
+			{Name: "test", GoName: "Test", Kind: FieldNode, Optional: false},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -891,9 +892,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"If": {
 		PyName: "If",
 		Fields: []FieldInfo{
-			{Name: "test", GoName: "Test", Kind: FieldNode},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq},
+			{Name: "test", GoName: "Test", Kind: FieldNode, Optional: false},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -905,9 +906,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"With": {
 		PyName: "With",
 		Fields: []FieldInfo{
-			{Name: "items", GoName: "Items", Kind: FieldSeq},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar},
+			{Name: "items", GoName: "Items", Kind: FieldSeq, Optional: true},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -919,9 +920,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"AsyncWith": {
 		PyName: "AsyncWith",
 		Fields: []FieldInfo{
-			{Name: "items", GoName: "Items", Kind: FieldSeq},
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar},
+			{Name: "items", GoName: "Items", Kind: FieldSeq, Optional: true},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "type_comment", GoName: "TypeComment", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -933,8 +934,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Match": {
 		PyName: "Match",
 		Fields: []FieldInfo{
-			{Name: "subject", GoName: "Subject", Kind: FieldNode},
-			{Name: "cases", GoName: "Cases", Kind: FieldSeq},
+			{Name: "subject", GoName: "Subject", Kind: FieldNode, Optional: false},
+			{Name: "cases", GoName: "Cases", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -946,8 +947,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Raise": {
 		PyName: "Raise",
 		Fields: []FieldInfo{
-			{Name: "exc", GoName: "Exc", Kind: FieldNode},
-			{Name: "cause", GoName: "Cause", Kind: FieldNode},
+			{Name: "exc", GoName: "Exc", Kind: FieldNode, Optional: true},
+			{Name: "cause", GoName: "Cause", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -959,10 +960,10 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Try": {
 		PyName: "Try",
 		Fields: []FieldInfo{
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "handlers", GoName: "Handlers", Kind: FieldSeq},
-			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq},
-			{Name: "finalbody", GoName: "Finalbody", Kind: FieldSeq},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "handlers", GoName: "Handlers", Kind: FieldSeq, Optional: true},
+			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq, Optional: true},
+			{Name: "finalbody", GoName: "Finalbody", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -974,10 +975,10 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"TryStar": {
 		PyName: "TryStar",
 		Fields: []FieldInfo{
-			{Name: "body", GoName: "Body", Kind: FieldSeq},
-			{Name: "handlers", GoName: "Handlers", Kind: FieldSeq},
-			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq},
-			{Name: "finalbody", GoName: "Finalbody", Kind: FieldSeq},
+			{Name: "body", GoName: "Body", Kind: FieldSeq, Optional: true},
+			{Name: "handlers", GoName: "Handlers", Kind: FieldSeq, Optional: true},
+			{Name: "orelse", GoName: "Orelse", Kind: FieldSeq, Optional: true},
+			{Name: "finalbody", GoName: "Finalbody", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -989,8 +990,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Assert": {
 		PyName: "Assert",
 		Fields: []FieldInfo{
-			{Name: "test", GoName: "Test", Kind: FieldNode},
-			{Name: "msg", GoName: "Msg", Kind: FieldNode},
+			{Name: "test", GoName: "Test", Kind: FieldNode, Optional: false},
+			{Name: "msg", GoName: "Msg", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -1002,7 +1003,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Import": {
 		PyName: "Import",
 		Fields: []FieldInfo{
-			{Name: "names", GoName: "Names", Kind: FieldSeq},
+			{Name: "names", GoName: "Names", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -1014,9 +1015,9 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"ImportFrom": {
 		PyName: "ImportFrom",
 		Fields: []FieldInfo{
-			{Name: "module", GoName: "Module", Kind: FieldScalar},
-			{Name: "names", GoName: "Names", Kind: FieldSeq},
-			{Name: "level", GoName: "Level", Kind: FieldScalar},
+			{Name: "module", GoName: "Module", Kind: FieldScalar, Optional: true},
+			{Name: "names", GoName: "Names", Kind: FieldSeq, Optional: true},
+			{Name: "level", GoName: "Level", Kind: FieldScalar, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -1028,7 +1029,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Global": {
 		PyName: "Global",
 		Fields: []FieldInfo{
-			{Name: "names", GoName: "Names", Kind: FieldSeq},
+			{Name: "names", GoName: "Names", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -1040,7 +1041,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Nonlocal": {
 		PyName: "Nonlocal",
 		Fields: []FieldInfo{
-			{Name: "names", GoName: "Names", Kind: FieldSeq},
+			{Name: "names", GoName: "Names", Kind: FieldSeq, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -1052,7 +1053,7 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Expr": {
 		PyName: "Expr",
 		Fields: []FieldInfo{
-			{Name: "value", GoName: "Value", Kind: FieldNode},
+			{Name: "value", GoName: "Value", Kind: FieldNode, Optional: false},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -1091,16 +1092,16 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"TypeIgnore": {
 		PyName: "TypeIgnore",
 		Fields: []FieldInfo{
-			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
-			{Name: "tag", GoName: "Tag", Kind: FieldScalar},
+			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar, Optional: false},
+			{Name: "tag", GoName: "Tag", Kind: FieldScalar, Optional: false},
 		},
 	},
 	"TypeVar": {
 		PyName: "TypeVar",
 		Fields: []FieldInfo{
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
-			{Name: "bound", GoName: "Bound", Kind: FieldNode},
-			{Name: "default_value", GoName: "DefaultValue", Kind: FieldNode},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: false},
+			{Name: "bound", GoName: "Bound", Kind: FieldNode, Optional: true},
+			{Name: "default_value", GoName: "DefaultValue", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -1112,8 +1113,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"ParamSpec": {
 		PyName: "ParamSpec",
 		Fields: []FieldInfo{
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
-			{Name: "default_value", GoName: "DefaultValue", Kind: FieldNode},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: false},
+			{Name: "default_value", GoName: "DefaultValue", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -1125,8 +1126,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"TypeVarTuple": {
 		PyName: "TypeVarTuple",
 		Fields: []FieldInfo{
-			{Name: "name", GoName: "Name", Kind: FieldScalar},
-			{Name: "default_value", GoName: "DefaultValue", Kind: FieldNode},
+			{Name: "name", GoName: "Name", Kind: FieldScalar, Optional: false},
+			{Name: "default_value", GoName: "DefaultValue", Kind: FieldNode, Optional: true},
 		},
 		Attributes: []FieldInfo{
 			{Name: "lineno", GoName: "Lineno", Kind: FieldScalar},
@@ -1150,8 +1151,8 @@ var nodeInfoTable = map[string]*NodeInfo{
 	"Withitem": {
 		PyName: "withitem",
 		Fields: []FieldInfo{
-			{Name: "context_expr", GoName: "ContextExpr", Kind: FieldNode},
-			{Name: "optional_vars", GoName: "OptionalVars", Kind: FieldNode},
+			{Name: "context_expr", GoName: "ContextExpr", Kind: FieldNode, Optional: false},
+			{Name: "optional_vars", GoName: "OptionalVars", Kind: FieldNode, Optional: true},
 		},
 	},
 }

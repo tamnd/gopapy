@@ -68,6 +68,9 @@ func dumpNode(b *strings.Builder, v reflect.Value) {
 		if !fv.IsValid() {
 			continue
 		}
+		if f.Optional && isEmptyField(fv, f.Kind) {
+			continue
+		}
 		if !first {
 			b.WriteString(", ")
 		}
@@ -121,7 +124,7 @@ func dumpScalar(b *strings.Builder, v reflect.Value) {
 			b.WriteString("None")
 			return
 		}
-		b.WriteString(strconv.Quote(s))
+		b.WriteString(pyRepr(s))
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		b.WriteString(strconv.FormatInt(v.Int(), 10))
 	case reflect.Float32, reflect.Float64:
@@ -158,10 +161,10 @@ func dumpConstant(b *strings.Builder, c ConstantValue) {
 		b.WriteString(strconv.FormatFloat(c.Imag, 'g', -1, 64))
 		b.WriteByte('j')
 	case ConstantStr:
-		b.WriteString(strconv.Quote(c.Str))
+		b.WriteString(pyRepr(c.Str))
 	case ConstantBytes:
 		b.WriteByte('b')
-		b.WriteString(strconv.Quote(string(c.Bytes)))
+		b.WriteString(pyRepr(string(c.Bytes)))
 	case ConstantEllipsis:
 		b.WriteString("Ellipsis")
 	default:
@@ -191,6 +194,68 @@ func dumpUnknown(b *strings.Builder, v reflect.Value) {
 		dumpNode(b, v.Field(i))
 	}
 	b.WriteByte(')')
+}
+
+// pyRepr renders a Go string the way Python's repr() does: single quotes
+// when possible, double quotes when the string contains a single quote but
+// no double quote, with the usual escapes inside.
+func pyRepr(s string) string {
+	hasSingle := strings.ContainsRune(s, '\'')
+	hasDouble := strings.ContainsRune(s, '"')
+	quote := byte('\'')
+	if hasSingle && !hasDouble {
+		quote = '"'
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte(quote)
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		case rune(quote):
+			b.WriteByte('\\')
+			b.WriteByte(quote)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\x%02x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte(quote)
+	return b.String()
+}
+
+// isEmptyField reports whether an optional field's value is the default
+// CPython's ast.dump skips: [] for sequences, None for everything else.
+func isEmptyField(v reflect.Value, kind FieldKind) bool {
+	switch kind {
+	case FieldSeq, FieldOptSeq:
+		return v.Kind() == reflect.Slice && v.Len() == 0
+	case FieldScalar:
+		// Optional scalars only appear as plain Go strings in the
+		// generated nodes (type_comment, kind, asname, ...). An empty
+		// string is how the emitter represents "absent".
+		if v.Kind() == reflect.String {
+			return v.Len() == 0
+		}
+		return false
+	default:
+		// Node fields: nil interface or nil pointer means absent.
+		switch v.Kind() {
+		case reflect.Interface, reflect.Ptr:
+			return v.IsNil()
+		}
+		return false
+	}
 }
 
 // isSumConstructor reports whether the given Go type name is a sum-type

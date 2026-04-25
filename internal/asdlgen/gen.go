@@ -356,9 +356,10 @@ func genDump(m *Module, idx *index, pkg string) string {
 // scalar fields print their Go value; node fields recurse; seq fields render
 // as Python lists.
 type FieldInfo struct {
-	Name   string // ASDL/Python field name (e.g. "decorator_list")
-	GoName string // Go field name           (e.g. "DecoratorList")
-	Kind   FieldKind
+	Name     string // ASDL/Python field name (e.g. "decorator_list")
+	GoName   string // Go field name           (e.g. "DecoratorList")
+	Kind     FieldKind
+	Optional bool // ASDL ? marker; sequence fields are implicitly optional.
 }
 
 type FieldKind uint8
@@ -406,8 +407,9 @@ func emitDumpEntry(b *strings.Builder, goName, pyName string, fields, attrs []*F
 	if len(fields) > 0 {
 		b.WriteString("\t\tFields: []FieldInfo{\n")
 		for _, f := range fields {
-			fmt.Fprintf(b, "\t\t\t{Name: %q, GoName: %q, Kind: %s},\n",
-				f.Name, goFieldName(f.Name), kindFor(f))
+			opt := f.Opt || f.Seq || f.OptSeq
+			fmt.Fprintf(b, "\t\t\t{Name: %q, GoName: %q, Kind: %s, Optional: %t},\n",
+				f.Name, goFieldName(f.Name), kindFor(f), opt)
 		}
 		b.WriteString("\t\t},\n")
 	}
