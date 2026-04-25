@@ -9,6 +9,60 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-04-26
+
+First release that promises backwards compatibility. Downstream callers
+(goipy, future linters and formatters) can pin to v0.1 and trust the
+public surface won't move under them every release. The single
+breaking change is the Go module path bump to `/v1`; everything else
+is documentation and a contract.
+
+### Changed
+
+- Module path moves from `github.com/tamnd/gopapy` to
+  `github.com/tamnd/gopapy/v1`. All internal imports were rewritten in
+  the same commit. Downstream replaces
+
+  ```go
+  import "github.com/tamnd/gopapy/parser"
+  import "github.com/tamnd/gopapy/ast"
+  import "github.com/tamnd/gopapy/lex"
+  ```
+
+  with
+
+  ```go
+  import "github.com/tamnd/gopapy/v1/parser"
+  import "github.com/tamnd/gopapy/v1/ast"
+  import "github.com/tamnd/gopapy/v1/lex"
+  ```
+
+  No source-level changes are required beyond the import path.
+
+### Added
+
+- Stability contract documented in README and per-package doc
+  comments. Three guarantees hold from v0.1.0 onward:
+  - AST node types in package `ast` are frozen. No renames, no field
+    removals, no field-type changes. New optional fields and new node
+    variants for upstream-CPython grammar growth land in patch
+    releases.
+  - Public parser entry points are stable: `parser.ParseFile`,
+    `parser.ParseString`, `parser.ParseExpression`,
+    `parser.ParseReader`, `ast.Dump`, `ast.Unparse`, `ast.FromFile`,
+    `lex.NewScanner`, `lex.NewIndent`. Signatures and behavior are
+    frozen.
+  - The `/v1` module path itself enforces the contract: future
+    breaking changes will move to `/v2`.
+- Doc comments on every entry point above so `go doc` renders a usable
+  summary without ambiguity.
+
+### Migration
+
+Downstream callers update import paths once (the Go ecosystem's
+`/vN` rule means the old path keeps working at v0.0.x; new code
+imports `/v1`). No API calls change.
+
 ## [0.0.9] - 2026-04-26
 
 `ast.Unparse`. CPython has `ast.unparse`; gopapy now ships the Go
@@ -474,7 +528,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/tamnd/gopapy/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/tamnd/gopapy/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/tamnd/gopapy/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/tamnd/gopapy/compare/v0.0.6...v0.0.7

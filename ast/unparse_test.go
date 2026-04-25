@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tamnd/gopapy/parser"
+	"github.com/tamnd/gopapy/v1/parser"
 )
 
 // roundTrip parses src, unparses, re-parses, and returns the two Dump

@@ -5,6 +5,9 @@
 // names, numbers, strings, and operators, plus the synthetic NEWLINE,
 // INDENT, DEDENT, and ENDMARKER tokens that Python's grammar references
 // directly.
+//
+// NewScanner and NewIndent are stable entry points from v0.1.0 onward
+// within the v1 module path.
 package lex
 
 import "fmt"

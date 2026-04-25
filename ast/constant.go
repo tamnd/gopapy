@@ -1,6 +1,15 @@
 // Package ast holds Python AST node types generated from CPython's
 // Parser/Python.asdl. The generator lives in internal/asdlgen.
 //
+// Node types and field names are frozen as part of the v0.1.0 contract:
+// existing nodes will not be renamed or have fields removed within the
+// v1 module path. New optional fields and new node variants may land in
+// patch releases as upstream Python grows.
+//
+// FromFile converts a parser.File into a canonical Module. Dump matches
+// CPython's ast.dump output. Unparse renders an AST back into Python
+// source.
+//
 //go:generate go run ../internal/asdlgen/cmd/gen-ast
 package ast
 
