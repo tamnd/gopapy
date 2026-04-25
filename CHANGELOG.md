@@ -9,6 +9,75 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-04-26
+
+A targeted performance pass. The first version of gopapy that lands
+benchmarks in the tree, profiles the hot paths, and ships the cuts
+that don't require restructuring the parser. The big remaining cost
+— participle's reflection-driven parser core — is documented and
+deferred; chasing it is a v0.2.x project.
+
+### Measured (Apple M4, `go test -bench=. -benchtime=3x ./lex ./parser ./symbols`)
+
+| Benchmark              | Before        | After         | Δ      |
+|------------------------|---------------|---------------|--------|
+| ScanFixtures           | 28.1 MB/s     | 37.8 MB/s     | +35%   |
+| IndentFixtures         | 22.0 MB/s     | 32.2 MB/s     | +46%   |
+| ParseFixtures          | 0.44 MB/s     | 0.61 MB/s     | +39%   |
+| BuildFixtures (symbols)| 80.5 MB/s     | 133.0 MB/s    | +65%   |
+
+Stdlib wall-time (`gopapy bench` over CPython 3.14 `Lib/`) goes from
+~24.5 s to ~22.7 s — most of the parser's cost is inside participle
+itself, which this version does not rewrite.
+
+### Added
+
+- `parser/bench_test.go`, `lex/bench_test.go`, `symbols/bench_test.go`
+  with `b.Loop()` benchmarks that use `b.SetBytes` so reports are in
+  MB/s and survive hardware moves.
+- New `gopapy bench DIR` CLI subcommand. Walks a directory, runs the
+  full `parse + emit` pipeline, and prints throughput numbers in a
+  grep-friendly format. Useful for one-shot measurements against a
+  corpus that isn't in the fixtures.
+- New `bench` CI job that runs the benchmarks on every PR and prints
+  the numbers in the log. Hard alloc-budget gating is deferred to a
+  later version — see notes/Spec/1100/1132 for why.
+
+### Fixed
+
+- `lex.Indent` queue was sliding the head with `pending = pending[1:]`
+  on every dequeue. The slide leaks the prefix and the next append
+  reallocates; on a 1800-file corpus the lex package allocated
+  6.8 GB / 7.6 GB total in `Indent.queue` alone. Replaced with an
+  index-based head pointer that resets the slice when the queue
+  empties, preserving the backing array. Heap traffic in `lex` drops
+  ~89%.
+- `parser.definition.Symbols()` rebuilt the token-name map on every
+  `ParseFile` call (participle calls it during per-parse setup).
+  Cached once at package init.
+
+### Added (parser front-end fast paths)
+
+- `parser.definition` now implements participle's `BytesDefinition`
+  and `StringDefinition` interfaces. Callers using `ParseBytes` or
+  `ParseString` skip a `bytes.NewReader` + `io.ReadAll` round-trip
+  that participle's default path imposes.
+
+### Deferred to a later version
+
+- Replacing the participle-based parser core. The pprof profile
+  attributes 78% of all parser allocations to participle's own
+  `parseContext.Branch` (lookahead snapshot), `parseContext.Defer`
+  (backtracking deferred actions), and `reflect.unsafe_New` (struct
+  creation). None of these can be cut without either a grammar
+  restructure that drops lookahead requirements or a hand-written
+  parser. Both are larger than v0.1.5's scope.
+- Hard alloc-budget gating in CI. The participle path's per-parse
+  allocation count varies enough across Go runtime versions that a
+  hard floor would produce false positives. The bench output in PR
+  logs is enough for reviewer-driven regression detection in the
+  meantime.
+
 ## [0.1.4] - 2026-04-26
 
 Adds a Python symbol table on top of the AST. Every binding site is
@@ -708,7 +777,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/tamnd/gopapy/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/tamnd/gopapy/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/tamnd/gopapy/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/tamnd/gopapy/compare/v0.1.1...v0.1.2

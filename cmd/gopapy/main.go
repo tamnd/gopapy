@@ -9,13 +9,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/tamnd/gopapy/v1/ast"
 	"github.com/tamnd/gopapy/v1/parser"
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.4"
+const version = "0.1.5"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -72,6 +73,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("symbols: missing PATH argument")
 		}
 		return symbolsCmd(args[1], stdout, stderr)
+	case "bench":
+		if len(args) < 2 {
+			return fmt.Errorf("bench: missing DIR argument")
+		}
+		return benchCmd(args[1], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q (try 'gopapy help')", args[0])
 	}
@@ -121,6 +127,82 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "%d passed, %d failed\n", passed, failed)
 	if failed > 0 {
 		return fmt.Errorf("%d files failed to parse", failed)
+	}
+	return nil
+}
+
+// benchCmd walks a directory, parses every .py through the full
+// pipeline (lex + participle + emit), and reports throughput numbers
+// against actual source bytes. Useful for one-shot benchmarks against
+// a corpus that isn't in our fixtures — e.g. someone's monorepo. The
+// output format is grep-friendly so a wrapping script can diff two
+// runs.
+func benchCmd(dir string, stdout, stderr io.Writer) error {
+	type entry struct {
+		path string
+		src  []byte
+	}
+	var files []entry
+	var bytes int64
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(p, ".py") {
+			return nil
+		}
+		if isIntentionalBadFixture(p) {
+			return nil
+		}
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files = append(files, entry{p, src})
+		bytes += int64(len(src))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("bench: no .py files under %s", dir)
+	}
+	parseStart := time.Now()
+	parsed := make([]*parser.File, 0, len(files))
+	var parseFailed int
+	for i, f := range files {
+		pf, err := parser.ParseFile(f.path, f.src)
+		if err != nil {
+			parseFailed++
+			parsed = append(parsed, nil)
+			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", f.path, err)
+		} else {
+			parsed = append(parsed, pf)
+		}
+		if (i+1)%64 == 0 {
+			runtime.GC()
+		}
+	}
+	parseDur := time.Since(parseStart)
+
+	emitStart := time.Now()
+	for _, pf := range parsed {
+		if pf == nil {
+			continue
+		}
+		_ = ast.FromFile(pf)
+	}
+	emitDur := time.Since(emitStart)
+
+	mb := float64(bytes) / (1024 * 1024)
+	fmt.Fprintf(stdout, "files: %d\n", len(files))
+	fmt.Fprintf(stdout, "bytes: %.1f MB\n", mb)
+	fmt.Fprintf(stdout, "parse: %s (%.2f MB/s)\n", parseDur.Round(time.Millisecond), mb/parseDur.Seconds())
+	fmt.Fprintf(stdout, "emit:  %s (%.2f MB/s)\n", emitDur.Round(time.Millisecond), mb/emitDur.Seconds())
+	fmt.Fprintf(stdout, "total: %s\n", (parseDur + emitDur).Round(time.Millisecond))
+	if parseFailed > 0 {
+		fmt.Fprintf(stdout, "parse-failed: %d\n", parseFailed)
 	}
 	return nil
 }
@@ -263,6 +345,7 @@ Commands:
   unparse FILE  Round-trip the file through Unparse and print the result.
   check DIR     Parse every .py under DIR, summarise failures.
   symbols PATH  Build a symbol table for FILE, or report panics across DIR.
+  bench DIR     Parse every .py under DIR and print parse/emit throughput.
   version       Print the gopapy version.
   help          Show this message.
 `)
