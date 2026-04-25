@@ -730,7 +730,11 @@ func emitConjunction(c *parser.Conjunction) ExprNode {
 }
 
 func emitInversion(i *parser.Inversion) ExprNode {
-	if i.Not {
+	// participle sets `Not` while trying the `not @@` alternative and
+	// does not unset it when it backtracks to the `Comparison` branch.
+	// Trust the field shape over the boolean: a real `not` form has Inv
+	// non-nil; a backtracked one has Comp non-nil and Inv nil.
+	if i.Not && i.Inv != nil {
 		return &UnaryOp{Pos: pos(i.Pos), Op: &Not{}, Operand: emitInversion(i.Inv)}
 	}
 	return emitComparison(i.Comp)
@@ -1042,6 +1046,13 @@ func emitDictOrSet(p Pos, d *parser.DictOrSetLit) ExprNode {
 			values = append(values, emitExpr(it.DStar))
 			return
 		}
+		// Dict context with a key-only item is malformed Python (mixed
+		// `{k: v, x}`). The participle grammar lets it through; the
+		// safe shape here is to drop the item rather than panic on a
+		// nil Value.
+		if it.Value == nil {
+			return
+		}
 		keys = append(keys, emitExpr(it.Key))
 		values = append(values, emitExpr(it.Value))
 	}
@@ -1098,7 +1109,10 @@ func emitParen(p Pos, paren *parser.ParenLit) ExprNode {
 		return &Tuple{Pos: p, Ctx: &Load{}}
 	}
 	if len(paren.Comp) > 0 {
-		return &GeneratorExp{Pos: p, Elt: emitExpr(paren.First.Expr), Generators: emitComps(paren.Comp)}
+		// `(*x for ...)` is malformed Python (the head can't be starred
+		// in a generator expression). Emit the starred form so we don't
+		// dereference a nil Expr.
+		return &GeneratorExp{Pos: p, Elt: emitStarOrExpr(paren.First), Generators: emitComps(paren.Comp)}
 	}
 	if len(paren.Rest) == 0 {
 		// `(x)` vs `(x,)`: trailing comma (or a `*x` head) makes a Tuple.

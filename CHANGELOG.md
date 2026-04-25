@@ -9,6 +9,25 @@ changes.
 
 ## [Unreleased]
 
+### Added
+
+- Fuzz harnesses for the lexer (`lex.FuzzScan`), parser
+  (`parser.FuzzParseFile`), and AST emitter (`ast.FuzzEmit`). A new
+  CI `fuzz` job runs each target for 30 s on every PR.
+- `ast.TestRoundTripFixtures` pins the strict parse → unparse → parse
+  Dump-equality property over the curated grammar corpus.
+
+### Fixed
+
+- `ast.FromFile` no longer panics on participle parse trees with
+  internally inconsistent fields. Two cases caught by the fuzzer:
+  - `not` parsed as a bare expression (the `Not` boolean was set on a
+    backtracked alternative); the emitter now requires `Inv` to be
+    non-nil before treating it as a unary `not`.
+  - Generator expression with a starred head (`(*x for ...)`) and
+    dict literals mixing `key: value` entries with bare expressions
+    (`{"":0,0}`) — both produced nil dereferences in the emitter.
+
 ## [0.1.1] - 2026-04-26
 
 Drives `gopapy check` against the CPython 3.14 stdlib to zero
