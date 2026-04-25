@@ -1023,11 +1023,17 @@ func isHexInt(s string) bool {
 // still flow through here as literal STRING tokens.
 func stringConstant(p Pos, parts []string) ExprNode {
 	isBytes := false
+	hasF := false
 	for _, raw := range parts {
 		if hasStringPrefix(raw, 'b') {
 			isBytes = true
-			break
 		}
+		if hasStringPrefix(raw, 'f') {
+			hasF = true
+		}
+	}
+	if hasF {
+		return emitFString(p, parts)
 	}
 	var b strings.Builder
 	for _, raw := range parts {
