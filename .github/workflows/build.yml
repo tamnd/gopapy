@@ -1,0 +1,62 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.26'
+
+jobs:
+  cross:
+    name: ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            bin: gopapy
+          - goos: linux
+            goarch: arm64
+            bin: gopapy
+          - goos: darwin
+            goarch: amd64
+            bin: gopapy
+          - goos: darwin
+            goarch: arm64
+            bin: gopapy
+          - goos: windows
+            goarch: amd64
+            bin: gopapy.exe
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build -trimpath -ldflags="-s -w" -o "${{ matrix.bin }}" ./cmd/gopapy
+
+      - name: Verify binary exists
+        run: ls -la "${{ matrix.bin }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gopapy-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ matrix.bin }}
+          if-no-files-found: error
+          retention-days: 14
