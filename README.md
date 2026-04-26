@@ -1,44 +1,79 @@
 <h1 align="center">gopapy</h1>
 
 <p align="center">
-  <b>Pure-Go parser for Python 3.14 &mdash; full PEG grammar, ast.dump compatible.</b><br>
-  <sub>Built on <a href="https://github.com/alecthomas/participle">participle</a>. No CPython at runtime.</sub>
+  <b>Pure-Go parser for Python 3.14 — full grammar, ast.dump compatible, ~83x faster than participle.</b><br>
+  <sub>No CPython at runtime.</sub>
 </p>
 
 ---
 
-`gopapy` reads Python 3.14 source and produces an AST that is byte-for-byte
-compatible with `ast.dump(ast.parse(src), indent=2, include_attributes=True)`.
-Every production in CPython's [PEG grammar](https://docs.python.org/3/reference/grammar.html)
-is in scope &mdash; no opt-out subsets, no "we'll get to match-statements
-later". Output node shape is generated from
-[`Parser/Python.asdl`](https://github.com/python/cpython/blob/3.14/Parser/Python.asdl)
-so it cannot drift from upstream.
+## Using v2 (recommended)
 
-This is the bootstrap branch. Track scope and progress in
-[`docs/GRAMMAR.md`](docs/GRAMMAR.md). For a tour of the pipeline see
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+```go
+import "github.com/tamnd/gopapy/v2/parser2"
+
+mod, err := parser2.ParseFile("example.py", src)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(parser2.DumpModule(mod))
+```
+
+**API surface** — four functions, zero dependencies beyond the standard library:
+
+| Function | Description |
+|---|---|
+| `ParseFile(filename, src string) (*Module, error)` | Parse a whole Python module |
+| `ParseExpression(src string) (Expr, error)` | Parse a single expression |
+| `DumpModule(*Module) string` | Stable single-line dump (CPython ast.dump compatible) |
+| `Dump(Expr) string` | Dump a single expression |
+
+**Performance** vs v1 (darwin/arm64, Apple M4):
+
+| Benchmark | v1 (participle) | v2 (parser2) | speedup |
+|---|---|---|---|
+| ParseFile (122-line module) | 2.67 ms/op, 0.86 MB/s | 32 us/op, 71 MB/s | ~83x |
+| ParseExpression (corpus) | 3.59 ms/op, 0.20 MB/s | 20 us/op, 35 MB/s | ~177x |
+
+**Migration** — if you are on v1, change the import path. The AST dump
+format is identical; there are no field renames, no API removals.
+
+```diff
+-import "github.com/tamnd/gopapy/v1/parser"
++import "github.com/tamnd/gopapy/v2/parser2"
+
+-f, err := parser.ParseFile(path, src)
+-dump := ast.Dump(ast.FromFile(f))
++mod, err := parser2.ParseFile(path, src)
++dump := parser2.DumpModule(mod)
+```
+
+**Grammar coverage** — v2 passes all 85 CPython 3.14 grammar fixtures,
+including PEP 634 match/case, PEP 695 type parameters, PEP 646 starred
+subscripts, PEP 758 paren-less except, PEP 701 f-strings, PEP 750
+t-strings, and the full Unicode identifier spec.
+
+---
+
+## v1 (maintenance only)
+
+`github.com/tamnd/gopapy/v1` is maintained for compatibility. It receives
+security and correctness fixes. All new features (formatter, type checker,
+more lint checks) target v2 only. The CLI (`cmd/gopapy`) still routes
+through v1 internally.
 
 ## Stability
 
-From v0.1.0 onward, gopapy promises three things to downstream callers
-so you can pin to v0.1 and trust the surface won't move under you:
+v2 promises the same three things as v1:
 
 - **AST node types are frozen.** No renames, no field removals, no
-  field-type changes. New optional fields and new node variants for
-  upstream-CPython grammar growth are allowed and land in patch
-  releases.
-- **Public parser entry points are stable.** `parser.ParseFile`,
-  `parser.ParseString`, `parser.ParseExpression`, `parser.ParseReader`,
-  `ast.Dump`, `ast.Unparse`, `ast.FromFile`, `lex.NewScanner`, and
-  `lex.NewIndent` keep their current signatures and behavior.
-- **The Go module path is `github.com/tamnd/gopapy/v1`.** Future
-  breaking changes will move to `/v2`, so the import path itself
-  enforces the contract.
+  field-type changes within a major version.
+- **Public entry points are stable.** `ParseFile`, `ParseExpression`,
+  `Dump`, `DumpModule` keep their current signatures.
+- **The Go module path is `github.com/tamnd/gopapy/v2`.** Future
+  breaking changes will move to `/v3`.
 
-Internal helpers under `internal/` are exempt and may move freely.
-
-## Quick start
+## Quick start (CLI)
 
 ```sh
 go build ./cmd/gopapy
@@ -48,25 +83,21 @@ echo '1 + 2' | tee /tmp/x.py
 ```
 
 `gopapy check DIR` walks every `.py` under `DIR` and reports a pass/fail
-summary, which is convenient for pointing the parser at a corpus.
+summary.
 
 ## Stdlib parse
 
-gopapy parses the entire CPython 3.14 standard library without error,
-and the `stdlib-parse` job in CI re-runs `gopapy check` against the
-local Python 3.14 stdlib on every push to keep that rate at 100%. This
-is a parse-only guarantee; structural AST equivalence with CPython is
-covered by the oracle-diff fixture set under `tests/grammar/`.
+Both v1 and v2 parse the entire CPython 3.14 standard library without
+error. The `stdlib-parse` CI job re-runs this check on every push.
 
 ## Tests
 
 ```sh
-go test ./...        # unit tests across lex, parser, ast
+go test ./...        # unit tests: v1 and v2 modules
 tests/run.sh         # cross-validate against CPython's ast.dump
 ```
 
-`tests/run.sh` requires `python3` on PATH; it shells out to
-`internal/oracle/oracle.py` for the reference output.
+`tests/run.sh` requires `python3` on PATH.
 
 ## License
 

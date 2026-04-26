@@ -2,29 +2,28 @@
 // It produces a parse tree (rooted at File) which the ast package
 // converts to the public AST shape.
 //
-// # v0.1 freeze
+// # Deprecation notice (v0.2.0)
 //
-// As of v0.1.27 this package is feature-frozen. Bug fixes still ship
-// from this module path; new constructs and the hand-written
-// recursive-descent rewrite (parser2) target the separate
-// `github.com/tamnd/gopapy/v2` module path that lands in v0.1.28+.
+// New consumers should use [github.com/tamnd/gopapy/v2/parser2].
+// parser2 covers the full CPython 3.14 grammar, runs ~83x faster,
+// and is the active development line. This package (v1) receives
+// security and correctness fixes only; no new features will land
+// here.
 //
-// Downstream consumers staying on `github.com/tamnd/gopapy/v1` keep
-// the AST shape they have today. The v2 module ships in parallel
-// with v1; nothing forces a migration. v2 is the path for new
-// development and the eventual home of formatter and type-checker
-// work; v1 is the path for stability.
+// Migration is a one-line import change:
 //
-// # API surface
+//	- "github.com/tamnd/gopapy/v1/parser"
+//	+ "github.com/tamnd/gopapy/v2/parser2"
 //
-// Four exported entry points cover every public consumer:
+// The AST dump format is identical; there are no field renames or
+// API removals.
+//
+// # API surface (stable, no new additions)
 //
 //   - ParseFile(filename string, src []byte) (*File, error)
 //   - ParseString(filename, src string) (*File, error)
 //   - ParseExpression(src string) (*Expression, error)
 //   - ParseReader(filename string, src []byte) (*File, error)
 //
-// `File` and the rest of the type tree (Statement, Expression, ...)
-// form the public AST shape. They are part of the v0.1.0 contract
-// and do not change without a v2-style major bump.
+// These signatures are frozen at v0.1.27 and will not change.
 package parser

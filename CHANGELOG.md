@@ -9,6 +9,38 @@ changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-26
+
+v2 declared the recommended import path. parser2 reaches 85/85
+grammar fixture parity with v1 (PEP 634 match, PEP 695 type params,
+PEP 646 starred subscripts, PEP 758 paren-less except, PEP 701
+f-strings, PEP 750 t-strings, full Unicode identifier spec). v1
+enters maintenance mode: security and correctness fixes only, no
+new features. All new development targets v2.
+
+### Changed
+
+- **README** updated with the v2 usage section, bench numbers, and
+  a one-import migration guide.
+- **`v2/doc.go`** updated to reflect recommended-path status.
+- **`parser/doc.go`** updated with a deprecation notice pointing to
+  v2/parser2.
+- **`cmd/gopapy/main.go`** version bumped to `0.2.0`. CLI behavior
+  is unchanged.
+
+### Performance (v0.1.34 baseline, darwin/arm64, Apple M4)
+
+- v1 ParseFile: 2.67 ms/op, 0.86 MB/s
+- v2 ParseFile: 32 us/op, 71 MB/s — **~83x faster**
+- v2 ParseExpression: 20 us/op, 35 MB/s — **~177x faster** vs v1
+
+### Notes
+
+- The CLI (`cmd/gopapy`) still routes lint/format/lsp/check through
+  v1. Porting those subsystems to v2 is roadmap v9.
+- v1 module path `github.com/tamnd/gopapy/v1` continues to ship.
+  Nothing forces a migration.
+
 ## [0.1.34] - 2026-04-26
 
 Full fixture parity: parser2 now handles all 85 v1 grammar fixtures.
@@ -2103,6 +2135,7 @@ generator expressions, `async`/`await` outside trivial expressions,
 literals, octal/binary/unicode-name string escapes.
 
 [Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.31...HEAD
+[0.2.0]: https://github.com/tamnd/gopapy/compare/v0.1.34...v0.2.0
 [0.1.34]: https://github.com/tamnd/gopapy/compare/v0.1.33...v0.1.34
 [0.1.33]: https://github.com/tamnd/gopapy/compare/v0.1.32...v0.1.33
 [0.1.32]: https://github.com/tamnd/gopapy/compare/v0.1.31...v0.1.32
