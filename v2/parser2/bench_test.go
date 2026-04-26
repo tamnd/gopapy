@@ -3,42 +3,54 @@ package parser2
 import "testing"
 
 // benchCorpus is the fixed set of expressions used for v1-vs-v2
-// performance comparison. It exercises every form parser2 covers in
-// v0.1.28 — literals, names, unary, binary arithmetic, parentheses,
-// precedence corners. The same strings are benched against v1's
+// performance comparison. As of v0.1.29 it spans every expression
+// form parser2 supports: literals, names, unary, all binops with
+// precedence corners, comparisons, boolean ops, attribute,
+// subscript, slices, calls, collection literals, comprehensions,
+// lambdas, walrus. The same strings are benched against v1's
 // parser.ParseExpression in parser/bench_v2_compare_test.go so the
 // PR description can paste side-by-side numbers.
 var benchCorpus = []string{
-	"0",
-	"42",
-	"1234567890",
-	"3.14",
-	".5",
-	"1e10",
-	"1.5e-3",
-	`"hello"`,
-	`'world'`,
-	`""`,
-	"None",
-	"True",
-	"False",
-	"x",
-	"_foo",
-	"MyVar2",
-	"-1",
-	"+2",
-	"~3",
-	"not x",
-	"--5",
-	"1 + 2",
-	"5 - 3",
-	"4 * 6",
-	"8 / 2",
-	"1 + 2 * 3",
-	"(1 + 2) * 3",
-	"-2 * 3",
-	"10 - 3 - 2",
-	"x + 1",
+	// literals
+	"0", "42", "1234567890", "1_000_000", "0xFF", "0o17", "0b1010",
+	"3.14", ".5", "1e10", "1.5e-3", "3j",
+	`"hello"`, `'world'`, `""`, `b"bytes"`, "...",
+	"None", "True", "False",
+	// names
+	"x", "_foo", "MyVar2",
+	// unary
+	"-1", "+2", "~3", "not x", "--5",
+	// arithmetic
+	"1 + 2", "5 - 3", "4 * 6", "8 / 2", "9 // 4", "9 % 4",
+	"2 ** 8", "2 ** 3 ** 4", "-2 ** 2",
+	"1 + 2 * 3", "(1 + 2) * 3", "10 - 3 - 2",
+	// bitwise
+	"a | b", "a & b", "a ^ b", "1 << 4", "16 >> 2",
+	"a | b & c",
+	// comparisons
+	"1 < 2", "1 < 2 < 3", "a == b != c",
+	"x in xs", "x not in xs", "x is not None",
+	// boolean
+	"a or b", "a and b", "a or b or c", "a or b and c",
+	"not a and b",
+	// conditional
+	"a if cond else b", "a if c1 else b if c2 else d",
+	// attribute / subscript / call
+	"a.b", "a.b.c", "a[1]", "a[1:2:3]", "a[:]", "a[::2]",
+	"f()", "f(1)", "f(x=1, y=2)", "f(*xs, **kw)",
+	"obj.method(arg)",
+	// collections
+	"[]", "()", "{}", "[1, 2, 3]", "(1, 2, 3)", "{1, 2, 3}",
+	`{"a": 1, "b": 2}`, `{**other, "k": v}`, "[*xs, y]",
+	// comprehensions
+	"[x for x in xs]", "[x for x in xs if x > 0]",
+	"{x for x in xs}", "{k: v for k, v in items}",
+	"(x for x in xs)",
+	// lambda
+	"lambda: 1", "lambda x: x + 1", "lambda x, y=2: x + y",
+	"lambda *args, **kw: args",
+	// walrus
+	"(x := 5)",
 }
 
 func BenchmarkParseExpression(b *testing.B) {

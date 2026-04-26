@@ -1,11 +1,16 @@
 // Package parser2 is gopapy v2's hand-written recursive-descent
-// expression parser. It is the parser-swap landing point per
-// roadmap v8: v0.1.28 ships literals, names, parenthesized
-// expressions, unary operators (+, -, not, ~), and the four
-// arithmetic binary operators (+, -, *, /) with correct precedence.
-// v0.1.29 grows the surface to the rest of Python's expression
-// grammar; v0.1.30 covers f-strings and t-strings; v0.2.0 declares
-// v2 as the recommended path.
+// expression parser. As of v0.1.29 it covers the entire Python
+// expression grammar except f-strings and t-strings: literals,
+// names, parenthesized expressions, all unary and binary operators
+// with correct precedence, comparisons (chained), boolean ops,
+// attribute and subscript access, slices, calls (including starred
+// and double-starred), collection literals (list/tuple/dict/set),
+// comprehensions and generator expressions, lambdas, walrus, and
+// the conditional expression `a if b else c`.
+//
+// Statements arrive in v0.1.30 (which also brings INDENT/DEDENT
+// tracking and `ParseFile`). f-strings and t-strings arrive in
+// v0.1.31. v0.2.0 declares v2 the recommended path.
 //
 // v2 is self-contained today. v1's `ast` and `lex` packages can't
 // be imported until v1's module path is renormalized (the /v1 suffix
@@ -16,17 +21,18 @@ package parser2
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // ParseExpression parses src as a single Python expression and
 // returns the parser2 Expr tree. An error is returned for empty
-// input, syntax errors, or constructs outside v0.1.28's coverage.
+// input, syntax errors, or constructs outside parser2's coverage.
 func ParseExpression(src string) (Expr, error) {
 	p, err := newParser(src)
 	if err != nil {
 		return nil, err
 	}
-	expr, err := p.parseOr()
+	expr, err := p.parseExpr()
 	if err != nil {
 		return nil, err
 	}
@@ -38,8 +44,10 @@ func ParseExpression(src string) (Expr, error) {
 }
 
 type parser struct {
-	sc  *scanner
-	cur token
+	sc   *scanner
+	cur  token
+	peek token
+	hasPeek bool
 }
 
 func newParser(src string) (*parser, error) {
@@ -51,6 +59,11 @@ func newParser(src string) (*parser, error) {
 }
 
 func (p *parser) advance() error {
+	if p.hasPeek {
+		p.cur = p.peek
+		p.hasPeek = false
+		return nil
+	}
 	tok, err := p.sc.next()
 	if err != nil {
 		return err
@@ -59,17 +72,338 @@ func (p *parser) advance() error {
 	return nil
 }
 
-// Precedence climber. Today there are only two binary precedence
-// levels in scope (multiplicative > additive); the structure is set
-// up so v0.1.29 can grow comparisons, boolean ops, and bit ops by
-// adding parseAnd/parseOr/parseCompare layers above and parseShift,
-// parseBitwise, etc. below without rewriting the existing layers.
-//
-// `parseOr` is the entry point because Python's expression hierarchy
-// is rooted at boolean-or; today it just delegates to parseAdditive.
-func (p *parser) parseOr() (Expr, error) {
-	return p.parseAdditive()
+// peekTok returns the next token without consuming it. Cached so
+// repeated peeks at the same position are free.
+func (p *parser) peekTok() (token, error) {
+	if p.hasPeek {
+		return p.peek, nil
+	}
+	tok, err := p.sc.next()
+	if err != nil {
+		return token{}, err
+	}
+	p.peek = tok
+	p.hasPeek = true
+	return tok, nil
 }
+
+func (p *parser) expect(k tokKind) (token, error) {
+	if p.cur.kind != k {
+		return token{}, fmt.Errorf("%d:%d: expected %s, got %s",
+			p.cur.pos.Line, p.cur.pos.Col, k, p.cur.kind)
+	}
+	tok := p.cur
+	if err := p.advance(); err != nil {
+		return token{}, err
+	}
+	return tok, nil
+}
+
+// isKeyword reports whether the current token is a name with the
+// given keyword text. Python's keywords lex as ordinary names; the
+// parser promotes them based on context.
+func (p *parser) isKeyword(kw string) bool {
+	return p.cur.kind == tkName && p.cur.val == kw
+}
+
+// ----- Top-level expression -----
+
+// parseExpr is the top entry. It dispatches lambda / walrus /
+// ternary; everything else flows down through the precedence ladder.
+func (p *parser) parseExpr() (Expr, error) {
+	if p.isKeyword("lambda") {
+		return p.parseLambda()
+	}
+	// walrus at top level: NAME ':=' expr
+	if p.cur.kind == tkName && !isReservedKeyword(p.cur.val) {
+		nxt, err := p.peekTok()
+		if err != nil {
+			return nil, err
+		}
+		if nxt.kind == tkWalrus {
+			return p.parseNamedExprFromName()
+		}
+	}
+	return p.parseTernary()
+}
+
+// parseNamedExprFromName consumes `NAME := expr`. cur is the name.
+func (p *parser) parseNamedExprFromName() (Expr, error) {
+	nameTok := p.cur
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	// cur is := now
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	value, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	return &NamedExpr{
+		P:      nameTok.pos,
+		Target: &Name{P: nameTok.pos, Id: nameTok.val},
+		Value:  value,
+	}, nil
+}
+
+func (p *parser) parseTernary() (Expr, error) {
+	body, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	if !p.isKeyword("if") {
+		return body, nil
+	}
+	ifPos := p.cur.pos
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	test, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	if !p.isKeyword("else") {
+		return nil, fmt.Errorf("%d:%d: expected 'else' in conditional expression",
+			p.cur.pos.Line, p.cur.pos.Col)
+	}
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	orelse, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	return &IfExp{P: ifPos, Test: test, Body: body, OrElse: orelse}, nil
+}
+
+// ----- Boolean and comparison layers -----
+
+func (p *parser) parseOr() (Expr, error) {
+	left, err := p.parseAnd()
+	if err != nil {
+		return nil, err
+	}
+	if !p.isKeyword("or") {
+		return left, nil
+	}
+	pos := left.pos()
+	values := []Expr{left}
+	for p.isKeyword("or") {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		next, err := p.parseAnd()
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, next)
+	}
+	return &BoolOp{P: pos, Op: "Or", Values: values}, nil
+}
+
+func (p *parser) parseAnd() (Expr, error) {
+	left, err := p.parseNot()
+	if err != nil {
+		return nil, err
+	}
+	if !p.isKeyword("and") {
+		return left, nil
+	}
+	pos := left.pos()
+	values := []Expr{left}
+	for p.isKeyword("and") {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		next, err := p.parseNot()
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, next)
+	}
+	return &BoolOp{P: pos, Op: "And", Values: values}, nil
+}
+
+func (p *parser) parseNot() (Expr, error) {
+	if p.isKeyword("not") {
+		// `not in` is a comparison op; if peek is `in`, defer to
+		// parseCompare. But parseCompare expects a left operand
+		// already, so a leading `not` here is always unary.
+		pos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		operand, err := p.parseNot()
+		if err != nil {
+			return nil, err
+		}
+		return &UnaryOp{P: pos, Op: "Not", Operand: operand}, nil
+	}
+	return p.parseCompare()
+}
+
+// parseCompare reads `a OP b OP c ...` as a single Compare node.
+// `not in` and `is not` are two-token operators handled inline.
+func (p *parser) parseCompare() (Expr, error) {
+	left, err := p.parseBitOr()
+	if err != nil {
+		return nil, err
+	}
+	var ops []string
+	var comps []Expr
+	for {
+		op, ok, err := p.tryComparisonOp()
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		right, err := p.parseBitOr()
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, op)
+		comps = append(comps, right)
+	}
+	if len(ops) == 0 {
+		return left, nil
+	}
+	return &Compare{P: left.pos(), Left: left, Ops: ops, Comparators: comps}, nil
+}
+
+func (p *parser) tryComparisonOp() (string, bool, error) {
+	switch p.cur.kind {
+	case tkLt:
+		p.advance()
+		return "Lt", true, nil
+	case tkGt:
+		p.advance()
+		return "Gt", true, nil
+	case tkLe:
+		p.advance()
+		return "LtE", true, nil
+	case tkGe:
+		p.advance()
+		return "GtE", true, nil
+	case tkEqEq:
+		p.advance()
+		return "Eq", true, nil
+	case tkNotEq:
+		p.advance()
+		return "NotEq", true, nil
+	case tkName:
+		switch p.cur.val {
+		case "in":
+			p.advance()
+			return "In", true, nil
+		case "is":
+			p.advance()
+			if p.isKeyword("not") {
+				p.advance()
+				return "IsNot", true, nil
+			}
+			return "Is", true, nil
+		case "not":
+			nxt, err := p.peekTok()
+			if err != nil {
+				return "", false, err
+			}
+			if nxt.kind == tkName && nxt.val == "in" {
+				p.advance() // not
+				p.advance() // in
+				return "NotIn", true, nil
+			}
+		}
+	}
+	return "", false, nil
+}
+
+// ----- Bitwise and shift layers -----
+
+func (p *parser) parseBitOr() (Expr, error) {
+	left, err := p.parseBitXor()
+	if err != nil {
+		return nil, err
+	}
+	for p.cur.kind == tkPipe {
+		op := p.cur
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		right, err := p.parseBitXor()
+		if err != nil {
+			return nil, err
+		}
+		left = &BinOp{P: op.pos, Op: "BitOr", Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *parser) parseBitXor() (Expr, error) {
+	left, err := p.parseBitAnd()
+	if err != nil {
+		return nil, err
+	}
+	for p.cur.kind == tkCaret {
+		op := p.cur
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		right, err := p.parseBitAnd()
+		if err != nil {
+			return nil, err
+		}
+		left = &BinOp{P: op.pos, Op: "BitXor", Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *parser) parseBitAnd() (Expr, error) {
+	left, err := p.parseShift()
+	if err != nil {
+		return nil, err
+	}
+	for p.cur.kind == tkAmp {
+		op := p.cur
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		right, err := p.parseShift()
+		if err != nil {
+			return nil, err
+		}
+		left = &BinOp{P: op.pos, Op: "BitAnd", Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *parser) parseShift() (Expr, error) {
+	left, err := p.parseAdditive()
+	if err != nil {
+		return nil, err
+	}
+	for p.cur.kind == tkLShift || p.cur.kind == tkRShift {
+		op := p.cur
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		right, err := p.parseAdditive()
+		if err != nil {
+			return nil, err
+		}
+		opName := "LShift"
+		if op.kind == tkRShift {
+			opName = "RShift"
+		}
+		left = &BinOp{P: op.pos, Op: opName, Left: left, Right: right}
+	}
+	return left, nil
+}
+
+// ----- Arithmetic layers -----
 
 func (p *parser) parseAdditive() (Expr, error) {
 	left, err := p.parseMultiplicative()
@@ -85,7 +419,11 @@ func (p *parser) parseAdditive() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = &BinOp{P: op.pos, Op: opString(op.kind), Left: left, Right: right}
+		opName := "Add"
+		if op.kind == tkMinus {
+			opName = "Sub"
+		}
+		left = &BinOp{P: op.pos, Op: opName, Left: left, Right: right}
 	}
 	return left, nil
 }
@@ -95,7 +433,22 @@ func (p *parser) parseMultiplicative() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	for p.cur.kind == tkStar || p.cur.kind == tkSlash {
+	for {
+		var opName string
+		switch p.cur.kind {
+		case tkStar:
+			opName = "Mult"
+		case tkSlash:
+			opName = "Div"
+		case tkDoubleSl:
+			opName = "FloorDiv"
+		case tkPercent:
+			opName = "Mod"
+		case tkAt:
+			opName = "MatMult"
+		default:
+			return left, nil
+		}
 		op := p.cur
 		if err := p.advance(); err != nil {
 			return nil, err
@@ -104,9 +457,8 @@ func (p *parser) parseMultiplicative() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = &BinOp{P: op.pos, Op: opString(op.kind), Left: left, Right: right}
+		left = &BinOp{P: op.pos, Op: opName, Left: left, Right: right}
 	}
-	return left, nil
 }
 
 func (p *parser) parseUnary() (Expr, error) {
@@ -121,23 +473,249 @@ func (p *parser) parseUnary() (Expr, error) {
 			return nil, err
 		}
 		return &UnaryOp{P: op.pos, Op: unaryOpString(op.kind), Operand: operand}, nil
-	case tkName:
-		// `not` is a name-token at the lex layer; the parser promotes
-		// it to unary when seen in unary position.
-		if p.cur.val == "not" {
-			op := p.cur
+	}
+	return p.parsePower()
+}
+
+// parsePower implements `**` with right-associativity and the
+// CPython-specific oddity that the right operand is parsed at
+// unary level (so `2 ** -1` works) while the left is parsed at
+// trailer level (so `-2 ** 2` is `-(2 ** 2)`).
+func (p *parser) parsePower() (Expr, error) {
+	left, err := p.parseTrailer()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkDoubleStar {
+		return left, nil
+	}
+	op := p.cur
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	right, err := p.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+	return &BinOp{P: op.pos, Op: "Pow", Left: left, Right: right}, nil
+}
+
+// ----- Trailer (attribute, subscript, call) -----
+
+func (p *parser) parseTrailer() (Expr, error) {
+	expr, err := p.parseAtom()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		switch p.cur.kind {
+		case tkDot:
+			pos := p.cur.pos
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			operand, err := p.parseUnary()
+			if p.cur.kind != tkName {
+				return nil, fmt.Errorf("%d:%d: expected name after '.', got %s",
+					p.cur.pos.Line, p.cur.pos.Col, p.cur.kind)
+			}
+			attr := p.cur.val
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			expr = &Attribute{P: pos, Value: expr, Attr: attr}
+		case tkLParen:
+			args, kwargs, callPos, err := p.parseCallArgs()
 			if err != nil {
 				return nil, err
 			}
-			return &UnaryOp{P: op.pos, Op: "Not", Operand: operand}, nil
+			expr = &Call{P: callPos, Func: expr, Args: args, Keywords: kwargs}
+		case tkLBrack:
+			pos := p.cur.pos
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			slice, err := p.parseSubscriptBody()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(tkRBrack); err != nil {
+				return nil, err
+			}
+			expr = &Subscript{P: pos, Value: expr, Slice: slice}
+		default:
+			return expr, nil
 		}
 	}
-	return p.parseAtom()
 }
+
+// parseSubscriptBody parses everything between `[` and `]` for a
+// subscript trailer. Returns one of: a plain Expr, a Slice, or a
+// Tuple of Expr/Slice for advanced indexing.
+func (p *parser) parseSubscriptBody() (Expr, error) {
+	first, err := p.parseSubscriptItem()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkComma {
+		return first, nil
+	}
+	pos := first.pos()
+	elts := []Expr{first}
+	for p.cur.kind == tkComma {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind == tkRBrack {
+			break
+		}
+		next, err := p.parseSubscriptItem()
+		if err != nil {
+			return nil, err
+		}
+		elts = append(elts, next)
+	}
+	return &Tuple{P: pos, Elts: elts}, nil
+}
+
+func (p *parser) parseSubscriptItem() (Expr, error) {
+	pos := p.cur.pos
+	var lower Expr
+	if p.cur.kind != tkColon {
+		v, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		lower = v
+	}
+	if p.cur.kind != tkColon {
+		return lower, nil
+	}
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	var upper Expr
+	if p.cur.kind != tkColon && p.cur.kind != tkRBrack && p.cur.kind != tkComma {
+		v, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		upper = v
+	}
+	var step Expr
+	if p.cur.kind == tkColon {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind != tkRBrack && p.cur.kind != tkComma {
+			v, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			step = v
+		}
+	}
+	return &Slice{P: pos, Lower: lower, Upper: upper, Step: step}, nil
+}
+
+func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume (
+		return nil, nil, pos, err
+	}
+	var args []Expr
+	var kwargs []*Keyword
+	if p.cur.kind == tkRParen {
+		if err := p.advance(); err != nil {
+			return nil, nil, pos, err
+		}
+		return args, kwargs, pos, nil
+	}
+	for {
+		switch {
+		case p.cur.kind == tkDoubleStar:
+			kp := p.cur.pos
+			if err := p.advance(); err != nil {
+				return nil, nil, pos, err
+			}
+			v, err := p.parseExpr()
+			if err != nil {
+				return nil, nil, pos, err
+			}
+			kwargs = append(kwargs, &Keyword{P: kp, Arg: "", Value: v})
+		case p.cur.kind == tkStar:
+			sp := p.cur.pos
+			if err := p.advance(); err != nil {
+				return nil, nil, pos, err
+			}
+			v, err := p.parseExpr()
+			if err != nil {
+				return nil, nil, pos, err
+			}
+			args = append(args, &Starred{P: sp, Value: v})
+		case p.cur.kind == tkName && !isReservedKeyword(p.cur.val):
+			// Look ahead one token to see if this is `name=value`.
+			nxt, err := p.peekTok()
+			if err != nil {
+				return nil, nil, pos, err
+			}
+			if nxt.kind == tkAssign {
+				name := p.cur
+				if err := p.advance(); err != nil {
+					return nil, nil, pos, err
+				}
+				if err := p.advance(); err != nil { // consume =
+					return nil, nil, pos, err
+				}
+				v, err := p.parseExpr()
+				if err != nil {
+					return nil, nil, pos, err
+				}
+				kwargs = append(kwargs, &Keyword{P: name.pos, Arg: name.val, Value: v})
+			} else {
+				v, err := p.parseExpr()
+				if err != nil {
+					return nil, nil, pos, err
+				}
+				// genexp: single positional arg followed by `for` in
+				// the same paren list.
+				if len(args) == 0 && len(kwargs) == 0 && p.isKeyword("for") {
+					gens, err := p.parseComprehensionClauses()
+					if err != nil {
+						return nil, nil, pos, err
+					}
+					args = append(args, &GeneratorExp{P: v.pos(), Elt: v, Gens: gens})
+					if _, err := p.expect(tkRParen); err != nil {
+						return nil, nil, pos, err
+					}
+					return args, kwargs, pos, nil
+				}
+				args = append(args, v)
+			}
+		default:
+			v, err := p.parseExpr()
+			if err != nil {
+				return nil, nil, pos, err
+			}
+			args = append(args, v)
+		}
+		if p.cur.kind == tkComma {
+			if err := p.advance(); err != nil {
+				return nil, nil, pos, err
+			}
+			if p.cur.kind == tkRParen {
+				break
+			}
+			continue
+		}
+		break
+	}
+	if _, err := p.expect(tkRParen); err != nil {
+		return nil, nil, pos, err
+	}
+	return args, kwargs, pos, nil
+}
+
+// ----- Atom -----
 
 func (p *parser) parseAtom() (Expr, error) {
 	tok := p.cur
@@ -146,74 +724,676 @@ func (p *parser) parseAtom() (Expr, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		v, err := strconv.ParseInt(tok.val, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("%d:%d: invalid int literal %q",
-				tok.pos.Line, tok.pos.Col, tok.val)
-		}
-		return &Constant{P: tok.pos, Kind: "int", Value: v}, nil
+		return parseIntLiteral(tok)
 	case tkFloat:
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		v, err := strconv.ParseFloat(tok.val, 64)
-		if err != nil {
-			return nil, fmt.Errorf("%d:%d: invalid float literal %q",
-				tok.pos.Line, tok.pos.Col, tok.val)
-		}
-		return &Constant{P: tok.pos, Kind: "float", Value: v}, nil
+		return parseFloatLiteral(tok)
 	case tkString:
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return &Constant{P: tok.pos, Kind: "str", Value: tok.val}, nil
-	case tkName:
+		// Adjacent string literals concatenate.
+		buf := tok.val
+		bytesPrefix := strings.HasPrefix(buf, "b:")
+		if bytesPrefix {
+			buf = buf[2:]
+		}
+		for p.cur.kind == tkString {
+			next := p.cur.val
+			isNextBytes := strings.HasPrefix(next, "b:")
+			if isNextBytes {
+				next = next[2:]
+			}
+			if isNextBytes != bytesPrefix {
+				return nil, fmt.Errorf("%d:%d: cannot mix bytes and str literals",
+					p.cur.pos.Line, p.cur.pos.Col)
+			}
+			buf += next
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+		}
+		kind := "str"
+		if bytesPrefix {
+			kind = "bytes"
+		}
+		return &Constant{P: tok.pos, Kind: kind, Value: buf}, nil
+	case tkEllipsis:
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
+		return &Constant{P: tok.pos, Kind: "Ellipsis"}, nil
+	case tkName:
 		switch tok.val {
 		case "None":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
 			return &Constant{P: tok.pos, Kind: "None"}, nil
 		case "True":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
 			return &Constant{P: tok.pos, Kind: "True"}, nil
 		case "False":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
 			return &Constant{P: tok.pos, Kind: "False"}, nil
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
 		}
 		return &Name{P: tok.pos, Id: tok.val}, nil
 	case tkLParen:
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		inner, err := p.parseOr()
-		if err != nil {
-			return nil, err
-		}
-		if p.cur.kind != tkRParen {
-			return nil, fmt.Errorf("%d:%d: expected ')', got %s",
-				p.cur.pos.Line, p.cur.pos.Col, p.cur.kind)
-		}
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		return inner, nil
+		return p.parseParenAtom()
+	case tkLBrack:
+		return p.parseListAtom()
+	case tkLBrace:
+		return p.parseBraceAtom()
 	}
 	return nil, fmt.Errorf("%d:%d: unexpected token %s",
 		tok.pos.Line, tok.pos.Col, tok.kind)
 }
 
-func opString(k tokKind) string {
-	switch k {
-	case tkPlus:
-		return "Add"
-	case tkMinus:
-		return "Sub"
-	case tkStar:
-		return "Mult"
-	case tkSlash:
-		return "Div"
+func parseIntLiteral(tok token) (Expr, error) {
+	val := strings.ReplaceAll(tok.val, "_", "")
+	var v int64
+	var err error
+	switch {
+	case strings.HasPrefix(val, "0x") || strings.HasPrefix(val, "0X"):
+		v, err = strconv.ParseInt(val[2:], 16, 64)
+	case strings.HasPrefix(val, "0o") || strings.HasPrefix(val, "0O"):
+		v, err = strconv.ParseInt(val[2:], 8, 64)
+	case strings.HasPrefix(val, "0b") || strings.HasPrefix(val, "0B"):
+		v, err = strconv.ParseInt(val[2:], 2, 64)
+	default:
+		v, err = strconv.ParseInt(val, 10, 64)
 	}
-	return k.String()
+	if err != nil {
+		return nil, fmt.Errorf("%d:%d: invalid int literal %q",
+			tok.pos.Line, tok.pos.Col, tok.val)
+	}
+	return &Constant{P: tok.pos, Kind: "int", Value: v}, nil
 }
+
+func parseFloatLiteral(tok token) (Expr, error) {
+	val := strings.ReplaceAll(tok.val, "_", "")
+	if strings.HasSuffix(val, "j") || strings.HasSuffix(val, "J") {
+		// Complex: keep as-is for the Constant value.
+		return &Constant{P: tok.pos, Kind: "complex", Value: val}, nil
+	}
+	v, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return nil, fmt.Errorf("%d:%d: invalid float literal %q",
+			tok.pos.Line, tok.pos.Col, tok.val)
+	}
+	return &Constant{P: tok.pos, Kind: "float", Value: v}, nil
+}
+
+// parseParenAtom handles:
+//   ()           -> empty tuple
+//   (e)          -> parenthesized expression
+//   (e,)         -> 1-tuple
+//   (e, f, ...)  -> tuple
+//   (e for ...)  -> generator expression
+//   (NAME := e)  -> walrus
+//   (*e, ...)    -> tuple with starred element
+func (p *parser) parseParenAtom() (Expr, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume (
+		return nil, err
+	}
+	if p.cur.kind == tkRParen {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		return &Tuple{P: pos, Elts: nil}, nil
+	}
+	first, err := p.parseStarredOrExpr()
+	if err != nil {
+		return nil, err
+	}
+	if p.isKeyword("for") {
+		gens, err := p.parseComprehensionClauses()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(tkRParen); err != nil {
+			return nil, err
+		}
+		return &GeneratorExp{P: pos, Elt: first, Gens: gens}, nil
+	}
+	if p.cur.kind == tkRParen {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		// `(*x)` is illegal in Python, but parsing it as a parenthesized
+		// Starred is fine — semantic check is downstream.
+		return first, nil
+	}
+	if _, err := p.expect(tkComma); err != nil {
+		return nil, err
+	}
+	elts := []Expr{first}
+	for p.cur.kind != tkRParen {
+		next, err := p.parseStarredOrExpr()
+		if err != nil {
+			return nil, err
+		}
+		elts = append(elts, next)
+		if p.cur.kind == tkComma {
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+		} else {
+			break
+		}
+	}
+	if _, err := p.expect(tkRParen); err != nil {
+		return nil, err
+	}
+	return &Tuple{P: pos, Elts: elts}, nil
+}
+
+func (p *parser) parseListAtom() (Expr, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume [
+		return nil, err
+	}
+	if p.cur.kind == tkRBrack {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		return &List{P: pos, Elts: nil}, nil
+	}
+	first, err := p.parseStarredOrExpr()
+	if err != nil {
+		return nil, err
+	}
+	if p.isKeyword("for") {
+		gens, err := p.parseComprehensionClauses()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(tkRBrack); err != nil {
+			return nil, err
+		}
+		return &ListComp{P: pos, Elt: first, Gens: gens}, nil
+	}
+	elts := []Expr{first}
+	for p.cur.kind == tkComma {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind == tkRBrack {
+			break
+		}
+		next, err := p.parseStarredOrExpr()
+		if err != nil {
+			return nil, err
+		}
+		elts = append(elts, next)
+	}
+	if _, err := p.expect(tkRBrack); err != nil {
+		return nil, err
+	}
+	return &List{P: pos, Elts: elts}, nil
+}
+
+func (p *parser) parseBraceAtom() (Expr, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume {
+		return nil, err
+	}
+	if p.cur.kind == tkRBrace {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		return &Dict{P: pos, Keys: nil, Values: nil}, nil
+	}
+	// Special leading **other → dict
+	if p.cur.kind == tkDoubleStar {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		v, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		keys := []Expr{nil}
+		values := []Expr{v}
+		for p.cur.kind == tkComma {
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if p.cur.kind == tkRBrace {
+				break
+			}
+			if p.cur.kind == tkDoubleStar {
+				if err := p.advance(); err != nil {
+					return nil, err
+				}
+				vv, err := p.parseExpr()
+				if err != nil {
+					return nil, err
+				}
+				keys = append(keys, nil)
+				values = append(values, vv)
+				continue
+			}
+			k, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(tkColon); err != nil {
+				return nil, err
+			}
+			vv, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, k)
+			values = append(values, vv)
+		}
+		if _, err := p.expect(tkRBrace); err != nil {
+			return nil, err
+		}
+		return &Dict{P: pos, Keys: keys, Values: values}, nil
+	}
+	first, err := p.parseStarredOrExpr()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind == tkColon {
+		// dict literal or dict comprehension
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		firstVal, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if p.isKeyword("for") {
+			gens, err := p.parseComprehensionClauses()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(tkRBrace); err != nil {
+				return nil, err
+			}
+			return &DictComp{P: pos, Key: first, Value: firstVal, Gens: gens}, nil
+		}
+		keys := []Expr{first}
+		values := []Expr{firstVal}
+		for p.cur.kind == tkComma {
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if p.cur.kind == tkRBrace {
+				break
+			}
+			if p.cur.kind == tkDoubleStar {
+				if err := p.advance(); err != nil {
+					return nil, err
+				}
+				v, err := p.parseExpr()
+				if err != nil {
+					return nil, err
+				}
+				keys = append(keys, nil)
+				values = append(values, v)
+				continue
+			}
+			k, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(tkColon); err != nil {
+				return nil, err
+			}
+			v, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, k)
+			values = append(values, v)
+		}
+		if _, err := p.expect(tkRBrace); err != nil {
+			return nil, err
+		}
+		return &Dict{P: pos, Keys: keys, Values: values}, nil
+	}
+	if p.isKeyword("for") {
+		gens, err := p.parseComprehensionClauses()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(tkRBrace); err != nil {
+			return nil, err
+		}
+		return &SetComp{P: pos, Elt: first, Gens: gens}, nil
+	}
+	// set literal
+	elts := []Expr{first}
+	for p.cur.kind == tkComma {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind == tkRBrace {
+			break
+		}
+		next, err := p.parseStarredOrExpr()
+		if err != nil {
+			return nil, err
+		}
+		elts = append(elts, next)
+	}
+	if _, err := p.expect(tkRBrace); err != nil {
+		return nil, err
+	}
+	return &Set{P: pos, Elts: elts}, nil
+}
+
+// parseStarredOrExpr is the entry for a single element inside a
+// collection literal or call args. It returns either Starred(expr)
+// or a plain expression.
+func (p *parser) parseStarredOrExpr() (Expr, error) {
+	if p.cur.kind == tkStar {
+		pos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		v, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &Starred{P: pos, Value: v}, nil
+	}
+	return p.parseExpr()
+}
+
+// ----- Comprehensions -----
+
+func (p *parser) parseComprehensionClauses() ([]*Comprehension, error) {
+	var gens []*Comprehension
+	for p.isKeyword("for") || (p.isKeyword("async") && p.peekIsFor()) {
+		var isAsync bool
+		if p.isKeyword("async") {
+			isAsync = true
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+		}
+		if !p.isKeyword("for") {
+			return nil, fmt.Errorf("%d:%d: expected 'for' in comprehension",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		target, err := p.parseTargetList()
+		if err != nil {
+			return nil, err
+		}
+		if !p.isKeyword("in") {
+			return nil, fmt.Errorf("%d:%d: expected 'in' in comprehension",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		iter, err := p.parseOr()
+		if err != nil {
+			return nil, err
+		}
+		var ifs []Expr
+		for p.isKeyword("if") {
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			cond, err := p.parseOr()
+			if err != nil {
+				return nil, err
+			}
+			ifs = append(ifs, cond)
+		}
+		gens = append(gens, &Comprehension{
+			Target: target, Iter: iter, Ifs: ifs, IsAsync: isAsync,
+		})
+	}
+	return gens, nil
+}
+
+func (p *parser) peekIsFor() bool {
+	nxt, err := p.peekTok()
+	if err != nil {
+		return false
+	}
+	return nxt.kind == tkName && nxt.val == "for"
+}
+
+// parseTargetList parses a comprehension or for-loop target. Allows
+// names, starred names, and tuples thereof (without enclosing
+// parens). Stops at `in`.
+func (p *parser) parseTargetList() (Expr, error) {
+	first, err := p.parseTargetAtom()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkComma {
+		return first, nil
+	}
+	pos := first.pos()
+	elts := []Expr{first}
+	for p.cur.kind == tkComma {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		// trailing comma: peek for `in` or close-bracket
+		if p.isKeyword("in") || p.cur.kind == tkRParen ||
+			p.cur.kind == tkRBrack || p.cur.kind == tkRBrace {
+			break
+		}
+		next, err := p.parseTargetAtom()
+		if err != nil {
+			return nil, err
+		}
+		elts = append(elts, next)
+	}
+	return &Tuple{P: pos, Elts: elts}, nil
+}
+
+func (p *parser) parseTargetAtom() (Expr, error) {
+	if p.cur.kind == tkStar {
+		pos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		v, err := p.parseTargetAtom()
+		if err != nil {
+			return nil, err
+		}
+		return &Starred{P: pos, Value: v}, nil
+	}
+	if p.cur.kind == tkLParen {
+		pos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		inner, err := p.parseTargetList()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(tkRParen); err != nil {
+			return nil, err
+		}
+		// re-wrap in Tuple if it's a single element to preserve parens
+		_ = pos
+		return inner, nil
+	}
+	if p.cur.kind == tkLBrack {
+		pos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		var elts []Expr
+		for p.cur.kind != tkRBrack {
+			e, err := p.parseTargetAtom()
+			if err != nil {
+				return nil, err
+			}
+			elts = append(elts, e)
+			if p.cur.kind == tkComma {
+				p.advance()
+				continue
+			}
+			break
+		}
+		if _, err := p.expect(tkRBrack); err != nil {
+			return nil, err
+		}
+		return &List{P: pos, Elts: elts}, nil
+	}
+	if p.cur.kind != tkName {
+		return nil, fmt.Errorf("%d:%d: expected target, got %s",
+			p.cur.pos.Line, p.cur.pos.Col, p.cur.kind)
+	}
+	tok := p.cur
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	// allow attribute / subscript targets for completeness
+	expr := Expr(&Name{P: tok.pos, Id: tok.val})
+	for p.cur.kind == tkDot || p.cur.kind == tkLBrack {
+		if p.cur.kind == tkDot {
+			pos := p.cur.pos
+			p.advance()
+			if p.cur.kind != tkName {
+				return nil, fmt.Errorf("%d:%d: expected name after '.'",
+					p.cur.pos.Line, p.cur.pos.Col)
+			}
+			attr := p.cur.val
+			p.advance()
+			expr = &Attribute{P: pos, Value: expr, Attr: attr}
+		} else {
+			pos := p.cur.pos
+			p.advance()
+			s, err := p.parseSubscriptBody()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(tkRBrack); err != nil {
+				return nil, err
+			}
+			expr = &Subscript{P: pos, Value: expr, Slice: s}
+		}
+	}
+	return expr, nil
+}
+
+// ----- Lambda -----
+
+func (p *parser) parseLambda() (Expr, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume 'lambda'
+		return nil, err
+	}
+	args, err := p.parseLambdaArgs()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(tkColon); err != nil {
+		return nil, err
+	}
+	body, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	return &Lambda{P: pos, Args: args, Body: body}, nil
+}
+
+func (p *parser) parseLambdaArgs() (*Arguments, error) {
+	a := &Arguments{}
+	if p.cur.kind == tkColon {
+		return a, nil
+	}
+	state := "pos" // pos | kwonly
+	for p.cur.kind != tkColon {
+		switch p.cur.kind {
+		case tkStar:
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if p.cur.kind == tkComma || p.cur.kind == tkColon {
+				state = "kwonly"
+			} else {
+				if p.cur.kind != tkName {
+					return nil, fmt.Errorf("%d:%d: expected name after '*'",
+						p.cur.pos.Line, p.cur.pos.Col)
+				}
+				name := p.cur
+				p.advance()
+				a.Vararg = &Arg{P: name.pos, Name: name.val}
+				state = "kwonly"
+			}
+		case tkDoubleStar:
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if p.cur.kind != tkName {
+				return nil, fmt.Errorf("%d:%d: expected name after '**'",
+					p.cur.pos.Line, p.cur.pos.Col)
+			}
+			name := p.cur
+			p.advance()
+			a.Kwarg = &Arg{P: name.pos, Name: name.val}
+		case tkSlash:
+			// posonly marker — promote current Args to PosOnly
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			a.PosOnly = a.Args
+			a.Args = nil
+		case tkName:
+			name := p.cur
+			p.advance()
+			arg := &Arg{P: name.pos, Name: name.val}
+			var defaultVal Expr
+			if p.cur.kind == tkAssign {
+				p.advance()
+				v, err := p.parseExpr()
+				if err != nil {
+					return nil, err
+				}
+				defaultVal = v
+			}
+			if state == "pos" {
+				a.Args = append(a.Args, arg)
+				if defaultVal != nil {
+					a.Defaults = append(a.Defaults, defaultVal)
+				}
+			} else {
+				a.KwOnly = append(a.KwOnly, arg)
+				a.KwOnlyDef = append(a.KwOnlyDef, defaultVal)
+			}
+		default:
+			return nil, fmt.Errorf("%d:%d: unexpected token %s in lambda args",
+				p.cur.pos.Line, p.cur.pos.Col, p.cur.kind)
+		}
+		if p.cur.kind == tkComma {
+			p.advance()
+		} else if p.cur.kind != tkColon {
+			return nil, fmt.Errorf("%d:%d: expected ',' or ':' in lambda args, got %s",
+				p.cur.pos.Line, p.cur.pos.Col, p.cur.kind)
+		}
+	}
+	return a, nil
+}
+
+// ----- Helpers -----
 
 func unaryOpString(k tokKind) string {
 	switch k {
@@ -225,4 +1405,23 @@ func unaryOpString(k tokKind) string {
 		return "Invert"
 	}
 	return k.String()
+}
+
+// isReservedKeyword reports whether a name token text is a Python
+// keyword that the parser handles specially (so it should not be
+// treated as a plain Name in lookahead checks).
+func isReservedKeyword(s string) bool {
+	switch s {
+	case "and", "or", "not", "in", "is",
+		"if", "else", "elif", "for", "while",
+		"lambda", "True", "False", "None",
+		"def", "class", "return", "yield",
+		"import", "from", "as", "with",
+		"try", "except", "finally", "raise",
+		"pass", "break", "continue",
+		"global", "nonlocal", "assert", "del",
+		"async", "await", "match", "case":
+		return true
+	}
+	return false
 }
