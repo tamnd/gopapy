@@ -9,6 +9,51 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-04-26
+
+A linter that prints to a terminal is half a tool. CI pipelines need
+structured output so a `gopapy lint` step can fail a build with
+clickable annotations; editors need machine-readable diagnostics so
+they don't have to parse the human format. v0.1.17 adds two more
+output formats and a `--output PATH` sink so the integration story
+matches what ruff and flake8 ship.
+
+The text default is byte-for-byte unchanged. Library callers that
+build their own output don't see any of this. Existing v0.1.16
+scripts using `gopapy lint --json` keep working — `--json` is now a
+deprecated alias for `--format json` that uses the new flat schema.
+
+### Added
+
+- `linter.Format` (`text`, `json`, `github`) and
+  `linter.ParseFormat(s)` to convert the CLI string. Unknown values
+  produce an error that lists the accepted choices.
+- `linter.WriteDiagnostic(w, d, format)` writes one diagnostic in
+  the requested format with the trailing newline. Streams one at a
+  time so a 50k warning run stays bounded in memory.
+- `gopapy lint --format {text,json,github}` chooses the encoding.
+  `text` is the default and matches v0.1.16. `json` emits NDJSON
+  using a flat `{filename, line, column, end_line, end_column,
+  severity, code, message}` schema that overlaps with `ruff
+  --output-format json` so a tool that consumes ruff's output can
+  consume gopapy's. `github` emits GitHub Actions workflow command
+  lines (`::warning file=...,line=...,col=...::CODE message`) so a
+  `gopapy lint` step in a workflow surfaces inline PR annotations
+  with no glue script.
+- `gopapy lint --output PATH` writes the diagnostic stream to a
+  file; `-` is stdout (the default). The `loaded config from PATH`
+  line and the `N files, M warnings` trailer stay on stderr so
+  machine consumers see only diagnostics on the chosen sink.
+
+### Changed
+
+- `gopapy lint --json` now emits the v0.1.17 flat JSON schema
+  instead of the v0.1.16 nested-pos shape. Field names switched
+  from `{filename, pos:{...}, end:{...}, severity, code, msg}` to
+  `{filename, line, column, end_line, end_column, severity, code,
+  message}`. The library-level `diag.Diagnostic.MarshalJSON` keeps
+  its original shape — the change is CLI-only.
+
 ## [0.1.16] - 2026-04-26
 
 A linter without a config story is a linter you fight. v0.1.16 gives
@@ -1309,7 +1354,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/tamnd/gopapy/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/tamnd/gopapy/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/tamnd/gopapy/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/tamnd/gopapy/compare/v0.1.13...v0.1.14
