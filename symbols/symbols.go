@@ -226,7 +226,12 @@ func (b *builder) stmt(s ast.StmtNode) {
 		b.target(n.Name, FlagBound)
 		b.expr(n.Value)
 	case *ast.AugAssign:
+		// `x += 1` reads x and writes x; the AST stores the target with
+		// Store context so b.target only records the bind. Record the
+		// load explicitly so dead-store and unused-local checks treat
+		// the augassign as a use, matching CPython's symtable.
 		b.target(n.Target, FlagBound)
+		b.augUse(n.Target)
 		b.expr(n.Value)
 	case *ast.AnnAssign:
 		b.target(n.Target, FlagBound|FlagAnnotation)
@@ -592,6 +597,30 @@ func (b *builder) comp(pos ast.Pos, gens []*ast.Comprehension, elt func()) {
 	elt()
 	b.pop()
 	_ = scope
+}
+
+// augUse records every Name appearing in an augmented-assignment
+// target as a use (in addition to the bind that target() records).
+// Tuple/List/Starred targets aren't valid AugAssign forms in Python
+// but we recurse defensively so a malformed AST doesn't panic.
+func (b *builder) augUse(e ast.ExprNode) {
+	if e == nil {
+		return
+	}
+	switch n := e.(type) {
+	case *ast.Name:
+		b.use(b.cur, n.Id, n.Pos)
+	case *ast.Tuple:
+		for _, x := range n.Elts {
+			b.augUse(x)
+		}
+	case *ast.List:
+		for _, x := range n.Elts {
+			b.augUse(x)
+		}
+	case *ast.Starred:
+		b.augUse(n.Value)
+	}
 }
 
 // target walks an assignment target, recording every Name node found

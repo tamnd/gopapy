@@ -114,6 +114,17 @@ jobs:
             --allow "$PYDIR/test/test_coroutines.py" \
             "$PYDIR"
 
+      - name: gopapy lint stdlib (informational)
+        # Print F401/F811/F841 totals over the local CPython 3.14 stdlib.
+        # Not a hard gate — gopapy's linter is coarser than pyflakes (no
+        # branch-aware F811, no __all__ for F401), so absolute counts are
+        # noisy. Watch for dramatic per-PR shifts as a regression hint.
+        run: |
+          PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
+          bin/gopapy lint "$PYDIR" >/dev/null 2> /tmp/lint.summary
+          tail -1 /tmp/lint.summary
+        continue-on-error: true
+
   fuzz:
     name: fuzz pass
     runs-on: ubuntu-latest

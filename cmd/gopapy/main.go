@@ -16,11 +16,12 @@ import (
 	"github.com/tamnd/gopapy/v1/ast"
 	"github.com/tamnd/gopapy/v1/cst"
 	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/v1/linter"
 	"github.com/tamnd/gopapy/v1/parser"
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.12"
+const version = "0.1.13"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -71,6 +72,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return symbolsCmd(args[1], stdout, stderr)
 	case "diag":
 		return diagCmd(args[1:], stdout, stderr)
+	case "lint":
+		return lintCmd(args[1:], stdout, stderr)
 	case "bench":
 		if len(args) < 2 {
 			return fmt.Errorf("bench: missing DIR argument")
@@ -459,6 +462,103 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// lintCmd runs the pyflakes-style linter on FILE or every .py under
+// DIR. Output mirrors diagCmd. Exit code follows the pyflakes
+// convention: warnings never fail the run; only parse failures do.
+func lintCmd(args []string, stdout, stderr io.Writer) error {
+	jsonOut := false
+	var path string
+	for _, a := range args {
+		switch a {
+		case "--json":
+			jsonOut = true
+		default:
+			if path != "" {
+				return fmt.Errorf("lint: unexpected argument %q", a)
+			}
+			path = a
+		}
+	}
+	if path == "" {
+		return fmt.Errorf("lint: missing PATH argument")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+
+	var (
+		diagnostics []diag.Diagnostic
+		fileCount   int
+		parseFailed int
+	)
+
+	emit := func(d diag.Diagnostic) error {
+		if jsonOut {
+			b, err := json.Marshal(d)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(stdout, string(b))
+		} else {
+			fmt.Fprintln(stdout, d.String())
+		}
+		return nil
+	}
+
+	process := func(p string) {
+		fileCount++
+		src, rerr := os.ReadFile(p)
+		if rerr != nil {
+			parseFailed++
+			fmt.Fprintf(stderr, "FAIL read %s: %v\n", p, rerr)
+			return
+		}
+		ds, lerr := linter.LintFile(p, src)
+		if lerr != nil {
+			parseFailed++
+			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", p, lerr)
+			return
+		}
+		for _, d := range ds {
+			diagnostics = append(diagnostics, d)
+			_ = emit(d)
+		}
+	}
+
+	if info.IsDir() {
+		const gcEvery = 16
+		walkErr := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			if !strings.HasSuffix(p, ".py") {
+				return nil
+			}
+			if isIntentionalBadFixture(p) {
+				return nil
+			}
+			process(p)
+			if fileCount%gcEvery == 0 {
+				runtime.GC()
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return walkErr
+		}
+		fmt.Fprintf(stderr, "%d files, %d parse-failed, %d diagnostics\n",
+			fileCount, parseFailed, len(diagnostics))
+	} else {
+		process(path)
+	}
+
+	if parseFailed > 0 {
+		return fmt.Errorf("lint: %d parse failures", parseFailed)
+	}
+	return nil
+}
+
 // symbolsCmd builds a symbol table for one file or every .py under a
 // directory. The contract from the v0.1.4 spec is "Build never panics
 // on stdlib"; semantic warnings on individual files do not fail the run.
@@ -598,6 +698,7 @@ Commands:
   check DIR     Parse every .py under DIR, summarise failures.
   symbols PATH  Build a symbol table for FILE, or report panics across DIR.
   diag PATH     Print semantic diagnostics for FILE or DIR. --json for JSONL.
+  lint PATH     Run pyflakes-style linter on FILE or DIR. --json for JSONL.
   bench DIR     Parse every .py under DIR and print parse/emit throughput.
   version       Print the gopapy version.
   help          Show this message.
