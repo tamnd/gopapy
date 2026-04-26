@@ -2,6 +2,7 @@ package ast
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -168,7 +169,14 @@ func (p *printer) stmt(s StmtNode) {
 		p.write(" ")
 		p.write(opSym(v.Op))
 		p.write("= ")
-		p.expr(v.Value, pTuple)
+		// A bare `*x` element inside a tuple isn't accepted on the RHS of
+		// AugAssign without surrounding parens, so promote precedence to
+		// force the Tuple emitter to wrap.
+		valPrec := pTuple
+		if t, ok := v.Value.(*Tuple); ok && tupleHasStarred(t) {
+			valPrec = pAtom
+		}
+		p.expr(v.Value, valPrec)
 		p.newline()
 	case *AnnAssign:
 		p.writeIndent()
@@ -490,14 +498,25 @@ func (p *printer) matchStmt(m *Match) {
 
 func (p *printer) matchSubject(e ExprNode) {
 	if t, ok := e.(*Tuple); ok {
+		// Empty and single-element tuples need parens: a bare `match :`
+		// or `match x,:` re-parses as something else (or nothing). The
+		// multi-element case can drop the parens since `match a, b:` is
+		// the canonical form.
+		if len(t.Elts) == 0 {
+			p.write("()")
+			return
+		}
+		if len(t.Elts) == 1 {
+			p.write("(")
+			p.expr(t.Elts[0], pTest)
+			p.write(",)")
+			return
+		}
 		for i, el := range t.Elts {
 			if i > 0 {
 				p.write(", ")
 			}
 			p.expr(el, pTest)
-		}
-		if len(t.Elts) == 1 {
-			p.write(",")
 		}
 		return
 	}
@@ -507,7 +526,7 @@ func (p *printer) matchSubject(e ExprNode) {
 func (p *printer) pattern(pn PatternNode) {
 	switch v := pn.(type) {
 	case *MatchValue:
-		p.expr(v.Value, pTest)
+		p.matchValueExpr(v.Value)
 	case *MatchSingleton:
 		p.constant(v.Value, "")
 	case *MatchSequence:
@@ -576,13 +595,32 @@ func (p *printer) pattern(pn PatternNode) {
 			p.write(v.Name)
 			return
 		}
-		p.pattern(v.Pattern)
+		// Nested `as` needs parens: `0 as w as z` re-parses as a syntax
+		// error; the source form is `(0 as w) as z`.
+		if _, ok := v.Pattern.(*MatchAs); ok {
+			p.write("(")
+			p.pattern(v.Pattern)
+			p.write(")")
+		} else {
+			p.pattern(v.Pattern)
+		}
 		p.write(" as ")
 		p.write(v.Name)
 	case *MatchOr:
 		for i, sub := range v.Patterns {
 			if i > 0 {
 				p.write(" | ")
+			}
+			// `as` binds looser than `|`, so a bare `0 as z | 1 as z`
+			// re-parses as MatchAs(MatchOr(...)). And a nested MatchOr
+			// would otherwise flatten on reparse, losing structure.
+			// Wrap both in parens to preserve the original tree.
+			switch sub.(type) {
+			case *MatchAs, *MatchOr:
+				p.write("(")
+				p.pattern(sub)
+				p.write(")")
+				continue
 			}
 			p.pattern(sub)
 		}
@@ -758,7 +796,12 @@ func (p *printer) expr(e ExprNode, prec int) {
 			p.write("()")
 			return
 		}
-		paren := prec > pTuple
+		// Single-element tuples need parens to disambiguate the trailing
+		// comma — otherwise contexts that strip the comma (e.g.
+		// AugAssign right-hand side in our parser, but also several
+		// CPython-conventional places) silently demote it to a scalar.
+		// CPython's ast.unparse takes the same line.
+		paren := prec > pTuple || len(v.Elts) == 1
 		if paren {
 			p.write("(")
 		}
@@ -777,6 +820,65 @@ func (p *printer) expr(e ExprNode, prec int) {
 	case *Slice:
 		p.sliceExpr(v)
 	}
+}
+
+// matchValueExpr emits a value pattern. The match-pattern grammar only allows
+// `signed_number (+|-) NUMBER` for complex literals — the imaginary side must
+// be a bare positive numeric literal. Our parser folds `0 - 0j` into
+// `BinOp(Add, 0, Constant(-0j))`, which would re-emit as the ungrammatical
+// `0 + -0.0j`. Detect a negative numeric right-hand constant and flip the
+// operator so the output stays parseable.
+func (p *printer) matchValueExpr(e ExprNode) {
+	if b, ok := e.(*BinOp); ok {
+		_, isAdd := b.Op.(*Add)
+		_, isSub := b.Op.(*Sub)
+		if isAdd || isSub {
+			if c, ok := b.Right.(*Constant); ok {
+				if neg, abs := negateIfNegativeNumeric(c.Value); neg {
+					p.expr(b.Left, pTest)
+					if isAdd {
+						p.write(" - ")
+					} else {
+						p.write(" + ")
+					}
+					p.constant(abs, c.Kind)
+					return
+				}
+			}
+		}
+	}
+	p.expr(e, pTest)
+}
+
+// negateIfNegativeNumeric returns (true, abs) when v is a negative numeric
+// constant (float or complex with negative imaginary). Otherwise (false, v).
+// Int constants are stored as decimal strings without a leading `-` (the
+// negation is in a UnaryOp), so they never appear here.
+func negateIfNegativeNumeric(v ConstantValue) (bool, ConstantValue) {
+	switch v.Kind {
+	case ConstantFloat:
+		if v.Float < 0 || (v.Float == 0 && math.Signbit(v.Float)) {
+			n := v
+			n.Float = -v.Float
+			return true, n
+		}
+	case ConstantComplex:
+		if v.Imag < 0 || (v.Imag == 0 && math.Signbit(v.Imag)) {
+			n := v
+			n.Imag = -v.Imag
+			return true, n
+		}
+	}
+	return false, v
+}
+
+func tupleHasStarred(t *Tuple) bool {
+	for _, el := range t.Elts {
+		if _, ok := el.(*Starred); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func argumentsHasAny(a *Arguments) bool {
@@ -798,14 +900,20 @@ func (p *printer) attribute(a *Attribute) {
 
 func (p *printer) subscriptSlice(s ExprNode) {
 	if t, ok := s.(*Tuple); ok && len(t.Elts) > 0 {
+		// Single-element tuples must keep their parens here too: a bare
+		// `1,` inside `[]` re-parses as the scalar 1, not a 1-tuple,
+		// because the parser drops trailing commas in subscript context.
+		if len(t.Elts) == 1 {
+			p.write("(")
+			p.expr(t.Elts[0], pTest)
+			p.write(",)")
+			return
+		}
 		for i, el := range t.Elts {
 			if i > 0 {
 				p.write(", ")
 			}
 			p.expr(el, pTest)
-		}
-		if len(t.Elts) == 1 {
-			p.write(",")
 		}
 		return
 	}
@@ -1209,9 +1317,9 @@ func (p *printer) constant(c ConstantValue, kind string) {
 	case ConstantInt:
 		p.write(c.Int)
 	case ConstantFloat:
-		p.write(pyFloatRepr(c.Float))
+		p.write(unparseFloatRepr(c.Float))
 	case ConstantComplex:
-		p.write(pyComplexRepr(c.Imag))
+		p.write(unparseFloatRepr(c.Imag))
 		p.write("j")
 	case ConstantStr:
 		if kind == "u" {
@@ -1224,6 +1332,24 @@ func (p *printer) constant(c ConstantValue, kind string) {
 	case ConstantEllipsis:
 		p.write("...")
 	}
+}
+
+// unparseFloatRepr renders a float for output that must re-parse. Python
+// has no `inf`/`nan` literals — pyFloatRepr emits those for ast.Dump
+// (matching CPython repr) but they round-trip to a Name. CPython's
+// ast.unparse substitutes `1e309` (overflows to inf) and `(1e309-1e309)`
+// (NaN). The same trick handles complex constants: `1e309j`.
+func unparseFloatRepr(f float64) string {
+	if math.IsNaN(f) {
+		return "(1e309-1e309)"
+	}
+	if math.IsInf(f, 1) {
+		return "1e309"
+	}
+	if math.IsInf(f, -1) {
+		return "-1e309"
+	}
+	return pyFloatRepr(f)
 }
 
 // pyStringLiteral renders a Go string as a Python string literal. Prefer

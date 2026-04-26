@@ -98,6 +98,15 @@ jobs:
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
           bin/gopapy diag "$PYDIR"
 
+      - name: gopapy unparse --check stdlib
+        run: |
+          PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
+          # test_coroutines.py exposes a separate parser-side indent bug —
+          # tracked, not a regression of the unparser. Allow it for now.
+          bin/gopapy unparse --check \
+            --allow "$PYDIR/test/test_coroutines.py" \
+            "$PYDIR"
+
   fuzz:
     name: fuzz pass
     runs-on: ubuntu-latest

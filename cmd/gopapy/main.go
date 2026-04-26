@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,7 +19,7 @@ import (
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.10"
+const version = "0.1.11"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -56,15 +57,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, ast.Dump(ast.FromFile(f)))
 		return nil
 	case "unparse":
-		if len(args) < 2 {
-			return fmt.Errorf("unparse: missing FILE argument")
-		}
-		f, err := parseFile(args[1])
-		if err != nil {
-			return err
-		}
-		fmt.Fprint(stdout, ast.Unparse(ast.FromFile(f)))
-		return nil
+		return unparseCmd(args[1:], stdout, stderr)
 	case "check":
 		if len(args) < 2 {
 			return fmt.Errorf("check: missing DIR argument")
@@ -207,6 +200,138 @@ func benchCmd(dir string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "total: %s\n", (parseDur + emitDur).Round(time.Millisecond))
 	if parseFailed > 0 {
 		fmt.Fprintf(stdout, "parse-failed: %d\n", parseFailed)
+	}
+	return nil
+}
+
+// unparseCmd handles `gopapy unparse PATH`: parse, render via
+// ast.Unparse, write to stdout. With `--check`, parse + unparse +
+// re-parse + dump-compare each .py and exit non-zero if any file
+// round-trips lossily; useful as a CI gate against the local stdlib.
+func unparseCmd(args []string, stdout, stderr io.Writer) error {
+	check := false
+	allow := map[string]bool{}
+	var path string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--check":
+			check = true
+		case a == "--allow":
+			if i+1 >= len(args) {
+				return fmt.Errorf("unparse: --allow requires a path")
+			}
+			i++
+			abs, err := filepath.Abs(args[i])
+			if err != nil {
+				return err
+			}
+			allow[abs] = true
+		case strings.HasPrefix(a, "--allow="):
+			abs, err := filepath.Abs(strings.TrimPrefix(a, "--allow="))
+			if err != nil {
+				return err
+			}
+			allow[abs] = true
+		default:
+			if path != "" {
+				return fmt.Errorf("unparse: unexpected argument %q", a)
+			}
+			path = a
+		}
+	}
+	if path == "" {
+		return fmt.Errorf("unparse: missing PATH argument")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return unparseOne(path, check, stdout, stderr)
+	}
+	if !check {
+		return fmt.Errorf("unparse: directory input requires --check")
+	}
+	var fileCount, parseFailed, mismatched, allowed int
+	const gcEvery = 16
+	walkErr := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(p, ".py") {
+			return nil
+		}
+		if isIntentionalBadFixture(p) {
+			return nil
+		}
+		fileCount++
+		abs, _ := filepath.Abs(p)
+		isAllowed := allow[abs]
+		sink := stderr
+		if isAllowed {
+			sink = io.Discard
+		}
+		status := unparseOne(p, true, io.Discard, sink)
+		if status != nil {
+			if isAllowed {
+				allowed++
+				return nil
+			}
+			if errors.Is(status, errParseFailed) {
+				parseFailed++
+			} else {
+				mismatched++
+			}
+		}
+		if fileCount%gcEvery == 0 {
+			runtime.GC()
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+	fmt.Fprintf(stderr, "%d files, %d parse-failed, %d round-trip mismatched, %d allowed\n",
+		fileCount, parseFailed, mismatched, allowed)
+	if mismatched > 0 || parseFailed > 0 {
+		return fmt.Errorf("unparse --check: %d round-trip mismatches, %d parse failures",
+			mismatched, parseFailed)
+	}
+	return nil
+}
+
+var errParseFailed = errors.New("parse failed")
+
+func unparseOne(path string, check bool, stdout, stderr io.Writer) error {
+	f, err := parseFile(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "FAIL parse %s: %v\n", path, err)
+		return errParseFailed
+	}
+	mod := ast.FromFile(f)
+	out := ast.Unparse(mod)
+	if !check {
+		fmt.Fprint(stdout, out)
+		return nil
+	}
+	d1 := ast.Dump(mod)
+	// Skip files whose AST already contains the parser's f-string/t-string
+	// error markers — round-trip can't be a clean test of unparse when
+	// the input itself wasn't parsed cleanly.
+	if strings.Contains(d1, "<fstring-error:") || strings.Contains(d1, "<tstring-error:") {
+		return nil
+	}
+	f2, err := parser.ParseString(path, out)
+	if err != nil {
+		fmt.Fprintf(stderr, "FAIL reparse %s: %v\n", path, err)
+		return fmt.Errorf("reparse failed")
+	}
+	mod2 := ast.FromFile(f2)
+	d2 := ast.Dump(mod2)
+	if d1 != d2 {
+		fmt.Fprintf(stderr, "DIFF %s\n", path)
+		return fmt.Errorf("round-trip dump mismatch")
 	}
 	return nil
 }
