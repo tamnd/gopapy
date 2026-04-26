@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/tamnd/gopapy/v1/cst"
 	"github.com/tamnd/gopapy/v1/diag"
 	"github.com/tamnd/gopapy/v1/linter"
 )
@@ -134,6 +136,8 @@ func (s *server) dispatch(msg *rawMessage) (bool, error) {
 		return false, s.handleDidChange(msg)
 	case "textDocument/didClose":
 		return false, s.handleDidClose(msg)
+	case "textDocument/codeAction":
+		return false, s.handleCodeAction(msg)
 	default:
 		if isRequest {
 			s.respondError(msg.ID, errCodeMethodNotFound,
@@ -150,6 +154,7 @@ func (s *server) handleInitialize(msg *rawMessage) error {
 				OpenClose: true,
 				Change:    1, // full sync
 			},
+			CodeActionProvider: true,
 		},
 		ServerInfo: serverInfo{
 			Name:    "gopapy",
@@ -197,6 +202,99 @@ func (s *server) handleDidClose(msg *rawMessage) error {
 	// Publish an empty diagnostic list so the editor clears any
 	// existing squiggles from the last lint of this URI.
 	return s.publishDiagnostics(p.TextDocument.URI, []lspDiagnostic{})
+}
+
+// handleCodeAction is the editor-side counterpart to `gopapy lint
+// --fix`. The MVP shape is one CodeAction titled "gopapy: fix all":
+// when the linter would change anything in the buffer we offer a
+// quick-fix that replaces the whole document with the post-Fix
+// unparse. No per-diagnostic targeting yet — the fixer returns a
+// rewritten AST, not an edit list, and producing precise (range,
+// replacement) pairs is a follow-up batch.
+//
+// Empty array is the right answer in three cases: the URI isn't open,
+// the source can't parse, or the fixer would change nothing. Editors
+// treat `[]` as "no actions available" and don't show a lightbulb,
+// which is what we want — never offer an action that wouldn't
+// actually do something.
+func (s *server) handleCodeAction(msg *rawMessage) error {
+	emptyResult := json.RawMessage("[]")
+	var p codeActionParams
+	if err := json.Unmarshal(msg.Params, &p); err != nil {
+		return s.respondResult(msg.ID, emptyResult)
+	}
+	if !matchesOnlyFilter(codeActionKindQuickFix, p.Context.Only) {
+		return s.respondResult(msg.ID, emptyResult)
+	}
+	src, ok := s.docFor(p.TextDocument.URI)
+	if !ok {
+		return s.respondResult(msg.ID, emptyResult)
+	}
+	cfg := s.configFor(p.TextDocument.URI)
+	logical := uriToPath(p.TextDocument.URI)
+	if logical == "" {
+		logical = p.TextDocument.URI
+	}
+	cf, perr := cst.Parse(logical, src)
+	if perr != nil {
+		return s.respondResult(msg.ID, emptyResult)
+	}
+	_, fixed := linter.FixWithConfig(cf.AST, cfg, logical)
+	if len(fixed) == 0 {
+		return s.respondResult(msg.ID, emptyResult)
+	}
+	out := cf.Unparse()
+	action := codeAction{
+		Title:       "gopapy: fix all",
+		Kind:        codeActionKindQuickFix,
+		Diagnostics: p.Context.Diagnostics,
+		Edit: workspaceEdit{
+			Changes: map[string][]textEdit{
+				p.TextDocument.URI: {{
+					Range: lspRange{
+						Start: lspPosition{0, 0},
+						End:   documentEndPosition(src),
+					},
+					NewText: out,
+				}},
+			},
+		},
+		IsPreferred: true,
+	}
+	body, err := json.Marshal([]codeAction{action})
+	if err != nil {
+		return fmt.Errorf("lsp: marshal code action: %w", err)
+	}
+	return s.respondResult(msg.ID, body)
+}
+
+// matchesOnlyFilter implements the LSP §codeAction kind filter: a
+// server's action of kind X passes the client's `only: [Y...]` filter
+// when some Y is X itself or a dot-prefix of X. Empty filter means
+// "no filter, allow everything."
+func matchesOnlyFilter(kind string, only []string) bool {
+	if len(only) == 0 {
+		return true
+	}
+	for _, f := range only {
+		if kind == f || strings.HasPrefix(kind, f+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// documentEndPosition returns the LSP position of the byte just past
+// the last byte of src. Used to build a "replace whole document"
+// range without hard-coding a sentinel large number. ASCII-correct;
+// non-ASCII columns count bytes, matching the rest of gopapy.
+func documentEndPosition(src []byte) lspPosition {
+	if len(src) == 0 {
+		return lspPosition{Line: 0, Character: 0}
+	}
+	lines := bytes.Split(src, []byte("\n"))
+	last := len(lines) - 1
+	return lspPosition{Line: last, Character: len(lines[last])}
 }
 
 func (s *server) storeDoc(uri string, body []byte) {

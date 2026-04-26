@@ -73,7 +73,8 @@ type initializeResult struct {
 }
 
 type serverCapabilities struct {
-	TextDocumentSync textDocumentSyncOptions `json:"textDocumentSync"`
+	TextDocumentSync   textDocumentSyncOptions `json:"textDocumentSync"`
+	CodeActionProvider bool                    `json:"codeActionProvider"`
 }
 
 // textDocumentSyncOptions advertises full-content sync (`change: 1`).
@@ -153,3 +154,48 @@ type lspPosition struct {
 	Line      int `json:"line"`
 	Character int `json:"character"`
 }
+
+// codeActionParams is the request body for textDocument/codeAction.
+// Diagnostics in the context are passed through as opaque
+// json.RawMessage so we echo them back in the action's `diagnostics`
+// field exactly as the client sent them — editors use that pointer
+// to clear the squiggle once the action runs.
+type codeActionParams struct {
+	TextDocument struct {
+		URI string `json:"uri"`
+	} `json:"textDocument"`
+	Range   lspRange          `json:"range"`
+	Context codeActionContext `json:"context"`
+}
+
+type codeActionContext struct {
+	Diagnostics []json.RawMessage `json:"diagnostics"`
+	Only        []string          `json:"only,omitempty"`
+}
+
+// codeAction is one entry in the response array. Only the fields we
+// actually populate are modeled; LSP allows a richer shape (command,
+// data, disabled) we don't use.
+type codeAction struct {
+	Title       string            `json:"title"`
+	Kind        string            `json:"kind"`
+	Diagnostics []json.RawMessage `json:"diagnostics,omitempty"`
+	Edit        workspaceEdit     `json:"edit"`
+	IsPreferred bool              `json:"isPreferred,omitempty"`
+}
+
+// workspaceEdit groups edits per URI. We always emit one URI (the
+// document being acted on); the map shape is required by LSP.
+type workspaceEdit struct {
+	Changes map[string][]textEdit `json:"changes"`
+}
+
+type textEdit struct {
+	Range   lspRange `json:"range"`
+	NewText string   `json:"newText"`
+}
+
+// codeActionKindQuickFix is the string LSP requires for quick-fix
+// actions. Captured as a constant so the only-filter check below and
+// the action constructor agree byte-for-byte.
+const codeActionKindQuickFix = "quickfix"
