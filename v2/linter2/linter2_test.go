@@ -204,6 +204,70 @@ func TestW605RawString(t *testing.T) {
 	}
 }
 
+// F403 — star import
+
+func TestF403StarImport(t *testing.T) {
+	ds := lint(t, "from os import *\n")
+	if !hasCode(ds, "F403") {
+		t.Error("expected F403 for star import")
+	}
+}
+
+func TestF403NormalImport(t *testing.T) {
+	ds := lint(t, "from os import path\npath.join('a', 'b')\n")
+	if hasCode(ds, "F403") {
+		t.Error("unexpected F403 for normal import")
+	}
+}
+
+// F631 — assert tuple
+
+func TestF631AssertTuple(t *testing.T) {
+	ds := lint(t, "assert (True, False)\n")
+	if !hasCode(ds, "F631") {
+		t.Error("expected F631 for assert with non-empty tuple")
+	}
+}
+
+func TestF631AssertNonTuple(t *testing.T) {
+	ds := lint(t, "assert True\n")
+	if hasCode(ds, "F631") {
+		t.Error("unexpected F631 for assert with non-tuple")
+	}
+}
+
+// W291 — trailing whitespace
+
+func TestW291TrailingWhitespace(t *testing.T) {
+	ds := lintFile(t, "x = 1   \n")
+	if !hasCode(ds, "W291") {
+		t.Error("expected W291 for trailing whitespace")
+	}
+}
+
+func TestW291NoTrailingWhitespace(t *testing.T) {
+	ds := lintFile(t, "x = 1\n")
+	if hasCode(ds, "W291") {
+		t.Error("unexpected W291 when no trailing whitespace")
+	}
+}
+
+// F901 — raise NotImplemented
+
+func TestF901RaiseNotImplemented(t *testing.T) {
+	ds := lint(t, "raise NotImplemented\n")
+	if !hasCode(ds, "F901") {
+		t.Error("expected F901 for raise NotImplemented")
+	}
+}
+
+func TestF901RaiseNotImplementedError(t *testing.T) {
+	ds := lint(t, "raise NotImplementedError\n")
+	if hasCode(ds, "F901") {
+		t.Error("unexpected F901 for raise NotImplementedError")
+	}
+}
+
 // Diagnostic type is from diag package.
 var _ diag.Diagnostic = diag.Diagnostic{}
 
