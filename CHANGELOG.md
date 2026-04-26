@@ -9,6 +9,36 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-04-26
+
+Editors lint unsaved buffers. Until v0.1.18 anyone wiring `gopapy
+lint` into a Neovim or VS Code plugin had to write the buffer to a
+tempfile per keystroke — fragile and slow. v0.1.18 adds the standard
+stdin convention so the editor can pipe the buffer in and read
+diagnostics out of one subprocess. The auto-fix path splits cleanly:
+rewritten source on stdout, diagnostics on stderr. This is the LSP
+precursor; the protocol layer is still a separate epic.
+
+### Added
+
+- `gopapy lint -` reads source from stdin and lints it as a single
+  file. Empty stdin produces no diagnostics and exits 0; the parser
+  already handles the empty-module case.
+- `gopapy lint --stdin-filename PATH` gives the in-memory buffer a
+  logical name. The path drives three things: the `Filename` field
+  on every emitted diagnostic (so editor jump-to-source works), the
+  per-file ignore matcher (so `tests/*` matches an unsaved
+  `tests/foo.py` buffer), and the config-discovery anchor (so the
+  right `pyproject.toml` is found even when the working dir is
+  somewhere else). The path is logical only; gopapy never reads or
+  stats it.
+- `gopapy lint --fix -` writes the rewritten source to the configured
+  output sink (stdout by default; `--output PATH` redirects) and
+  the remaining diagnostics to stderr. Editors pipe stdout back into
+  the buffer and render stderr as squiggles. When nothing is
+  fixable, stdout still receives the source verbatim so the editor
+  doesn't have to special-case "no change".
+
 ## [0.1.17] - 2026-04-26
 
 A linter that prints to a terminal is half a tool. CI pipelines need
@@ -1354,7 +1384,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/tamnd/gopapy/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/tamnd/gopapy/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/tamnd/gopapy/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/tamnd/gopapy/compare/v0.1.14...v0.1.15
