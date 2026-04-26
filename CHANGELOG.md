@@ -9,6 +9,59 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-04-26
+
+A typed-actor visitor pattern over the AST. `ast.Walk(n, fn)` already
+covers the trivial "do X for every node" loop, but every analyzer that
+wanted per-type behavior was hand-rolling the same type-switch inside
+its closure. v0.1.8 adds the CPython-style `Visitor` shape so a single
+visitor object can carry state, dispatch per node type, prune subtrees,
+or hand a different visitor to a subtree — all in one place.
+
+### Added
+
+- New `ast.Visitor` interface (`Visit(n Node) Visitor`). The return
+  value picks the visitor used for the children: the receiver to keep
+  walking, `nil` to prune the subtree, or a different visitor to swap
+  in for the subtree (CPython `ast.NodeVisitor` semantics).
+- `ast.Visit(v Visitor, n Node)` drives a Visitor in depth-first
+  pre-order. Visitor-first arg order matches `io.Copy(dst, src)`: the
+  actor first, the target second.
+- `ast.WalkPreorder(n, fn)` and `ast.WalkPostorder(n, fn)` —
+  flat-callback convenience for traversals that don't need pruning.
+  Pre-order calls fn before descending; post-order calls fn after, so
+  every descendant is visited before its parent (useful for analyses
+  that aggregate child results into the parent).
+- `ast/visit_test.go` covers the three Visit return modes (collect,
+  prune, swap), the two ordering helpers, and nil-visitor / nil-node
+  no-op contracts.
+
+### Fixed
+
+- `ast.Visit` and `ast.WalkPostorder` typed-nil-guard their node
+  argument before handing it to the generated `walkChildren`. Several
+  AST struct fields (`Arguments.Vararg`, `Arguments.Kwarg`,
+  `FunctionDef.Returns`, etc.) are concrete `*Arg` / `*ExprNode`
+  pointers that can be nil; once promoted to a `Node` interface they
+  become typed-nil values that the bare `n == nil` check inside `Walk`
+  doesn't catch. The new `isNilNode` helper uses `reflect.IsNil` to
+  catch both forms.
+
+### Deferred
+
+- `ast.Transformer` (in-place AST rewriting via the Visitor protocol)
+  was scoped into v0.1.8 originally but moved to v0.1.9. In-place
+  rewriting needs either reflection over every struct field or a
+  generated child-slot setter table; both are larger than the rest of
+  v0.1.8 combined and benefit from focused review on their own. The
+  Visitor interface added here is the substrate the Transformer will
+  sit on.
+
+### Verified
+
+- Stdlib parse + symbols + diag rates stay 100% on CPython 3.14.
+- `go test ./...` green across every package.
+
 ## [0.1.7] - 2026-04-26
 
 A standalone `diag` package for analyzer diagnostics, plus a
@@ -935,7 +988,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/tamnd/gopapy/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/tamnd/gopapy/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/tamnd/gopapy/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/tamnd/gopapy/compare/v0.1.4...v0.1.5
