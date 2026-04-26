@@ -46,7 +46,7 @@ func emitFString(p Pos, parts []string) ExprNode {
 					continue
 				}
 				flush()
-				end, fv := scanInterpolation(p, body, i+1)
+				end, fv := scanInterpolation(p, body, i+1, raw)
 				if fv != nil {
 					values = append(values, fv)
 				}
@@ -75,7 +75,7 @@ func emitFString(p Pos, parts []string) ExprNode {
 // the `{`) and returns (end-index after `}`, FormattedValue node). The
 // parser tracks paren/bracket/brace depth and skips over strings so an
 // embedded `}` doesn't terminate prematurely.
-func scanInterpolation(p Pos, body string, i int) (int, ExprNode) {
+func scanInterpolation(p Pos, body string, i int, raw bool) (int, ExprNode) {
 	depth := 0
 	exprStart := i
 	exprEnd := -1
@@ -111,7 +111,7 @@ func scanInterpolation(p Pos, body string, i int) (int, ExprNode) {
 			if exprEnd < 0 {
 				exprEnd = i
 			}
-			fv := buildFormattedValue(p, body[exprStart:exprEnd], convText(body, convStart, specStart, i), specText(body, specStart, i))
+			fv := buildFormattedValue(p, body[exprStart:exprEnd], convText(body, convStart, specStart, i), specText(body, specStart, i), raw)
 			return i + 1, fv
 		}
 		i++
@@ -138,7 +138,7 @@ func specText(body string, specStart, end int) string {
 	return body[specStart:end]
 }
 
-func buildFormattedValue(p Pos, exprText, conv, spec string) ExprNode {
+func buildFormattedValue(p Pos, exprText, conv, spec string, raw bool) ExprNode {
 	exprText = strings.TrimSpace(exprText)
 	// Debug `{expr=}`: trailing `=` keeps the literal text and forces repr
 	// when no conversion is given. Stripping the `=` keeps things simple.
@@ -157,7 +157,10 @@ func buildFormattedValue(p Pos, exprText, conv, spec string) ExprNode {
 	val := emitExpr(expr)
 	fv := &FormattedValue{Pos: p, Value: val, Conversion: conversionOrd(conv)}
 	if spec != "" {
-		fv.FormatSpec = &JoinedStr{Pos: p, Values: parseFStringBody(p, spec)}
+		// The spec text comes from inside the outer braces, so applyEscapes
+		// (which only touches depth-0 text) never decoded its escapes.
+		// Treat the spec as a fresh f-string body and decode now.
+		fv.FormatSpec = &JoinedStr{Pos: p, Values: parseFStringBody(p, applyEscapes(spec, raw), raw)}
 	}
 	return fv
 }
@@ -166,7 +169,7 @@ func buildFormattedValue(p Pos, exprText, conv, spec string) ExprNode {
 // runs of literal text become Constant, `{ ... }` chunks become
 // FormattedValue. Used for both top-level f-strings and recursively for
 // the format-spec inside `{x:>{width}}`.
-func parseFStringBody(p Pos, body string) []ExprNode {
+func parseFStringBody(p Pos, body string, raw bool) []ExprNode {
 	var values []ExprNode
 	var lit strings.Builder
 	flush := func() {
@@ -186,7 +189,7 @@ func parseFStringBody(p Pos, body string) []ExprNode {
 				continue
 			}
 			flush()
-			end, fv := scanInterpolation(p, body, i+1)
+			end, fv := scanInterpolation(p, body, i+1, raw)
 			if fv != nil {
 				values = append(values, fv)
 			}
@@ -325,13 +328,46 @@ func applyEscapes(body string, raw bool) string {
 			continue
 		}
 		if c == '\\' && i+1 < len(body) {
-			j := i
-			b.WriteString(decodeEscapes(body[j : j+2]))
-			i += 2
+			n := escapeRunLen(body, i)
+			b.WriteString(decodeEscapes(body[i : i+n]))
+			i += n
 			continue
 		}
 		b.WriteByte(c)
 		i++
 	}
 	return b.String()
+}
+
+// escapeRunLen returns the number of bytes consumed by an escape sequence
+// starting at body[i] (which must point at a backslash with at least one
+// following byte). The caller passes that slice to decodeEscapes; without
+// the right length, multi-byte escapes like \xHH, \uHHHH, \UHHHHHHHH or
+// 1-3 digit octals get truncated and emitted verbatim.
+func escapeRunLen(body string, i int) int {
+	c := body[i+1]
+	switch c {
+	case 'x':
+		if i+3 < len(body) && isHex(body[i+2]) && isHex(body[i+3]) {
+			return 4
+		}
+	case 'u':
+		if i+5 < len(body) && allHex(body[i+2:i+6]) {
+			return 6
+		}
+	case 'U':
+		if i+9 < len(body) && allHex(body[i+2:i+10]) {
+			return 10
+		}
+	case '0', '1', '2', '3', '4', '5', '6', '7':
+		n := 2
+		if i+2 < len(body) && isOctal(body[i+2]) {
+			n++
+			if i+3 < len(body) && isOctal(body[i+3]) {
+				n++
+			}
+		}
+		return n
+	}
+	return 2
 }

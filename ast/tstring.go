@@ -42,7 +42,7 @@ func emitTString(p Pos, parts []string) ExprNode {
 					continue
 				}
 				flush()
-				end, node := scanInterpolationT(p, body, i+1)
+				end, node := scanInterpolationT(p, body, i+1, isRaw)
 				if node != nil {
 					values = append(values, node)
 				}
@@ -70,7 +70,7 @@ func emitTString(p Pos, parts []string) ExprNode {
 // Interpolation node instead of a FormattedValue. The body slice for
 // Str is captured before any trimming so it round-trips against
 // CPython's ast.dump output.
-func scanInterpolationT(p Pos, body string, i int) (int, ExprNode) {
+func scanInterpolationT(p Pos, body string, i int, raw bool) (int, ExprNode) {
 	depth := 0
 	exprStart := i
 	exprEnd := -1
@@ -106,7 +106,7 @@ func scanInterpolationT(p Pos, body string, i int) (int, ExprNode) {
 			if exprEnd < 0 {
 				exprEnd = i
 			}
-			node := buildInterpolation(p, body[exprStart:exprEnd], convText(body, convStart, specStart, i), specText(body, specStart, i))
+			node := buildInterpolation(p, body[exprStart:exprEnd], convText(body, convStart, specStart, i), specText(body, specStart, i), raw)
 			return i + 1, node
 		}
 		i++
@@ -114,7 +114,7 @@ func scanInterpolationT(p Pos, body string, i int) (int, ExprNode) {
 	return len(body), nil
 }
 
-func buildInterpolation(p Pos, exprText, conv, spec string) ExprNode {
+func buildInterpolation(p Pos, exprText, conv, spec string, raw bool) ExprNode {
 	srcText := strings.TrimSpace(exprText)
 	if strings.HasSuffix(srcText, "=") {
 		srcText = strings.TrimSpace(srcText[:len(srcText)-1])
@@ -134,7 +134,7 @@ func buildInterpolation(p Pos, exprText, conv, spec string) ExprNode {
 		Conversion: conversionOrd(conv),
 	}
 	if spec != "" {
-		node.FormatSpec = &JoinedStr{Pos: p, Values: parseFStringBody(p, spec)}
+		node.FormatSpec = &JoinedStr{Pos: p, Values: parseFStringBody(p, applyEscapes(spec, raw), raw)}
 	}
 	return node
 }
