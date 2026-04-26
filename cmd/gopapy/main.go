@@ -14,12 +14,13 @@ import (
 	"time"
 
 	"github.com/tamnd/gopapy/v1/ast"
+	"github.com/tamnd/gopapy/v1/cst"
 	"github.com/tamnd/gopapy/v1/diag"
 	"github.com/tamnd/gopapy/v1/parser"
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.11"
+const version = "0.1.12"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -210,6 +211,7 @@ func benchCmd(dir string, stdout, stderr io.Writer) error {
 // round-trips lossily; useful as a CI gate against the local stdlib.
 func unparseCmd(args []string, stdout, stderr io.Writer) error {
 	check := false
+	comments := false
 	allow := map[string]bool{}
 	var path string
 	for i := 0; i < len(args); i++ {
@@ -217,6 +219,8 @@ func unparseCmd(args []string, stdout, stderr io.Writer) error {
 		switch {
 		case a == "--check":
 			check = true
+		case a == "--comments":
+			comments = true
 		case a == "--allow":
 			if i+1 >= len(args) {
 				return fmt.Errorf("unparse: --allow requires a path")
@@ -248,7 +252,7 @@ func unparseCmd(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if !info.IsDir() {
-		return unparseOne(path, check, stdout, stderr)
+		return unparseOne(path, check, comments, stdout, stderr)
 	}
 	if !check {
 		return fmt.Errorf("unparse: directory input requires --check")
@@ -272,7 +276,7 @@ func unparseCmd(args []string, stdout, stderr io.Writer) error {
 		if isAllowed {
 			sink = io.Discard
 		}
-		status := unparseOne(p, true, io.Discard, sink)
+		status := unparseOne(p, true, comments, io.Discard, sink)
 		if status != nil {
 			if isAllowed {
 				allowed++
@@ -303,14 +307,31 @@ func unparseCmd(args []string, stdout, stderr io.Writer) error {
 
 var errParseFailed = errors.New("parse failed")
 
-func unparseOne(path string, check bool, stdout, stderr io.Writer) error {
-	f, err := parseFile(path)
+func unparseOne(path string, check, comments bool, stdout, stderr io.Writer) error {
+	src, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "FAIL parse %s: %v\n", path, err)
+		fmt.Fprintf(stderr, "FAIL read %s: %v\n", path, err)
 		return errParseFailed
 	}
-	mod := ast.FromFile(f)
-	out := ast.Unparse(mod)
+	var mod *ast.Module
+	var out string
+	if comments {
+		cf, err := cst.Parse(path, src)
+		if err != nil {
+			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", path, err)
+			return errParseFailed
+		}
+		mod = cf.AST
+		out = cf.Unparse()
+	} else {
+		f, err := parser.ParseString(path, string(src))
+		if err != nil {
+			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", path, err)
+			return errParseFailed
+		}
+		mod = ast.FromFile(f)
+		out = ast.Unparse(mod)
+	}
 	if !check {
 		fmt.Fprint(stdout, out)
 		return nil

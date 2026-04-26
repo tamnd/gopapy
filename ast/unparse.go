@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"strings"
@@ -10,14 +11,42 @@ import (
 // through the parser to a structurally-equal AST; byte-equality with the
 // original source is not a goal. Mirrors CPython's ast.unparse closely.
 func Unparse(n Node) string {
-	p := &printer{}
+	return UnparseWith(n, nil)
+}
+
+// UnparseHooks lets a higher-level caller inject text around each
+// statement during Unparse. The cst package uses this to weave Trivia
+// comments back into the output stream without copy-pasting the
+// printer. A nil hook set degenerates to plain Unparse.
+type UnparseHooks interface {
+	// LeadingFor returns lines to print on their own, before s, at
+	// s's indent level. The printer adds indentation and the trailing
+	// newline; return the text only (e.g. "# comment").
+	LeadingFor(s StmtNode) []string
+
+	// TrailingFor returns the suffix to append on the same line as s's
+	// final emitted newline, prefixed automatically with two spaces.
+	// Return "" when there's nothing to append.
+	TrailingFor(s StmtNode) string
+
+	// FileTrailing returns lines to emit at module scope after the
+	// last statement. Indented to zero. Called once after the body of
+	// a *Module finishes.
+	FileTrailing() []string
+}
+
+// UnparseWith is Unparse plus a hooks argument. Pass nil for the
+// hooks to get plain Unparse output.
+func UnparseWith(n Node, h UnparseHooks) string {
+	p := &printer{hooks: h}
 	p.node(n)
 	return p.b.String()
 }
 
 type printer struct {
-	b      strings.Builder
+	b      bytes.Buffer
 	indent int
+	hooks  UnparseHooks
 }
 
 func (p *printer) write(s string) { p.b.WriteString(s) }
@@ -78,6 +107,13 @@ func (p *printer) mod(m ModNode) {
 	switch v := m.(type) {
 	case *Module:
 		p.body(v.Body)
+		if p.hooks != nil {
+			for _, line := range p.hooks.FileTrailing() {
+				p.writeIndent()
+				p.write(line)
+				p.newline()
+			}
+		}
 	case *Interactive:
 		p.body(v.Body)
 	case *Expression:
@@ -122,6 +158,40 @@ func (p *printer) suite(stmts []StmtNode) {
 // ---------------------------------------------------------------------------
 
 func (p *printer) stmt(s StmtNode) {
+	if p.hooks != nil {
+		for _, line := range p.hooks.LeadingFor(s) {
+			p.writeIndent()
+			p.write(line)
+			p.newline()
+		}
+	}
+	p.stmtBody(s)
+	if p.hooks != nil {
+		if t := p.hooks.TrailingFor(s); t != "" {
+			p.appendTrailing(t)
+		}
+	}
+}
+
+// appendTrailing rewrites the statement's terminating newline so the
+// trailing comment lands on the same line: ``stmt\n`` becomes
+// ``stmt  # comment\n``. If the statement didn't end with a newline
+// (shouldn't happen for valid trees, but stay defensive), the comment
+// just gets appended with a single space separator.
+func (p *printer) appendTrailing(t string) {
+	buf := p.b.Bytes()
+	if n := len(buf); n > 0 && buf[n-1] == '\n' {
+		p.b.Truncate(n - 1)
+		p.write("  ")
+		p.write(t)
+		p.newline()
+		return
+	}
+	p.write(" ")
+	p.write(t)
+}
+
+func (p *printer) stmtBody(s StmtNode) {
 	switch v := s.(type) {
 	case *FunctionDef:
 		p.funcDef(v.Name, v.Args, v.Body, v.DecoratorList, v.Returns, v.TypeParams, false)

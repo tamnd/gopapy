@@ -107,6 +107,13 @@ jobs:
             --allow "$PYDIR/test/test_coroutines.py" \
             "$PYDIR"
 
+      - name: gopapy unparse --check --comments stdlib
+        run: |
+          PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
+          bin/gopapy unparse --check --comments \
+            --allow "$PYDIR/test/test_coroutines.py" \
+            "$PYDIR"
+
   fuzz:
     name: fuzz pass
     runs-on: ubuntu-latest
