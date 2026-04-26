@@ -9,6 +9,39 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-04-26
+
+Two of the most-cited pyflakes codes were still missing: F821
+(undefined name) catches typos and dangling references; F501
+(`%`-format mismatch) catches the classic `"%s %s" % (1,)` shape.
+Both ship as pure consumers of what the linter substrate already
+exposes — F821 reuses `symbols.Scope.Resolve` (which already
+implements Python's class-scope skip rule for nested defs); F501
+walks `BinOp(Mod)` nodes and counts `%X` codes in the literal.
+`linter.AllCodes()` now returns 7 codes.
+
+Neither check has an auto-fix. F821 doesn't know what name the user
+*meant*; F501 doesn't know what arguments the user *wanted*.
+Pyflakes leaves both alone too.
+
+### Added
+
+- `F821` — undefined name. A `Name` reference in `Load` context
+  fires when no scope on its lookup chain binds the identifier and
+  it isn't a CPython 3.14 builtin. Class scopes are invisible to
+  nested functions (matching Python and pyflakes), so a method that
+  references a class-only attribute fires. A module-level `from X
+  import *` suppresses F821 across the module — the wildcard could
+  bring in any name and we can't know.
+- `F501` — `%`-format string with a wrong argument count. Matches
+  `"<fmt>" % args` where the right side is a tuple (count must
+  equal the number of `%X` conversions in the literal) or a single
+  value (must equal exactly one conversion). Dict right-hand sides
+  are skipped because they use keyed conversions; that's a separate
+  pyflakes code (F502) we haven't shipped.
+- Baseline fixtures `linter/testdata/baseline/pct_fmt.py` and
+  `undef.py` lock in the expected line/column for each new code.
+
 ## [0.1.18] - 2026-04-26
 
 Editors lint unsaved buffers. Until v0.1.18 anyone wiring `gopapy
@@ -1384,7 +1417,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/tamnd/gopapy/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/tamnd/gopapy/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/tamnd/gopapy/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/tamnd/gopapy/compare/v0.1.15...v0.1.16
