@@ -48,7 +48,7 @@ func emitSimples(s *parser.SimpleStmts) []StmtNode {
 }
 
 func emitSimple(s *parser.SimpleStmt) StmtNode {
-	pos := pos(s.Pos)
+	pos := spanPos(s.Pos, s.EndPos)
 	switch {
 	case s.Return != nil:
 		return emitReturn(s.Return)
@@ -92,7 +92,7 @@ func emitSimple(s *parser.SimpleStmt) StmtNode {
 }
 
 func emitReturn(r *parser.ReturnStmt) StmtNode {
-	p := pos(r.Pos)
+	p := spanPos(r.Pos, r.EndPos)
 	switch len(r.Values) {
 	case 0:
 		return &Return{Pos: p}
@@ -111,7 +111,7 @@ func emitReturn(r *parser.ReturnStmt) StmtNode {
 }
 
 func emitRaise(r *parser.RaiseStmt) StmtNode {
-	return &Raise{Pos: pos(r.Pos), Exc: emitExprOpt(r.Exc), Cause: emitExprOpt(r.Cause)}
+	return &Raise{Pos: spanPos(r.Pos, r.EndPos), Exc: emitExprOpt(r.Exc), Cause: emitExprOpt(r.Cause)}
 }
 
 func emitDel(d *parser.DelStmt) StmtNode {
@@ -119,19 +119,19 @@ func emitDel(d *parser.DelStmt) StmtNode {
 	for _, t := range d.Targets {
 		targets = append(targets, withCtx(emitExpr(t), &Del{}))
 	}
-	return &Delete{Pos: pos(d.Pos), Targets: targets}
+	return &Delete{Pos: spanPos(d.Pos, d.EndPos), Targets: targets}
 }
 
 func emitImport(im *parser.ImportStmt) StmtNode {
 	names := make([]*Alias, 0, len(im.Names))
 	for _, n := range im.Names {
 		names = append(names, &Alias{
-			Pos:    pos(n.Pos),
+			Pos:    spanPos(n.Pos, n.EndPos),
 			Name:   strings.Join(n.Name.Parts, "."),
 			Asname: n.Asname,
 		})
 	}
-	return &Import{Pos: pos(im.Pos), Names: names}
+	return &Import{Pos: spanPos(im.Pos, im.EndPos), Names: names}
 }
 
 func emitFrom(fr *parser.FromStmt) StmtNode {
@@ -154,19 +154,19 @@ func emitFrom(fr *parser.FromStmt) StmtNode {
 	case len(fr.Group) > 0:
 		names = make([]*Alias, 0, len(fr.Group))
 		for _, n := range fr.Group {
-			names = append(names, &Alias{Pos: pos(n.Pos), Name: n.Name, Asname: n.Asname})
+			names = append(names, &Alias{Pos: spanPos(n.Pos, n.EndPos), Name: n.Name, Asname: n.Asname})
 		}
 	default:
 		names = make([]*Alias, 0, len(fr.Plain))
 		for _, n := range fr.Plain {
-			names = append(names, &Alias{Pos: pos(n.Pos), Name: n.Name, Asname: n.Asname})
+			names = append(names, &Alias{Pos: spanPos(n.Pos, n.EndPos), Name: n.Name, Asname: n.Asname})
 		}
 	}
-	return &ImportFrom{Pos: pos(fr.Pos), Module: module, Names: names, Level: level}
+	return &ImportFrom{Pos: spanPos(fr.Pos, fr.EndPos), Module: module, Names: names, Level: level}
 }
 
 func emitAssign(a *parser.AssignStmt) StmtNode {
-	p := pos(a.Pos)
+	p := spanPos(a.Pos, a.EndPos)
 	switch {
 	case a.Annot != nil:
 		// AnnAssign. Simple=1 only when the target is a bare Name.
@@ -232,12 +232,12 @@ func emitAssignTarget(t *parser.AssignTarget, loadCtx bool) ExprNode {
 	for _, item := range t.Tail {
 		elts = append(elts, emitStarExpr(item))
 	}
-	return &Tuple{Pos: pos(t.Pos), Elts: elts, Ctx: &Load{}}
+	return &Tuple{Pos: spanPos(t.Pos, t.EndPos), Elts: elts, Ctx: &Load{}}
 }
 
 func emitStarExpr(s *parser.StarExpr) ExprNode {
 	if s.Star {
-		return &Starred{Pos: pos(s.Pos), Value: emitExpr(s.Expr), Ctx: &Load{}}
+		return &Starred{Pos: spanPos(s.Pos, s.EndPos), Value: emitExpr(s.Expr), Ctx: &Load{}}
 	}
 	return emitExpr(s.Expr)
 }
@@ -289,7 +289,7 @@ func emitCompound(c *parser.CompoundStmt) StmtNode {
 	case c.While != nil:
 		w := c.While
 		return &While{
-			Pos:    pos(w.Pos),
+			Pos:    spanPos(w.Pos, w.EndPos),
 			Test:   emitExpr(w.Test),
 			Body:   emitBlock(w.Body),
 			Orelse: emitElse(w.Else),
@@ -297,7 +297,7 @@ func emitCompound(c *parser.CompoundStmt) StmtNode {
 	case c.For != nil:
 		f := c.For
 		return &For{
-			Pos:    pos(f.Pos),
+			Pos:    spanPos(f.Pos, f.EndPos),
 			Target: emitTargetList(f.Target, &Store{}),
 			Iter:   emitForIter(f),
 			Body:   emitBlock(f.Body),
@@ -316,7 +316,7 @@ func emitCompound(c *parser.CompoundStmt) StmtNode {
 				OptionalVars: ifNotNil(it.Vars, func(e *parser.Expression) ExprNode { return withCtx(emitExpr(e), &Store{}) }),
 			})
 		}
-		return &With{Pos: pos(w.Pos), Items: items, Body: emitBlock(w.Body)}
+		return &With{Pos: spanPos(w.Pos, w.EndPos), Items: items, Body: emitBlock(w.Body)}
 	case c.Try != nil:
 		return emitTry(c.Try)
 	case c.Match != nil:
@@ -330,10 +330,10 @@ func emitCompound(c *parser.CompoundStmt) StmtNode {
 }
 
 func emitIf(s *parser.IfStmt) StmtNode {
-	root := &If{Pos: pos(s.Pos), Test: emitExpr(s.Test), Body: emitBlock(s.Body)}
+	root := &If{Pos: spanPos(s.Pos, s.EndPos), Test: emitExpr(s.Test), Body: emitBlock(s.Body)}
 	cur := root
 	for _, e := range s.Elifs {
-		next := &If{Pos: pos(e.Pos), Test: emitExpr(e.Test), Body: emitBlock(e.Body)}
+		next := &If{Pos: spanPos(e.Pos, e.EndPos), Test: emitExpr(e.Test), Body: emitBlock(e.Body)}
 		cur.Orelse = []StmtNode{next}
 		cur = next
 	}
@@ -359,7 +359,7 @@ func emitTry(t *parser.TryStmt) StmtNode {
 			typ = &Tuple{Pos: pos(h.Pos), Elts: elts, Ctx: &Load{}}
 		}
 		handlers = append(handlers, &ExceptHandler{
-			Pos:  pos(h.Pos),
+			Pos:  spanPos(h.Pos, h.EndPos),
 			Type: typ,
 			Name: h.Name,
 			Body: emitBlock(h.Body),
@@ -373,19 +373,19 @@ func emitTry(t *parser.TryStmt) StmtNode {
 	}
 	if star {
 		return &TryStar{
-			Pos: pos(t.Pos), Body: body, Handlers: handlers,
+			Pos: spanPos(t.Pos, t.EndPos), Body: body, Handlers: handlers,
 			Orelse: orelse, Finalbody: finalBody,
 		}
 	}
 	return &Try{
-		Pos: pos(t.Pos), Body: body, Handlers: handlers,
+		Pos: spanPos(t.Pos, t.EndPos), Body: body, Handlers: handlers,
 		Orelse: orelse, Finalbody: finalBody,
 	}
 }
 
 func emitFuncDef(f *parser.FuncDef) StmtNode {
 	return &FunctionDef{
-		Pos:        pos(f.Pos),
+		Pos:        spanPos(f.Pos, f.EndPos),
 		Name:       f.Name,
 		Args:       emitArguments(f.Params),
 		Body:       emitBlock(f.Body),
@@ -397,7 +397,7 @@ func emitFuncDef(f *parser.FuncDef) StmtNode {
 func emitClassDef(c *parser.ClassDef) StmtNode {
 	bases, kws := emitArgList(c.Bases)
 	return &ClassDef{
-		Pos:        pos(c.Pos),
+		Pos:        spanPos(c.Pos, c.EndPos),
 		Name:       c.Name,
 		Bases:      bases,
 		Keywords:   kws,
@@ -416,7 +416,7 @@ func emitTypeParams(tps []*parser.TypeParam) []TypeParamNode {
 	}
 	out := make([]TypeParamNode, 0, len(tps))
 	for _, tp := range tps {
-		p := pos(tp.Pos)
+		p := spanPos(tp.Pos, tp.EndPos)
 		switch tp.Kind {
 		case "*":
 			out = append(out, &TypeVarTuple{Pos: p, Name: tp.Name, DefaultValue: emitExprOpt(tp.Default)})
@@ -465,7 +465,7 @@ func emitAsync(a *parser.AsyncStmt) StmtNode {
 	case a.For != nil:
 		f := a.For
 		return &AsyncFor{
-			Pos:    pos(a.Pos),
+			Pos:    spanPos(a.Pos, a.EndPos),
 			Target: emitTargetList(f.Target, &Store{}),
 			Iter:   emitForIter(f),
 			Body:   emitBlock(f.Body),
@@ -484,14 +484,14 @@ func emitAsync(a *parser.AsyncStmt) StmtNode {
 				OptionalVars: ifNotNil(it.Vars, func(e *parser.Expression) ExprNode { return withCtx(emitExpr(e), &Store{}) }),
 			})
 		}
-		return &AsyncWith{Pos: pos(a.Pos), Items: items, Body: emitBlock(w.Body)}
+		return &AsyncWith{Pos: spanPos(a.Pos, a.EndPos), Items: items, Body: emitBlock(w.Body)}
 	}
 	return nil
 }
 
 func emitAsyncFuncDef(f *parser.FuncDef) *AsyncFunctionDef {
 	return &AsyncFunctionDef{
-		Pos:     pos(f.Pos),
+		Pos:     spanPos(f.Pos, f.EndPos),
 		Name:    f.Name,
 		Args:    emitArguments(f.Params),
 		Body:    emitBlock(f.Body),
@@ -589,7 +589,7 @@ func paramArg(p *parser.Param) *Arg {
 	if annot != nil && p.StarAnnot {
 		annot = &Starred{Pos: pos(p.Pos), Value: annot, Ctx: &Load{}}
 	}
-	return &Arg{Pos: pos(p.Pos), Arg: p.Name, Annotation: annot}
+	return &Arg{Pos: spanPos(p.Pos, p.EndPos), Arg: p.Name, Annotation: annot}
 }
 
 // emitCallArgs builds the (Args, Keywords) pair for a Call. The bare
@@ -621,11 +621,11 @@ func emitArgList(args []*parser.Argument) ([]ExprNode, []*Keyword) {
 	for _, a := range args {
 		switch {
 		case a.DStar != nil:
-			kws = append(kws, &Keyword{Pos: pos(a.Pos), Value: emitExpr(a.DStar)})
+			kws = append(kws, &Keyword{Pos: spanPos(a.Pos, a.EndPos), Value: emitExpr(a.DStar)})
 		case a.Star != nil:
-			bases = append(bases, &Starred{Pos: pos(a.Pos), Value: emitExpr(a.Star), Ctx: &Load{}})
+			bases = append(bases, &Starred{Pos: spanPos(a.Pos, a.EndPos), Value: emitExpr(a.Star), Ctx: &Load{}})
 		case a.Kwarg != nil:
-			kws = append(kws, &Keyword{Pos: pos(a.Kwarg.Pos), Arg: a.Kwarg.Name, Value: emitExpr(a.Kwarg.Value)})
+			kws = append(kws, &Keyword{Pos: spanPos(a.Kwarg.Pos, a.Kwarg.EndPos), Arg: a.Kwarg.Name, Value: emitExpr(a.Kwarg.Value)})
 		case a.Posn != nil:
 			bases = append(bases, emitExpr(a.Posn))
 		}
@@ -646,13 +646,13 @@ func emitTargetList(t *parser.TargetList, ctx ExprContextNode) ExprNode {
 	for _, a := range t.Tail {
 		elts = append(elts, withCtx(emitTargetAtom(a), ctx))
 	}
-	return &Tuple{Pos: pos(t.Pos), Elts: elts, Ctx: ctx}
+	return &Tuple{Pos: spanPos(t.Pos, t.EndPos), Elts: elts, Ctx: ctx}
 }
 
 func emitTargetAtom(a *parser.TargetAtom) ExprNode {
 	e := emitBitOr(a.Expr)
 	if a.Star {
-		return &Starred{Pos: pos(a.Pos), Value: e, Ctx: &Load{}}
+		return &Starred{Pos: spanPos(a.Pos, a.EndPos), Value: e, Ctx: &Load{}}
 	}
 	return e
 }
@@ -675,7 +675,7 @@ func emitExpr(e *parser.Expression) ExprNode {
 	if e.Walrus != nil {
 		w := e.Walrus
 		return &NamedExpr{
-			Pos:    pos(w.Pos),
+			Pos:    spanPos(w.Pos, w.EndPos),
 			Target: &Name{Pos: pos(w.Pos), Id: w.Name, Ctx: &Store{}},
 			Value:  emitExpr(w.Value),
 		}
@@ -691,12 +691,12 @@ func emitExpr(e *parser.Expression) ExprNode {
 				Default: lp.Default,
 			})
 		}
-		return &Lambda{Pos: pos(l.Pos), Args: emitArguments(params), Body: emitExpr(l.Body)}
+		return &Lambda{Pos: spanPos(l.Pos, l.EndPos), Args: emitArguments(params), Body: emitExpr(l.Body)}
 	}
 	body := emitDisjunction(e.Body)
 	if e.IfTest != nil {
 		return &IfExp{
-			Pos:    pos(e.Pos),
+			Pos:    spanPos(e.Pos, e.EndPos),
 			Test:   emitDisjunction(e.IfTest),
 			Body:   body,
 			Orelse: emitExpr(e.IfElse),
@@ -714,7 +714,7 @@ func emitDisjunction(d *parser.Disjunction) ExprNode {
 	for _, c := range d.Tail {
 		values = append(values, emitConjunction(c))
 	}
-	return &BoolOp{Pos: pos(d.Pos), Op: &Or{}, Values: values}
+	return &BoolOp{Pos: spanPos(d.Pos, d.EndPos), Op: &Or{}, Values: values}
 }
 
 func emitConjunction(c *parser.Conjunction) ExprNode {
@@ -726,7 +726,7 @@ func emitConjunction(c *parser.Conjunction) ExprNode {
 	for _, i := range c.Tail {
 		values = append(values, emitInversion(i))
 	}
-	return &BoolOp{Pos: pos(c.Pos), Op: &And{}, Values: values}
+	return &BoolOp{Pos: spanPos(c.Pos, c.EndPos), Op: &And{}, Values: values}
 }
 
 func emitInversion(i *parser.Inversion) ExprNode {
@@ -735,7 +735,7 @@ func emitInversion(i *parser.Inversion) ExprNode {
 	// Trust the field shape over the boolean: a real `not` form has Inv
 	// non-nil; a backtracked one has Comp non-nil and Inv nil.
 	if i.Not && i.Inv != nil {
-		return &UnaryOp{Pos: pos(i.Pos), Op: &Not{}, Operand: emitInversion(i.Inv)}
+		return &UnaryOp{Pos: spanPos(i.Pos, i.EndPos), Op: &Not{}, Operand: emitInversion(i.Inv)}
 	}
 	return emitComparison(i.Comp)
 }
@@ -750,7 +750,7 @@ func emitComparison(c *parser.Comparison) ExprNode {
 		ops = append(ops, cmpOp(r))
 		rhs = append(rhs, emitBitOr(r.RHS))
 	}
-	return &Compare{Pos: pos(c.Pos), Left: emitBitOr(c.Head), Ops: ops, Comparators: rhs}
+	return &Compare{Pos: spanPos(c.Pos, c.EndPos), Left: emitBitOr(c.Head), Ops: ops, Comparators: rhs}
 }
 
 func cmpOp(r *parser.CmpRight) CmpopNode {
@@ -788,7 +788,7 @@ func emitBitOr(b *parser.BitOr) ExprNode {
 	}
 	cur := emitBitXor(b.Head)
 	for _, x := range b.Tail {
-		cur = &BinOp{Pos: pos(b.Pos), Left: cur, Op: &BitOr{}, Right: emitBitXor(x)}
+		cur = &BinOp{Pos: spanPos(b.Pos, x.EndPos), Left: cur, Op: &BitOr{}, Right: emitBitXor(x)}
 	}
 	return cur
 }
@@ -799,7 +799,7 @@ func emitBitXor(b *parser.BitXor) ExprNode {
 	}
 	cur := emitBitAnd(b.Head)
 	for _, x := range b.Tail {
-		cur = &BinOp{Pos: pos(b.Pos), Left: cur, Op: &BitXor{}, Right: emitBitAnd(x)}
+		cur = &BinOp{Pos: spanPos(b.Pos, x.EndPos), Left: cur, Op: &BitXor{}, Right: emitBitAnd(x)}
 	}
 	return cur
 }
@@ -810,7 +810,7 @@ func emitBitAnd(b *parser.BitAnd) ExprNode {
 	}
 	cur := emitShift(b.Head)
 	for _, x := range b.Tail {
-		cur = &BinOp{Pos: pos(b.Pos), Left: cur, Op: &BitAnd{}, Right: emitShift(x)}
+		cur = &BinOp{Pos: spanPos(b.Pos, x.EndPos), Left: cur, Op: &BitAnd{}, Right: emitShift(x)}
 	}
 	return cur
 }
@@ -825,7 +825,7 @@ func emitShift(s *parser.Shift) ExprNode {
 		if x.Op == ">>" {
 			op = &RShift{}
 		}
-		cur = &BinOp{Pos: pos(s.Pos), Left: cur, Op: op, Right: emitSum(x.RHS)}
+		cur = &BinOp{Pos: spanPos(s.Pos, x.RHS.EndPos), Left: cur, Op: op, Right: emitSum(x.RHS)}
 	}
 	return cur
 }
@@ -840,7 +840,7 @@ func emitSum(s *parser.Sum) ExprNode {
 		if x.Op == "-" {
 			op = &Sub{}
 		}
-		cur = &BinOp{Pos: pos(s.Pos), Left: cur, Op: op, Right: emitTerm(x.RHS)}
+		cur = &BinOp{Pos: spanPos(s.Pos, x.RHS.EndPos), Left: cur, Op: op, Right: emitTerm(x.RHS)}
 	}
 	return cur
 }
@@ -852,7 +852,7 @@ func emitTerm(t *parser.Term) ExprNode {
 	cur := emitFactor(t.Head)
 	for _, x := range t.Tail {
 		op := termOp(x.Op)
-		cur = &BinOp{Pos: pos(t.Pos), Left: cur, Op: op, Right: emitFactor(x.RHS)}
+		cur = &BinOp{Pos: spanPos(t.Pos, x.RHS.EndPos), Left: cur, Op: op, Right: emitFactor(x.RHS)}
 	}
 	return cur
 }
@@ -884,7 +884,7 @@ func emitFactor(f *parser.Factor) ExprNode {
 		case "~":
 			op = &Invert{}
 		}
-		return &UnaryOp{Pos: pos(f.Pos), Op: op, Operand: emitFactor(f.Inner)}
+		return &UnaryOp{Pos: spanPos(f.Pos, f.EndPos), Op: op, Operand: emitFactor(f.Inner)}
 	}
 	return emitPower(f.Power)
 }
@@ -895,13 +895,13 @@ func emitPower(p *parser.Power) ExprNode {
 	if p.Exp == nil {
 		return base
 	}
-	return &BinOp{Pos: pos(p.Pos), Left: base, Op: &Pow{}, Right: emitFactor(p.Exp)}
+	return &BinOp{Pos: spanPos(p.Pos, p.EndPos), Left: base, Op: &Pow{}, Right: emitFactor(p.Exp)}
 }
 
 func emitAwaitPrimary(a *parser.AwaitPrimary) ExprNode {
 	val := emitPrimary(a.Primary)
 	if a.Await {
-		return &Await{Pos: pos(a.Pos), Value: val}
+		return &Await{Pos: spanPos(a.Pos, a.EndPos), Value: val}
 	}
 	return val
 }
@@ -917,12 +917,12 @@ func emitPrimary(p *parser.Primary) ExprNode {
 func applyTrailer(value ExprNode, t *parser.Trailer) ExprNode {
 	switch {
 	case t.Attr != "":
-		return &Attribute{Pos: pos(t.Pos), Value: value, Attr: t.Attr, Ctx: &Load{}}
+		return &Attribute{Pos: spanPos(t.Pos, t.EndPos), Value: value, Attr: t.Attr, Ctx: &Load{}}
 	case t.Call != nil:
 		args, kws := emitCallArgs(t.Call)
-		return &Call{Pos: pos(t.Pos), Func: value, Args: args, Keywords: kws}
+		return &Call{Pos: spanPos(t.Pos, t.EndPos), Func: value, Args: args, Keywords: kws}
 	case t.Sub != nil:
-		return &Subscript{Pos: pos(t.Pos), Value: value, Slice: emitSubscriptList(t.Sub), Ctx: &Load{}}
+		return &Subscript{Pos: spanPos(t.Pos, t.EndPos), Value: value, Slice: emitSubscriptList(t.Sub), Ctx: &Load{}}
 	}
 	return value
 }
@@ -935,12 +935,12 @@ func emitSubscriptList(sl *parser.SubscriptList) ExprNode {
 	for _, s := range sl.Items {
 		elts = append(elts, emitSubscript(s))
 	}
-	return &Tuple{Pos: pos(sl.Pos), Elts: elts, Ctx: &Load{}}
+	return &Tuple{Pos: spanPos(sl.Pos, sl.EndPos), Elts: elts, Ctx: &Load{}}
 }
 
 func emitSubscript(s *parser.Subscript) ExprNode {
 	if s.Star {
-		return &Starred{Pos: pos(s.Pos), Value: emitExpr(s.Lower), Ctx: &Load{}}
+		return &Starred{Pos: spanPos(s.Pos, s.EndPos), Value: emitExpr(s.Lower), Ctx: &Load{}}
 	}
 	tail := s.Slice
 	if tail == nil {
@@ -949,7 +949,7 @@ func emitSubscript(s *parser.Subscript) ExprNode {
 	if tail == nil {
 		return emitExpr(s.Plain)
 	}
-	out := &Slice{Pos: pos(s.Pos)}
+	out := &Slice{Pos: spanPos(s.Pos, s.EndPos)}
 	if s.Plain != nil {
 		out.Lower = emitExpr(s.Plain)
 	}
@@ -963,7 +963,7 @@ func emitSubscript(s *parser.Subscript) ExprNode {
 }
 
 func emitAtom(a *parser.Atom) ExprNode {
-	p := pos(a.Pos)
+	p := spanPos(a.Pos, a.EndPos)
 	switch {
 	case a.Name != "":
 		switch a.Name {
@@ -1089,7 +1089,7 @@ func emitComps(cs []*parser.CompFor) []*Comprehension {
 
 func emitDictSetElt(it *parser.DictItemOrExpr) ExprNode {
 	if it.StarSet != nil {
-		return &Starred{Pos: pos(it.Pos), Value: emitExpr(it.StarSet), Ctx: &Load{}}
+		return &Starred{Pos: spanPos(it.Pos, it.EndPos), Value: emitExpr(it.StarSet), Ctx: &Load{}}
 	}
 	return emitExpr(it.Key)
 }
@@ -1132,13 +1132,13 @@ func emitParen(p Pos, paren *parser.ParenLit) ExprNode {
 // emitStarOrExpr unwraps a list/tuple element that may be `*expr`.
 func emitStarOrExpr(s *parser.StarOrExpr) ExprNode {
 	if s.Star != nil {
-		return &Starred{Pos: pos(s.Pos), Value: emitExpr(s.Star), Ctx: &Load{}}
+		return &Starred{Pos: spanPos(s.Pos, s.EndPos), Value: emitExpr(s.Star), Ctx: &Load{}}
 	}
 	return emitExpr(s.Expr)
 }
 
 func emitYield(y *parser.YieldExpr) ExprNode {
-	p := pos(y.Pos)
+	p := spanPos(y.Pos, y.EndPos)
 	if y.From != nil {
 		return &YieldFrom{Pos: p, Value: emitExpr(y.From)}
 	}
@@ -1326,12 +1326,14 @@ func decodeStringLiteral(raw string) string {
 }
 
 // decodeEscapes processes Python's escape sequences inside a string literal:
-//   \\ \' \" \a \b \f \n \r \t \v   single-char escapes
-//   \NNN                             1-3 octal digits, value mod 256
-//   \xHH                             two hex digits, exact
-//   \uHHHH                           four hex digits (BMP code point)
-//   \UHHHHHHHH                       eight hex digits (full code point)
-//   \<newline>                       line continuation, dropped
+//
+//	\\ \' \" \a \b \f \n \r \t \v   single-char escapes
+//	\NNN                             1-3 octal digits, value mod 256
+//	\xHH                             two hex digits, exact
+//	\uHHHH                           four hex digits (BMP code point)
+//	\UHHHHHHHH                       eight hex digits (full code point)
+//	\<newline>                       line continuation, dropped
+//
 // Anything else (e.g. \z, \q) is preserved as-is, matching CPython's
 // "deprecated invalid escape" behavior; \N{name} is not yet implemented
 // and is left intact rather than failing parse.
@@ -1444,7 +1446,7 @@ func hexNibble(c byte) byte {
 	case c >= '0' && c <= '9':
 		return c - '0'
 	default:
-		return c|0x20 - 'a' + 10
+		return c | 0x20 - 'a' + 10
 	}
 }
 
@@ -1483,10 +1485,31 @@ func ifNotNil[T any](v *T, f func(*T) ExprNode) ExprNode {
 	return f(v)
 }
 
-// pos copies a participle Position into the AST shape. The lexer adapter
+// pos copies a participle Position into the AST shape with end == start.
+// Used for synthesized AST nodes (the implicit Tuple wrapping `return 1, 2`,
+// the inner Name of a NamedExpr, etc.) whose true span requires walking
+// constituent children — that's a v0.1.7+ follow-up. The lexer adapter
 // already turned Col into 1-indexed in printable output; CPython AST keeps
-// col_offset as 0-indexed UTF-8 bytes, which matches what lex emits, so
-// we subtract one here to get back to 0-indexed.
+// col_offset as 0-indexed UTF-8 bytes, which matches what lex emits, so we
+// subtract one here to get back to 0-indexed.
 func pos(p plexer.Position) Pos {
 	return Pos{Lineno: p.Line, ColOffset: p.Column - 1, EndLineno: p.Line, EndColOffset: p.Column - 1}
+}
+
+// spanPos copies a (start, end) participle Position pair into the AST
+// shape. Used for AST nodes that map 1:1 to a participle struct that
+// carries both Pos and EndPos. The end is participle's "position right
+// after the last consumed token" — which for our lexer adapter means the
+// start position of the next token. That's not byte-exact with CPython's
+// end_col_offset (which points to the position immediately after the
+// final character), but it's a real span rather than a zero-width caret.
+// True CPython-faithful end positions need a hand-written parser; that
+// lands in v0.2.x.
+func spanPos(start, end plexer.Position) Pos {
+	return Pos{
+		Lineno:       start.Line,
+		ColOffset:    start.Column - 1,
+		EndLineno:    end.Line,
+		EndColOffset: end.Column - 1,
+	}
 }

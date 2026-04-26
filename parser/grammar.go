@@ -22,13 +22,14 @@ import (
 // optionally because the lexer adapter emits it before EOF.
 type File struct {
 	Pos        plexer.Position
-	Statements []*Statement `parser:"@@* ENDMARKER?"`
 	EndPos     plexer.Position
+	Statements []*Statement `parser:"@@* ENDMARKER?"`
 }
 
 // Statement is one top-level statement: simple_stmts or compound_stmt.
 type Statement struct {
 	Pos      plexer.Position
+	EndPos   plexer.Position
 	Compound *CompoundStmt `parser:"  @@"`
 	Simples  *SimpleStmts  `parser:"| @@"`
 }
@@ -36,32 +37,34 @@ type Statement struct {
 // SimpleStmts is one or more simple statements separated by ';' and
 // terminated by NEWLINE.
 type SimpleStmts struct {
-	Pos   plexer.Position
-	First *SimpleStmt   `parser:"@@"`
-	Rest  []*SimpleStmt `parser:"( SEMI @@ )* SEMI? NEWLINE"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	First  *SimpleStmt   `parser:"@@"`
+	Rest   []*SimpleStmt `parser:"( SEMI @@ )* SEMI? NEWLINE"`
 }
 
 // SimpleStmt is one of the leaf statements that can appear in a SimpleStmts
 // group. Order matters: assignment alternatives come first so an expression
 // like `a = 1` parses as Assign, not Expr(`a`) followed by `= 1`.
 type SimpleStmt struct {
-	Pos plexer.Position
+	Pos    plexer.Position
+	EndPos plexer.Position
 
-	Return   *ReturnStmt   `parser:"  @@"`
-	Pass     bool          `parser:"| @'pass'"`
-	Break    bool          `parser:"| @'break'"`
-	Continue bool          `parser:"| @'continue'"`
-	Raise    *RaiseStmt    `parser:"| @@"`
-	Del      *DelStmt      `parser:"| @@"`
-	Global   *GlobalStmt   `parser:"| @@"`
-	Nonlocal *NonlocalStmt `parser:"| @@"`
-	Assert   *AssertStmt   `parser:"| @@"`
-	Import   *ImportStmt   `parser:"| @@"`
-	From     *FromStmt     `parser:"| @@"`
-	Yield    *YieldStmt    `parser:"| @@"`
+	Return    *ReturnStmt    `parser:"  @@"`
+	Pass      bool           `parser:"| @'pass'"`
+	Break     bool           `parser:"| @'break'"`
+	Continue  bool           `parser:"| @'continue'"`
+	Raise     *RaiseStmt     `parser:"| @@"`
+	Del       *DelStmt       `parser:"| @@"`
+	Global    *GlobalStmt    `parser:"| @@"`
+	Nonlocal  *NonlocalStmt  `parser:"| @@"`
+	Assert    *AssertStmt    `parser:"| @@"`
+	Import    *ImportStmt    `parser:"| @@"`
+	From      *FromStmt      `parser:"| @@"`
+	Yield     *YieldStmt     `parser:"| @@"`
 	TypeAlias *TypeAliasStmt `parser:"| @@"`
-	Assign   *AssignStmt   `parser:"| @@"`
-	ExprStmt *Expression   `parser:"| @@"`
+	Assign    *AssignStmt    `parser:"| @@"`
+	ExprStmt  *Expression    `parser:"| @@"`
 }
 
 // ReturnStmt: `return` followed by an optional expression list. Multiple
@@ -70,52 +73,61 @@ type SimpleStmt struct {
 // the trailing comma to disambiguate.
 type ReturnStmt struct {
 	Pos           plexer.Position
+	EndPos        plexer.Position
 	Values        []*StarOrExpr `parser:"'return' ( @@ ( COMMA @@ )*"`
 	TrailingComma bool          `parser:"  @COMMA? )?"`
 }
 
 type RaiseStmt struct {
-	Pos   plexer.Position
-	Exc   *Expression `parser:"'raise' ( @@"`
-	Cause *Expression `parser:"  ( 'from' @@ )? )?"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Exc    *Expression `parser:"'raise' ( @@"`
+	Cause  *Expression `parser:"  ( 'from' @@ )? )?"`
 }
 
 type DelStmt struct {
 	Pos           plexer.Position
+	EndPos        plexer.Position
 	Targets       []*Expression `parser:"'del' @@ ( COMMA @@ )*"`
 	TrailingComma bool          `parser:"@COMMA?"`
 }
 
 type GlobalStmt struct {
-	Pos   plexer.Position
-	Names []string `parser:"'global' @NAME ( COMMA @NAME )*"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Names  []string `parser:"'global' @NAME ( COMMA @NAME )*"`
 }
 
 type NonlocalStmt struct {
-	Pos   plexer.Position
-	Names []string `parser:"'nonlocal' @NAME ( COMMA @NAME )*"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Names  []string `parser:"'nonlocal' @NAME ( COMMA @NAME )*"`
 }
 
 type AssertStmt struct {
-	Pos  plexer.Position
-	Test *Expression `parser:"'assert' @@"`
-	Msg  *Expression `parser:"( COMMA @@ )?"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Test   *Expression `parser:"'assert' @@"`
+	Msg    *Expression `parser:"( COMMA @@ )?"`
 }
 
 type ImportStmt struct {
-	Pos   plexer.Position
-	Names []*DottedAsName `parser:"'import' @@ ( COMMA @@ )*"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Names  []*DottedAsName `parser:"'import' @@ ( COMMA @@ )*"`
 }
 
 type DottedAsName struct {
 	Pos    plexer.Position
+	EndPos plexer.Position
 	Name   *DottedName `parser:"@@"`
 	Asname string      `parser:"( 'as' @NAME )?"`
 }
 
 type DottedName struct {
-	Pos   plexer.Position
-	Parts []string `parser:"@NAME ( DOT @NAME )*"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Parts  []string `parser:"@NAME ( DOT @NAME )*"`
 }
 
 // FromStmt: relative dots come first; the module is only present if the
@@ -123,6 +135,7 @@ type DottedName struct {
 // `import` (which lexes as a NAME) from being slurped into DottedName.
 type FromStmt struct {
 	Pos    plexer.Position
+	EndPos plexer.Position
 	Dots   []string    `parser:"'from' @( DOT | ELLIPSIS )*"`
 	Module *DottedName `parser:"( (?! 'import') @@ )? 'import'"`
 	Star   bool        `parser:"( @STAR"`
@@ -132,23 +145,26 @@ type FromStmt struct {
 
 type ImportAs struct {
 	Pos    plexer.Position
+	EndPos plexer.Position
 	Name   string `parser:"@NAME"`
 	Asname string `parser:"( 'as' @NAME )?"`
 }
 
 type YieldStmt struct {
-	Pos  plexer.Position
-	Expr *YieldExpr `parser:"@@"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Expr   *YieldExpr `parser:"@@"`
 }
 
 // AssignStmt covers Assign (one or more `target = ...`), AugAssign, and
 // AnnAssign. The disambiguation happens during AST emission based on
 // which operator showed up between targets and value.
 type AssignStmt struct {
-	Pos    plexer.Position
-	Target *AssignTarget   `parser:"@@"`
-	Annot  *Expression     `parser:"( COLON @@"`
-	AnnVal *Expression     `parser:"  ( EQ @@ )? )?"`
+	Pos     plexer.Position
+	EndPos  plexer.Position
+	Target  *AssignTarget   `parser:"@@"`
+	Annot   *Expression     `parser:"( COLON @@"`
+	AnnVal  *Expression     `parser:"  ( EQ @@ )? )?"`
 	Aug     string          `parser:"  ( @( PLUSEQ | MINUSEQ | STAREQ | SLASHEQ | DOUBLESLEQ | PERCENTEQ | ATEQ | AMPEQ | PIPEEQ | CARETEQ | LSHIFTEQ | RSHIFTEQ | DOUBLESTAREQ )"`
 	AugVal  *Expression     `parser:"    @@"`
 	AugRest []*Expression   `parser:"    ( COMMA @@ )* COMMA?"`
@@ -162,15 +178,17 @@ type AssignStmt struct {
 // expression directly.
 type AssignTarget struct {
 	Pos      plexer.Position
+	EndPos   plexer.Position
 	Head     *StarExpr   `parser:"@@"`
 	Tail     []*StarExpr `parser:"( COMMA @@ )*"`
 	HasTrail bool        `parser:"@COMMA?"`
 }
 
 type StarExpr struct {
-	Pos  plexer.Position
-	Star bool        `parser:"@STAR?"`
-	Expr *Expression `parser:"@@"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Star   bool        `parser:"@STAR?"`
+	Expr   *Expression `parser:"@@"`
 }
 
 // ---------------------------------------------------------------------------
@@ -178,17 +196,18 @@ type StarExpr struct {
 // ---------------------------------------------------------------------------
 
 type CompoundStmt struct {
-	Pos        plexer.Position
-	Async      *AsyncStmt `parser:"  @@"`
-	Decorated  *Decorated `parser:"| @@"`
-	If         *IfStmt    `parser:"| @@"`
-	While      *WhileStmt `parser:"| @@"`
-	For        *ForStmt   `parser:"| @@"`
-	With       *WithStmt  `parser:"| @@"`
-	Try        *TryStmt   `parser:"| @@"`
-	Match      *MatchStmt `parser:"| @@"`
-	FuncDef    *FuncDef   `parser:"| @@"`
-	ClassDef   *ClassDef  `parser:"| @@"`
+	Pos       plexer.Position
+	EndPos    plexer.Position
+	Async     *AsyncStmt `parser:"  @@"`
+	Decorated *Decorated `parser:"| @@"`
+	If        *IfStmt    `parser:"| @@"`
+	While     *WhileStmt `parser:"| @@"`
+	For       *ForStmt   `parser:"| @@"`
+	With      *WithStmt  `parser:"| @@"`
+	Try       *TryStmt   `parser:"| @@"`
+	Match     *MatchStmt `parser:"| @@"`
+	FuncDef   *FuncDef   `parser:"| @@"`
+	ClassDef  *ClassDef  `parser:"| @@"`
 }
 
 // MatchStmt is PEP 634 structural pattern matching. `match` is a soft
@@ -198,6 +217,7 @@ type CompoundStmt struct {
 // `match = 1` and `match` (bare expression) still work.
 type MatchStmt struct {
 	Pos     plexer.Position
+	EndPos  plexer.Position
 	Subject *AssignTarget `parser:"'match' @@ COLON NEWLINE INDENT"`
 	Cases   []*CaseClause `parser:"@@+ DEDENT"`
 }
@@ -208,6 +228,7 @@ type MatchStmt struct {
 // an optional `if` guard and the colon-introduced body.
 type CaseClause struct {
 	Pos       plexer.Position
+	EndPos    plexer.Position
 	Head      *SeqItem    `parser:"'case' @@"`
 	OpenItems []*SeqItem  `parser:"( COMMA @@ ( COMMA @@ )* COMMA? )?"`
 	OpenTrail bool        `parser:"@COMMA?"`
@@ -219,19 +240,22 @@ type CaseClause struct {
 // followed by an optional `as NAME` capture. The grammar nests as
 // Pattern -> OrPattern -> ClosedPattern (with one of eight alternatives).
 type Pattern struct {
-	Pos plexer.Position
-	Or  *OrPattern `parser:"@@"`
-	As  string     `parser:"( 'as' @NAME )?"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Or     *OrPattern `parser:"@@"`
+	As     string     `parser:"( 'as' @NAME )?"`
 }
 
 type OrPattern struct {
-	Pos  plexer.Position
-	Head *ClosedPattern   `parser:"@@"`
-	Tail []*ClosedPattern `parser:"( PIPE @@ )*"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Head   *ClosedPattern   `parser:"@@"`
+	Tail   []*ClosedPattern `parser:"( PIPE @@ )*"`
 }
 
 type ClosedPattern struct {
 	Pos      plexer.Position
+	EndPos   plexer.Position
 	Class    *ClassPattern `parser:"  @@"`
 	Value    *ValuePattern `parser:"| @@"`
 	Sequence *SeqPattern   `parser:"| @@"`
@@ -244,13 +268,15 @@ type ClosedPattern struct {
 // ClassPattern is `Name(args)` or `mod.Name(args)`, distinguished from
 // CapturePattern / ValuePattern by the trailing parenthesised arg list.
 type ClassPattern struct {
-	Pos      plexer.Position
-	Cls      *PatDotted     `parser:"@@ LPAREN"`
-	Args     []*PatternArg  `parser:"( @@ ( COMMA @@ )* COMMA? )? RPAREN"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Cls    *PatDotted    `parser:"@@ LPAREN"`
+	Args   []*PatternArg `parser:"( @@ ( COMMA @@ )* COMMA? )? RPAREN"`
 }
 
 type PatternArg struct {
 	Pos     plexer.Position
+	EndPos  plexer.Position
 	Keyword string   `parser:"( @NAME EQ"`
 	Value   *Pattern `parser:"  @@"`
 	Pos1    *Pattern `parser:"| @@ )"`
@@ -259,46 +285,53 @@ type PatternArg struct {
 // ValuePattern is a dotted name (at least two segments). A single NAME
 // is a CapturePattern; only `mod.NAME` and longer count as a value.
 type ValuePattern struct {
-	Pos  plexer.Position
-	Head string   `parser:"@NAME"`
-	Tail []string `parser:"( DOT @NAME )+"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Head   string   `parser:"@NAME"`
+	Tail   []string `parser:"( DOT @NAME )+"`
 }
 
 type PatDotted struct {
-	Pos  plexer.Position
-	Head string   `parser:"@NAME"`
-	Tail []string `parser:"( DOT @NAME )*"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Head   string   `parser:"@NAME"`
+	Tail   []string `parser:"( DOT @NAME )*"`
 }
 
 // SeqPattern is `[ p1, p2, *rest ]` or `( p1, p2 )`. Empty `[]`/`()`
 // also produces an empty MatchSequence.
 type SeqPattern struct {
-	Pos   plexer.Position
-	Brack bool          `parser:"( @LBRACK"`
-	Items []*SeqItem    `parser:"  ( @@ ( COMMA @@ )* COMMA? )? RBRACK"`
-	Paren bool          `parser:"| @LPAREN"`
-	PItems []*SeqItem   `parser:"  ( @@ COMMA ( @@ ( COMMA @@ )* COMMA? )? )? RPAREN )"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Brack  bool       `parser:"( @LBRACK"`
+	Items  []*SeqItem `parser:"  ( @@ ( COMMA @@ )* COMMA? )? RBRACK"`
+	Paren  bool       `parser:"| @LPAREN"`
+	PItems []*SeqItem `parser:"  ( @@ COMMA ( @@ ( COMMA @@ )* COMMA? )? )? RPAREN )"`
 }
 
 type SeqItem struct {
-	Pos  plexer.Position
-	Star *MatchStarItem `parser:"  @@"`
-	Pat  *Pattern       `parser:"| @@"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Star   *MatchStarItem `parser:"  @@"`
+	Pat    *Pattern       `parser:"| @@"`
 }
 
 type MatchStarItem struct {
-	Pos  plexer.Position
-	Name string `parser:"STAR @NAME"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Name   string `parser:"STAR @NAME"`
 }
 
 // MapPattern is `{ "k": p1, NAME: p2, **rest }`.
 type MapPattern struct {
-	Pos   plexer.Position
-	Items []*MapItem `parser:"LBRACE ( @@ ( COMMA @@ )* COMMA? )? RBRACE"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Items  []*MapItem `parser:"LBRACE ( @@ ( COMMA @@ )* COMMA? )? RBRACE"`
 }
 
 type MapItem struct {
 	Pos     plexer.Position
+	EndPos  plexer.Position
 	Rest    string   `parser:"  DOUBLESTAR @NAME"`
 	Key     *MapKey  `parser:"| @@ COLON"`
 	Pattern *Pattern `parser:"  @@"`
@@ -309,14 +342,15 @@ type MapItem struct {
 // emitter validate.
 type MapKey struct {
 	Pos    plexer.Position
-	Sign   string   `parser:"@( PLUS | MINUS )?"`
-	Number string   `parser:"( @NUMBER"`
-	ImagOp string   `parser:"  ( @( PLUS | MINUS )"`
-	Imag   string   `parser:"    @NUMBER )?"`
-	String []string `parser:"| @STRING+"`
-	True   bool     `parser:"| @'True'"`
-	False_ bool     `parser:"| @'False'"`
-	None   bool     `parser:"| @'None'"`
+	EndPos plexer.Position
+	Sign   string     `parser:"@( PLUS | MINUS )?"`
+	Number string     `parser:"( @NUMBER"`
+	ImagOp string     `parser:"  ( @( PLUS | MINUS )"`
+	Imag   string     `parser:"    @NUMBER )?"`
+	String []string   `parser:"| @STRING+"`
+	True   bool       `parser:"| @'True'"`
+	False_ bool       `parser:"| @'False'"`
+	None   bool       `parser:"| @'None'"`
 	Value  *PatDotted `parser:"| @@ )"`
 }
 
@@ -325,6 +359,7 @@ type MapKey struct {
 // MatchSingleton.
 type LitPattern struct {
 	Pos    plexer.Position
+	EndPos plexer.Position
 	Sign   string   `parser:"@( PLUS | MINUS )?"`
 	Number string   `parser:"( @NUMBER"`
 	Imag   string   `parser:"  ( @( PLUS | MINUS ) @NUMBER )?"`
@@ -340,6 +375,7 @@ type LitPattern struct {
 // swaps in the AsyncFunctionDef / AsyncFor / AsyncWith node types.
 type AsyncStmt struct {
 	Pos     plexer.Position
+	EndPos  plexer.Position
 	FuncDef *FuncDef  `parser:"'async' ( @@"`
 	For     *ForStmt  `parser:"  | @@"`
 	With    *WithStmt `parser:"  | @@ )"`
@@ -351,6 +387,7 @@ type AsyncStmt struct {
 // older restricted dotted_name(args) form, so we follow suit.
 type Decorated struct {
 	Pos        plexer.Position
+	EndPos     plexer.Position
 	Decorators []*Decorator `parser:"@@+"`
 	Async      bool         `parser:"( @'async' )?"`
 	FuncDef    *FuncDef     `parser:"( @@"`
@@ -358,8 +395,9 @@ type Decorated struct {
 }
 
 type Decorator struct {
-	Pos  plexer.Position
-	Expr *Expression `parser:"AT @@ NEWLINE"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Expr   *Expression `parser:"AT @@ NEWLINE"`
 }
 
 // Block is the body of a compound statement. Two shapes:
@@ -372,34 +410,39 @@ type Decorator struct {
 // the suite; gopapy reuses SimpleStmts.
 type Block struct {
 	Pos    plexer.Position
+	EndPos plexer.Position
 	Body   []*Statement `parser:"  ( NEWLINE INDENT @@+ DEDENT"`
 	Inline *SimpleStmts `parser:"  | @@ )"`
 }
 
 type IfStmt struct {
-	Pos   plexer.Position
-	Test  *Expression   `parser:"'if' @@ COLON"`
-	Body  *Block        `parser:"@@"`
-	Elifs []*ElifClause `parser:"@@*"`
-	Else  *ElseClause   `parser:"@@?"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Test   *Expression   `parser:"'if' @@ COLON"`
+	Body   *Block        `parser:"@@"`
+	Elifs  []*ElifClause `parser:"@@*"`
+	Else   *ElseClause   `parser:"@@?"`
 }
 
 type ElifClause struct {
-	Pos  plexer.Position
-	Test *Expression `parser:"'elif' @@ COLON"`
-	Body *Block      `parser:"@@"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Test   *Expression `parser:"'elif' @@ COLON"`
+	Body   *Block      `parser:"@@"`
 }
 
 type ElseClause struct {
-	Pos  plexer.Position
-	Body *Block `parser:"'else' COLON @@"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Body   *Block `parser:"'else' COLON @@"`
 }
 
 type WhileStmt struct {
-	Pos  plexer.Position
-	Test *Expression `parser:"'while' @@ COLON"`
-	Body *Block      `parser:"@@"`
-	Else *ElseClause `parser:"@@?"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Test   *Expression `parser:"'while' @@ COLON"`
+	Body   *Block      `parser:"@@"`
+	Else   *ElseClause `parser:"@@?"`
 }
 
 // ForStmt's target is a star_targets in CPython's grammar — it cannot
@@ -408,6 +451,7 @@ type WhileStmt struct {
 // out at BitOr so `in` stays available as the loop separator.
 type ForStmt struct {
 	Pos      plexer.Position
+	EndPos   plexer.Position
 	Target   *TargetList   `parser:"'for' @@ 'in'"`
 	Iter     *StarOrExpr   `parser:"@@"`
 	IterRest []*StarOrExpr `parser:"( COMMA @@ )* COMMA?"`
@@ -419,8 +463,9 @@ type ForStmt struct {
 // targets with no trailing comma is a Tuple in the AST; a single target
 // stays as the underlying expression.
 type TargetList struct {
-	Pos plexer.Position
-	Head *TargetAtom `parser:"@@"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Head   *TargetAtom `parser:"@@"`
 	// The negative lookahead `(?! COMMA 'in')` prevents the loop from
 	// eating a trailing comma immediately followed by `in`. Without it,
 	// `for x, in xs:` would consume the comma into the loop, then fail to
@@ -433,9 +478,10 @@ type TargetList struct {
 // TargetAtom captures a single assignment target. `*x` is allowed for
 // starred targets in tuple unpacking.
 type TargetAtom struct {
-	Pos  plexer.Position
-	Star bool   `parser:"@STAR?"`
-	Expr *BitOr `parser:"@@"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Star   bool   `parser:"@STAR?"`
+	Expr   *BitOr `parser:"@@"`
 }
 
 // WithStmt accepts both the bare comma-separated form
@@ -451,24 +497,28 @@ type TargetAtom struct {
 // where Expression naturally swallows the parens.
 type WithStmt struct {
 	Pos       plexer.Position
+	EndPos    plexer.Position
 	Group     *WithGroup  `parser:"'with' ( @@"`
 	BareItems []*WithItem `parser:"        | @@ ( COMMA @@ )* )"`
 	Body      *Block      `parser:"COLON @@"`
 }
 
 type WithGroup struct {
-	Pos   plexer.Position
-	Items []*WithItem `parser:"LPAREN @@ ( COMMA @@ )* COMMA? RPAREN (?= COLON)"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Items  []*WithItem `parser:"LPAREN @@ ( COMMA @@ )* COMMA? RPAREN (?= COLON)"`
 }
 
 type WithItem struct {
 	Pos     plexer.Position
+	EndPos  plexer.Position
 	Context *Expression `parser:"@@"`
 	Vars    *Expression `parser:"( 'as' @@ )?"`
 }
 
 type TryStmt struct {
 	Pos      plexer.Position
+	EndPos   plexer.Position
 	Body     *Block          `parser:"'try' COLON @@"`
 	Handlers []*ExceptClause `parser:"@@*"`
 	Else     *ElseClause     `parser:"@@?"`
@@ -477,6 +527,7 @@ type TryStmt struct {
 
 type ExceptClause struct {
 	Pos      plexer.Position
+	EndPos   plexer.Position
 	Star     bool          `parser:"'except' @STAR?"`
 	Type     *Expression   `parser:"( @@"`
 	TypeRest []*Expression `parser:"  ( COMMA @@ )*"`
@@ -485,12 +536,14 @@ type ExceptClause struct {
 }
 
 type FinallyClause struct {
-	Pos  plexer.Position
-	Body *Block `parser:"'finally' COLON @@"`
+	Pos    plexer.Position
+	EndPos plexer.Position
+	Body   *Block `parser:"'finally' COLON @@"`
 }
 
 type FuncDef struct {
 	Pos        plexer.Position
+	EndPos     plexer.Position
 	Name       string       `parser:"'def' @NAME"`
 	TypeParams []*TypeParam `parser:"( LBRACK @@ ( COMMA @@ )* COMMA? RBRACK )?"`
 	Params     []*Param     `parser:"LPAREN ( @@ ( COMMA @@ )* )? RPAREN"`
@@ -510,6 +563,7 @@ type FuncDef struct {
 // The variants share a struct; emit picks the AST node based on Kind.
 type TypeParam struct {
 	Pos     plexer.Position
+	EndPos  plexer.Position
 	Kind    string      `parser:"@( DOUBLESTAR | STAR )?"`
 	Name    string      `parser:"@NAME"`
 	Bound   *Expression `parser:"( COLON @@ )?"`
@@ -518,17 +572,18 @@ type TypeParam struct {
 
 // Param covers one entry in a function parameter list. Five shapes:
 //
-//   /                  Slash=true                   PEP 570 marker
-//   *                  Star=true,  Name=""          bare-star kwonly marker
-//   *name              Star=true,  Name=name        vararg
-//   **name             Double=true, Name=name       kwarg
-//   name[:annot][=default]  the regular case
+//	/                  Slash=true                   PEP 570 marker
+//	*                  Star=true,  Name=""          bare-star kwonly marker
+//	*name              Star=true,  Name=name        vararg
+//	**name             Double=true, Name=name       kwarg
+//	name[:annot][=default]  the regular case
 //
 // Annot and Default only ever populate on the regular case. CPython
 // rejects them on *name/**name at compile time, not parse, so we accept
 // the syntactic form and let downstream flag.
 type Param struct {
-	Pos     plexer.Position
+	Pos    plexer.Position
+	EndPos plexer.Position
 	// Kind is one of "" (regular), "/" (PEP 570 marker), "*" (vararg or
 	// bare-star kwonly marker), or "**" (kwarg). Kept as a string instead
 	// of three bools because participle binds at most one capture per
@@ -542,6 +597,7 @@ type Param struct {
 
 type ClassDef struct {
 	Pos        plexer.Position
+	EndPos     plexer.Position
 	Name       string       `parser:"'class' @NAME"`
 	TypeParams []*TypeParam `parser:"( LBRACK @@ ( COMMA @@ )* COMMA? RBRACK )?"`
 	Bases      []*Argument  `parser:"( LPAREN ( @@ ( COMMA @@ )* COMMA? )? RPAREN )?"`
@@ -554,6 +610,7 @@ type ClassDef struct {
 // `type = 1` still parses as an assignment.
 type TypeAliasStmt struct {
 	Pos        plexer.Position
+	EndPos     plexer.Position
 	Name       string       `parser:"'type' @NAME"`
 	TypeParams []*TypeParam `parser:"( LBRACK @@ ( COMMA @@ )* COMMA? RBRACK )?"`
 	Value      *Expression  `parser:"EQ @@"`
