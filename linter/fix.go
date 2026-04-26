@@ -33,7 +33,18 @@ type FixedDiagnostic struct {
 // F401 flags it, so Fix needs to reach it too. The F811 dead-store
 // pass walks the entire tree to find every FunctionDef/AsyncFunctionDef
 // body; it scans the function's top-level statement list only.
+//
+// Equivalent to FixWithConfig(mod, Config{}, "").
 func Fix(mod *ast.Module) (*ast.Module, []FixedDiagnostic) {
+	return FixWithConfig(mod, Config{}, "")
+}
+
+// FixWithConfig is Fix gated by a Config. A given fix runs only when
+// its code is enabled for filename under cfg, so a project that
+// ignores F401 for `tests/*` won't have its test imports rewritten
+// under `gopapy lint --fix`. Pass an empty filename to skip per-file
+// gating; the global Select / Ignore lists still apply.
+func FixWithConfig(mod *ast.Module, cfg Config, filename string) (*ast.Module, []FixedDiagnostic) {
 	if mod == nil {
 		return mod, nil
 	}
@@ -42,18 +53,33 @@ func Fix(mod *ast.Module) (*ast.Module, []FixedDiagnostic) {
 		return mod, nil
 	}
 	f := &fixer{
-		root:   sm.Root,
-		exempt: futureImportNames(mod),
+		root:     sm.Root,
+		exempt:   futureImportNames(mod),
+		cfg:      cfg,
+		filename: filename,
 	}
-	mod.Body = f.fixStmts(mod.Body)
-	f.applyDeadStoreLiteralFix(mod)
+	if f.codeEnabled(CodeUnusedImport) {
+		mod.Body = f.fixStmts(mod.Body)
+	}
+	if f.codeEnabled(CodeRedefinitionUnused) {
+		f.applyDeadStoreLiteralFix(mod)
+	}
 	return mod, f.fixed
 }
 
 type fixer struct {
-	root   *symbols.Scope
-	exempt map[string]bool
-	fixed  []FixedDiagnostic
+	root     *symbols.Scope
+	exempt   map[string]bool
+	cfg      Config
+	filename string
+	fixed    []FixedDiagnostic
+}
+
+func (f *fixer) codeEnabled(code string) bool {
+	if f.filename == "" {
+		return f.cfg.Enabled(code)
+	}
+	return f.cfg.EnabledFor(f.filename, code)
 }
 
 func (f *fixer) usedAt(name string) (ast.Pos, bool) {

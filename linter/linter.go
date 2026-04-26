@@ -33,8 +33,16 @@ const (
 
 // Lint runs every check on mod and returns diagnostics in stable
 // (line, col, code) order. # noqa suppression is not applied — call
-// LintFile when you want it.
+// LintFile when you want it. Equivalent to LintWithConfig(mod, Config{}).
 func Lint(mod *ast.Module) []diag.Diagnostic {
+	return LintWithConfig(mod, Config{})
+}
+
+// LintWithConfig runs every check enabled by cfg on mod. Per-file
+// ignores in cfg are not applied here because Lint operates on a bare
+// module without a filename; LintFileWithConfig is the path that
+// honours them.
+func LintWithConfig(mod *ast.Module, cfg Config) []diag.Diagnostic {
 	sm := symbols.Build(mod)
 	var out []diag.Diagnostic
 	out = append(out, checkF401(sm, mod)...)
@@ -43,27 +51,56 @@ func Lint(mod *ast.Module) []diag.Diagnostic {
 	out = append(out, checkF811(sm)...)
 	out = append(out, checkF841(sm, mod)...)
 	sortDiagnostics(out)
-	return out
+	return filterEnabled(out, cfg, "")
 }
 
 // LintFile parses src, runs every check, applies # noqa suppression
 // based on trailing comments, and stamps Filename on each diagnostic.
+// Equivalent to LintFileWithConfig(filename, src, Config{}).
 func LintFile(filename string, src []byte) ([]diag.Diagnostic, error) {
+	return LintFileWithConfig(filename, src, Config{})
+}
+
+// LintFileWithConfig parses src, runs every check enabled by cfg
+// (including per-file ignores keyed off filename), applies # noqa
+// suppression, and stamps Filename on each surviving diagnostic.
+func LintFileWithConfig(filename string, src []byte, cfg Config) ([]diag.Diagnostic, error) {
 	cf, err := cst.Parse(filename, src)
 	if err != nil {
 		return nil, err
 	}
-	diags := Lint(cf.AST)
+	diags := LintWithConfig(cf.AST, cfg)
 	noqa := buildNoqaIndex(cf)
 	out := diags[:0]
 	for _, d := range diags {
 		if noqa.suppresses(d.Pos.Lineno, d.Code) {
 			continue
 		}
+		if !cfg.EnabledFor(filename, d.Code) {
+			continue
+		}
 		d.Filename = filename
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// filterEnabled drops diagnostics whose code is not enabled under
+// cfg. When filename is non-empty, per-file ignores are also applied;
+// pass "" to skip the per-file pass (Lint without a filename).
+func filterEnabled(diags []diag.Diagnostic, cfg Config, filename string) []diag.Diagnostic {
+	out := diags[:0]
+	for _, d := range diags {
+		if filename == "" {
+			if !cfg.Enabled(d.Code) {
+				continue
+			}
+		} else if !cfg.EnabledFor(filename, d.Code) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // sortDiagnostics orders by line, column, then code. Stable so a
