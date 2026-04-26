@@ -20,9 +20,9 @@ import (
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-// Stable diagnostic codes. The F prefix matches pyflakes for
-// recognisability; codes are zero-padded three digits and do not get
-// reused once retired.
+// Stable diagnostic codes. The F prefix matches pyflakes and the
+// E prefix matches pycodestyle for recognisability; codes are
+// zero-padded three digits and do not get reused once retired.
 const (
 	CodeUnusedImport               = "F401" // `import X` whose name is never read
 	CodePercentFormatMismatch      = "F501" // `%`-format with mismatched argument count
@@ -31,6 +31,8 @@ const (
 	CodeRedefinitionUnused         = "F811" // name rebound without intervening use
 	CodeUndefinedName              = "F821" // reference to a name no scope binds
 	CodeUnusedLocal                = "F841" // local assigned but never read
+	CodeComparisonToNone           = "E711" // `== None` / `!= None` instead of `is`
+	CodeComparisonToBool           = "E712" // `== True` / `== False` instead of `is`
 )
 
 // Lint runs every check on mod and returns diagnostics in stable
@@ -54,6 +56,8 @@ func LintWithConfig(mod *ast.Module, cfg Config) []diag.Diagnostic {
 	out = append(out, checkF811(sm)...)
 	out = append(out, checkF821(sm, mod)...)
 	out = append(out, checkF841(sm, mod)...)
+	out = append(out, checkE711(mod)...)
+	out = append(out, checkE712(mod)...)
 	sortDiagnostics(out)
 	return filterEnabled(out, cfg, "")
 }

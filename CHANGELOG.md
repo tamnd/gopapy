@@ -9,6 +9,46 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-04-26
+
+The first two pycodestyle checks land. Both target the same pattern
+in different garb: `==` / `!=` against a singleton where Python wants
+`is` / `is not`. Comparing to `None` is the textbook PEP 8 example;
+comparing to `True` / `False` is the same mistake with a different
+constant.
+
+Both checks have safe auto-fixes — operator rewrites (`==` → `is`,
+`!=` → `is not`) that preserve identity for the documented cases.
+The fix stops short of the truthiness rewrite (`if x == True:` →
+`if x:`) because that's behavior-changing for non-bool truthy values.
+
+W605 (`invalid-escape-sequence`) was the third roadmap-v7 starter
+but needs raw source-byte access — by the time we have a `Constant`
+node, the string-fold has resolved `"\\p"` and `"\p"` to the same
+value. Threading bytes into the linter substrate is the v0.1.23
+focus.
+
+### Added
+
+- **E711** (`comparison-to-none`) fires on `x == None`, `None == x`,
+  `x != None`, and chains like `a == None == b` (each slot is
+  checked independently). `is None` / `is not None` stay silent —
+  the canonical form is the whole point.
+- **E712** (`comparison-to-bool`) fires on `x == True`, `True == x`,
+  `x != True`, and the `False` mirrors. `is True` / `is False` stay
+  silent (they're the canonical form for E712 — F632 still flags
+  them as bool-literal `is` comparisons).
+- Auto-fix for both: rewrites the operator slot facing the literal
+  from `==` to `is` and `!=` to `is not`. Per-file ignores apply,
+  so a project that only wants E711 in `src/` and not in `tests/`
+  gets exactly that.
+
+### Notes
+
+- `linter.AllCodes()` returns 9 (was 7).
+- Auto-fix preserves operator chain structure: `a == None == b`
+  rewrites to `a is None is b` (two slots, two fixes).
+
 ## [0.1.21] - 2026-04-26
 
 F632 widens its right-hand-side set to include the named singletons
@@ -1498,7 +1538,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.21...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.22...HEAD
+[0.1.22]: https://github.com/tamnd/gopapy/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/tamnd/gopapy/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/tamnd/gopapy/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/tamnd/gopapy/compare/v0.1.18...v0.1.19

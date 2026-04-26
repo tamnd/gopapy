@@ -74,6 +74,8 @@ func AllCodes() []string {
 		CodeRedefinitionUnused,
 		CodeUndefinedName,
 		CodeUnusedLocal,
+		CodeComparisonToNone,
+		CodeComparisonToBool,
 	}
 }
 

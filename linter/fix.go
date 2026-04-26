@@ -64,6 +64,11 @@ func FixWithConfig(mod *ast.Module, cfg Config, filename string) (*ast.Module, [
 	if f.codeEnabled(CodeRedefinitionUnused) {
 		f.applyDeadStoreLiteralFix(mod)
 	}
+	noneOn := f.codeEnabled(CodeComparisonToNone)
+	boolOn := f.codeEnabled(CodeComparisonToBool)
+	if noneOn || boolOn {
+		f.applyComparisonIdentityFix(mod, noneOn, boolOn)
+	}
 	return mod, f.fixed
 }
 
@@ -319,6 +324,69 @@ func nextRebindPos(s ast.StmtNode, want string) (ast.Pos, bool) {
 		return nm.Pos, true
 	}
 	return ast.Pos{}, false
+}
+
+// applyComparisonIdentityFix rewrites `==`/`!=` to `is`/`is not`
+// for E711 (comparison to None) and E712 (comparison to True/False).
+// The transform mutates the Compare node's Ops slice in place; only
+// the operator slot facing a None/Bool literal is rewritten, so a
+// chained comparison like `a == None == b` rewrites both slots
+// independently without affecting an unrelated middle.
+//
+// The bool case skips the truthiness rewrite (`x == True` → `x`):
+// that's behavior-changing for non-bool truthy values and pycodestyle
+// leaves it as a separate concern.
+func (f *fixer) applyComparisonIdentityFix(mod *ast.Module, noneOn, boolOn bool) {
+	ast.WalkPreorder(mod, func(n ast.Node) {
+		c, ok := n.(*ast.Compare)
+		if !ok {
+			return
+		}
+		left := c.Left
+		for i, op := range c.Ops {
+			if i >= len(c.Comparators) {
+				break
+			}
+			right := c.Comparators[i]
+			if !isEqOrNotEq(op) {
+				left = right
+				continue
+			}
+			noneSide := isNoneConstant(left) || isNoneConstant(right)
+			boolSide := isBoolConstant(left) || isBoolConstant(right)
+			switch {
+			case noneOn && noneSide:
+				c.Ops[i] = rewriteEqToIs(op)
+				f.fixed = append(f.fixed, FixedDiagnostic{
+					Code: CodeComparisonToNone,
+					Pos:  c.Pos,
+					Msg:  "comparison to None should be `if cond is None:`",
+				})
+			case boolOn && boolSide:
+				c.Ops[i] = rewriteEqToIs(op)
+				f.fixed = append(f.fixed, FixedDiagnostic{
+					Code: CodeComparisonToBool,
+					Pos:  c.Pos,
+					Msg:  "comparison to True/False should be `if cond is True:` or `if cond:`",
+				})
+			}
+			left = right
+		}
+	})
+}
+
+// rewriteEqToIs maps Eq → Is and NotEq → IsNot. Cmpop nodes are
+// position-less in this AST, so a fresh node is enough — the unparser
+// derives spelling from the type. Other op types are returned
+// unchanged; callers gate this with isEqOrNotEq.
+func rewriteEqToIs(op ast.CmpopNode) ast.CmpopNode {
+	switch op.(type) {
+	case *ast.Eq:
+		return &ast.Is{}
+	case *ast.NotEq:
+		return &ast.IsNot{}
+	}
+	return op
 }
 
 // topImportName picks the binding name for `import a.b.c` — the
