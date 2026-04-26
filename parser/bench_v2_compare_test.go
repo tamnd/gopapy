@@ -67,3 +67,105 @@ func BenchmarkParseExpressionV1Compare(b *testing.B) {
 		}
 	}
 }
+
+// fileBenchSrc mirrors v2/parser2/bench_test.go's fileBenchSrc so
+// `go test -bench=BenchmarkParseFileV1Compare` here and
+// `go test -bench=BenchmarkParseFile` in v2/parser2 produce
+// directly-comparable numbers. Keep in sync.
+const fileBenchSrc = `# module-level bench fixture
+import os
+import sys as _sys
+from typing import List, Optional
+
+CONST = 42
+PI: float = 3.14
+
+def add(a, b):
+    return a + b
+
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+@cache
+def cached(x):
+    return x * 2
+
+class Point:
+    x: int = 0
+    y: int = 0
+
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    def distance(self, other):
+        dx = self.x - other.x
+        dy = self.y - other.y
+        return (dx * dx + dy * dy) ** 0.5
+
+class Stream(Base, metaclass=Meta):
+    def __init__(self):
+        self.items = []
+
+    def push(self, item):
+        self.items.append(item)
+        return self
+
+async def fetch(url):
+    async with session.get(url) as r:
+        return await r.text()
+
+async def gather(stream):
+    async for chunk in stream:
+        yield chunk
+
+def process(items):
+    total = 0
+    for i, x in enumerate(items):
+        if x is None:
+            continue
+        try:
+            total += int(x)
+        except ValueError as e:
+            raise RuntimeError("bad value") from e
+        finally:
+            pass
+    return total
+
+def comp_demo(xs):
+    squares = [x * x for x in xs if x > 0]
+    pairs = {k: v for k, v in zip(xs, xs)}
+    g = (x for x in xs)
+    return squares, pairs, g
+
+def main():
+    while True:
+        x, y = 1, 2
+        a = b = c = 0
+        x += 1
+        del a
+        assert x > 0, "must be positive"
+        global CONST
+        if x:
+            pass
+        elif y:
+            pass
+        else:
+            pass
+        with open("f") as f, open("g") as g:
+            pass
+        break
+`
+
+func BenchmarkParseFileV1Compare(b *testing.B) {
+	src := []byte(fileBenchSrc)
+	b.SetBytes(int64(len(src)))
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := ParseFile("bench.py", src); err != nil {
+			b.Fatalf("ParseFile: %v", err)
+		}
+	}
+}
