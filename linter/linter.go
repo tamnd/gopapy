@@ -35,7 +35,7 @@ const (
 func Lint(mod *ast.Module) []diag.Diagnostic {
 	sm := symbols.Build(mod)
 	var out []diag.Diagnostic
-	out = append(out, checkF401(sm)...)
+	out = append(out, checkF401(sm, mod)...)
 	out = append(out, checkF811(sm)...)
 	out = append(out, checkF841(sm, mod)...)
 	sortDiagnostics(out)

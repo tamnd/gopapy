@@ -21,7 +21,7 @@ import (
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.13"
+const version = "0.1.14"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -465,13 +465,21 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 // lintCmd runs the pyflakes-style linter on FILE or every .py under
 // DIR. Output mirrors diagCmd. Exit code follows the pyflakes
 // convention: warnings never fail the run; only parse failures do.
+//
+// With --fix, each file is parsed, fixed (only safe F401 fixes
+// today), unparsed back to source via cst.Unparse, and rewritten in
+// place atomically (temp file + rename). The remaining diagnostics
+// after the fix are emitted on stdout.
 func lintCmd(args []string, stdout, stderr io.Writer) error {
 	jsonOut := false
+	fix := false
 	var path string
 	for _, a := range args {
 		switch a {
 		case "--json":
 			jsonOut = true
+		case "--fix":
+			fix = true
 		default:
 			if path != "" {
 				return fmt.Errorf("lint: unexpected argument %q", a)
@@ -491,6 +499,7 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 		diagnostics []diag.Diagnostic
 		fileCount   int
 		parseFailed int
+		fixedFiles  int
 	)
 
 	emit := func(d diag.Diagnostic) error {
@@ -513,6 +522,25 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 			parseFailed++
 			fmt.Fprintf(stderr, "FAIL read %s: %v\n", p, rerr)
 			return
+		}
+		if fix {
+			fixed, ferr := fixOne(p, src)
+			if ferr != nil {
+				parseFailed++
+				fmt.Fprintf(stderr, "FAIL fix %s: %v\n", p, ferr)
+				return
+			}
+			if fixed > 0 {
+				fixedFiles++
+			}
+			// Re-read so the remaining diagnostics reflect the fixed
+			// source on disk rather than the pre-fix copy in memory.
+			src, rerr = os.ReadFile(p)
+			if rerr != nil {
+				parseFailed++
+				fmt.Fprintf(stderr, "FAIL re-read %s: %v\n", p, rerr)
+				return
+			}
 		}
 		ds, lerr := linter.LintFile(p, src)
 		if lerr != nil {
@@ -547,8 +575,12 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		fmt.Fprintf(stderr, "%d files, %d parse-failed, %d diagnostics\n",
+		fmt.Fprintf(stderr, "%d files, %d parse-failed, %d diagnostics",
 			fileCount, parseFailed, len(diagnostics))
+		if fix {
+			fmt.Fprintf(stderr, ", %d files fixed", fixedFiles)
+		}
+		fmt.Fprintln(stderr)
 	} else {
 		process(path)
 	}
@@ -557,6 +589,41 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("lint: %d parse failures", parseFailed)
 	}
 	return nil
+}
+
+// fixOne reads, parses, fixes, and re-emits one file. Returns the
+// number of fixes applied; 0 means the file is left untouched on
+// disk. The write goes through a temp file in the same directory
+// and a rename so a crash mid-write can't truncate the source.
+func fixOne(path string, src []byte) (int, error) {
+	cf, err := cst.Parse(path, src)
+	if err != nil {
+		return 0, err
+	}
+	_, fixed := linter.Fix(cf.AST)
+	if len(fixed) == 0 {
+		return 0, nil
+	}
+	out := cf.Unparse()
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".gopapy-fix-*.py")
+	if err != nil {
+		return 0, err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(out); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return 0, err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return 0, err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return 0, err
+	}
+	return len(fixed), nil
 }
 
 // symbolsCmd builds a symbol table for one file or every .py under a
@@ -699,6 +766,7 @@ Commands:
   symbols PATH  Build a symbol table for FILE, or report panics across DIR.
   diag PATH     Print semantic diagnostics for FILE or DIR. --json for JSONL.
   lint PATH     Run pyflakes-style linter on FILE or DIR. --json for JSONL.
+                --fix rewrites files in place (F401 only).
   bench DIR     Parse every .py under DIR and print parse/emit throughput.
   version       Print the gopapy version.
   help          Show this message.
