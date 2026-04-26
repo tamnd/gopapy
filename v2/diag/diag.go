@@ -4,6 +4,7 @@
 package diag
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/tamnd/gopapy/v2/parser2"
@@ -52,4 +53,27 @@ func (d Diagnostic) String() string {
 	}
 	return fmt.Sprintf("%s%d:%d: %s%s: %s",
 		prefix, d.Pos.Line, d.Pos.Col, d.Severity, code, d.Msg)
+}
+
+// MarshalJSON emits a stable wire shape compatible with v1 diag JSON output.
+func (d Diagnostic) MarshalJSON() ([]byte, error) {
+	type pos struct {
+		Lineno    int `json:"lineno"`
+		ColOffset int `json:"col_offset"`
+	}
+	return json.Marshal(struct {
+		Filename string `json:"filename,omitempty"`
+		Pos      pos    `json:"pos"`
+		End      pos    `json:"end"`
+		Severity string `json:"severity"`
+		Code     string `json:"code,omitempty"`
+		Msg      string `json:"msg"`
+	}{
+		Filename: d.Filename,
+		Pos:      pos{Lineno: d.Pos.Line, ColOffset: d.Pos.Col},
+		End:      pos{Lineno: d.End.Line, ColOffset: d.End.Col},
+		Severity: d.Severity.String(),
+		Code:     d.Code,
+		Msg:      d.Msg,
+	})
 }

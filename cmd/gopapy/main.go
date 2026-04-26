@@ -18,14 +18,17 @@ import (
 
 	"github.com/tamnd/gopapy/v1/ast"
 	"github.com/tamnd/gopapy/v1/cst"
-	"github.com/tamnd/gopapy/v1/diag"
+	v1diag "github.com/tamnd/gopapy/v1/diag"
 	"github.com/tamnd/gopapy/v1/linter"
 	"github.com/tamnd/gopapy/v1/lsp"
 	"github.com/tamnd/gopapy/v1/parser"
-	"github.com/tamnd/gopapy/v1/symbols"
+
+	v2diag "github.com/tamnd/gopapy/v2/diag"
+	"github.com/tamnd/gopapy/v2/parser2"
+	"github.com/tamnd/gopapy/v2/symbols2"
 )
 
-const version = "0.2.0"
+const version = "0.2.3"
 
 func init() {
 	// Mirror the CLI version into the LSP server so the initialize
@@ -64,17 +67,17 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 		if len(args) < 2 {
 			return fmt.Errorf("parse: missing FILE argument")
 		}
-		_, err := parseFile(args[1])
+		_, err := parseFile2(args[1])
 		return err
 	case "dump":
 		if len(args) < 2 {
 			return fmt.Errorf("dump: missing FILE argument")
 		}
-		f, err := parseFile(args[1])
+		mod2, err := parseFile2(args[1])
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, ast.Dump(ast.FromFile(f)))
+		fmt.Fprintln(stdout, parser2.DumpModule(mod2))
 		return nil
 	case "unparse":
 		return unparseCmd(args[1:], stdout, stderr)
@@ -104,12 +107,12 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 	}
 }
 
-func parseFile(path string) (*parser.File, error) {
+func parseFile2(path string) (*parser2.Module, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return parser.ParseFile(path, src)
+	return parser2.ParseFile(path, string(src))
 }
 
 // checkDir walks DIR and reports parse outcomes for every .py file. The
@@ -128,7 +131,7 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 		if isIntentionalBadFixture(path) {
 			return nil
 		}
-		if _, perr := parseFile(path); perr != nil {
+		if _, perr := parseFile2(path); perr != nil {
 			failed++
 			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, perr)
 		} else {
@@ -411,14 +414,14 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 	}
 
 	var (
-		diagnostics []diag.Diagnostic
+		diagnostics []v2diag.Diagnostic
 		fileCount   int
 		parseFailed int
 		errorCount  int
 	)
 
-	emit := func(d diag.Diagnostic) error {
-		if d.Severity == diag.SeverityError {
+	emit := func(d v2diag.Diagnostic) error {
+		if d.Severity == v2diag.SeverityError {
 			errorCount++
 		}
 		if jsonOut {
@@ -435,14 +438,14 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 
 	process := func(p string) {
 		fileCount++
-		f, perr := parseFile(p)
+		mod2, perr := parseFile2(p)
 		if perr != nil {
 			parseFailed++
 			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", p, perr)
 			return
 		}
-		mod := symbols.Build(ast.FromFile(f))
-		for _, d := range mod.Diagnostics {
+		sm := symbols2.Build(mod2)
+		for _, d := range sm.Diagnostics {
 			d.Filename = p
 			diagnostics = append(diagnostics, d)
 			_ = emit(d)
@@ -647,13 +650,13 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	defer closeSink()
 
 	var (
-		diagnostics []diag.Diagnostic
+		diagnostics []v1diag.Diagnostic
 		fileCount   int
 		parseFailed int
 		fixedFiles  int
 	)
 
-	emit := func(d diag.Diagnostic) error {
+	emit := func(d v1diag.Diagnostic) error {
 		// SARIF is a whole-document format; the per-diagnostic write
 		// path can't emit it, so we collect into `diagnostics` above
 		// and flush once at the end.
@@ -1032,12 +1035,12 @@ func symbolsCmd(path string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if !info.IsDir() {
-		f, err := parseFile(path)
+		mod2, err := parseFile2(path)
 		if err != nil {
 			return err
 		}
-		mod := symbols.Build(ast.FromFile(f))
-		printSymbolModule(stdout, path, mod)
+		sm := symbols2.Build(mod2)
+		printSymbolModule(stdout, path, sm)
 		return nil
 	}
 	var passed, parseFailed, panicked int
@@ -1052,12 +1055,12 @@ func symbolsCmd(path string, stdout, stderr io.Writer) error {
 		if isIntentionalBadFixture(p) {
 			return nil
 		}
-		f, perr := parseFile(p)
+		mod2, perr := parseFile2(p)
 		if perr != nil {
 			parseFailed++
 			return nil
 		}
-		if err := buildSymbolsSafe(ast.FromFile(f)); err != nil {
+		if err := buildSymbolsSafe2(mod2); err != nil {
 			panicked++
 			fmt.Fprintf(stderr, "PANIC %s: %v\n", p, err)
 		} else {
@@ -1073,30 +1076,28 @@ func symbolsCmd(path string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "%d passed, %d parse-failed, %d panicked\n", passed, parseFailed, panicked)
 	if panicked > 0 {
-		return fmt.Errorf("%d files panicked in symbols.Build", panicked)
+		return fmt.Errorf("%d files panicked in symbols2.Build", panicked)
 	}
 	return nil
 }
 
-// buildSymbolsSafe runs symbols.Build with panic recovery so the harness
-// can keep going across a 1800-file corpus and report every offender.
-func buildSymbolsSafe(mod *ast.Module) (err error) {
+func buildSymbolsSafe2(mod *parser2.Module) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	_ = symbols.Build(mod)
+	_ = symbols2.Build(mod)
 	return nil
 }
 
 // printSymbolModule writes a compact one-scope-per-line dump for a single
 // file invocation. The format prioritises being grep-friendly over being
 // pretty.
-func printSymbolModule(w io.Writer, path string, mod *symbols.Module) {
+func printSymbolModule(w io.Writer, path string, mod *symbols2.Module) {
 	fmt.Fprintf(w, "# %s\n", path)
-	var walk func(s *symbols.Scope, depth int)
-	walk = func(s *symbols.Scope, depth int) {
+	var walk func(s *symbols2.Scope, depth int)
+	walk = func(s *symbols2.Scope, depth int) {
 		indent := strings.Repeat("  ", depth)
 		fmt.Fprintf(w, "%s%s %q\n", indent, s.Kind, s.Name)
 		for name, sym := range s.Symbols {
@@ -1108,27 +1109,27 @@ func printSymbolModule(w io.Writer, path string, mod *symbols.Module) {
 	}
 	walk(mod.Root, 0)
 	for _, d := range mod.Diagnostics {
-		fmt.Fprintf(w, "  diag %d:%d: %s\n", d.Pos.Lineno, d.Pos.ColOffset, d.Msg)
+		fmt.Fprintf(w, "  diag %d:%d: %s\n", d.Pos.Line, d.Pos.Col, d.Msg)
 	}
 }
 
 // flagString renders a BindFlag as a comma-separated list. Unflagged
 // names render as "-".
-func flagString(f symbols.BindFlag) string {
+func flagString(f symbols2.BindFlag) string {
 	parts := []string{}
 	pairs := []struct {
-		f symbols.BindFlag
+		f symbols2.BindFlag
 		s string
 	}{
-		{symbols.FlagBound, "bound"},
-		{symbols.FlagUsed, "used"},
-		{symbols.FlagParam, "param"},
-		{symbols.FlagGlobal, "global"},
-		{symbols.FlagNonlocal, "nonlocal"},
-		{symbols.FlagAnnotation, "ann"},
-		{symbols.FlagImport, "import"},
-		{symbols.FlagFree, "free"},
-		{symbols.FlagCell, "cell"},
+		{symbols2.FlagBound, "bound"},
+		{symbols2.FlagUsed, "used"},
+		{symbols2.FlagParam, "param"},
+		{symbols2.FlagGlobal, "global"},
+		{symbols2.FlagNonlocal, "nonlocal"},
+		{symbols2.FlagAnnotation, "ann"},
+		{symbols2.FlagImport, "import"},
+		{symbols2.FlagFree, "free"},
+		{symbols2.FlagCell, "cell"},
 	}
 	for _, p := range pairs {
 		if f&p.f != 0 {
