@@ -21,7 +21,7 @@ import (
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.16"
+const version = "0.1.17"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -471,20 +471,32 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 // source via cst.Unparse, and rewritten in place atomically. The
 // remaining diagnostics after the fix are emitted on stdout.
 //
+// --format chooses the diagnostic encoding: text (default), json
+// (NDJSON, ruff-compatible flat schema), or github (GH Actions
+// workflow command lines for inline PR annotations). --output PATH
+// writes the diagnostic stream to a file instead of stdout; "-" is
+// stdout. The config-load and run-summary lines stay on stderr so
+// machine consumers see only diagnostics on the chosen sink.
+//
+// --json is kept as a deprecated alias for --format json so v0.1.16
+// scripts keep working; it now uses the flat schema documented in
+// the v0.1.17 changelog.
+//
 // Configuration precedence: --config overrides discovery; --no-config
 // skips discovery entirely. Default behaviour walks up from the first
 // PATH argument looking for pyproject.toml.
 func lintCmd(args []string, stdout, stderr io.Writer) error {
-	jsonOut := false
+	format := linter.FormatText
 	fix := false
 	noConfig := false
 	configPath := ""
+	outputPath := ""
 	var path string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--json":
-			jsonOut = true
+			format = linter.FormatJSON
 		case a == "--fix":
 			fix = true
 		case a == "--no-config":
@@ -497,6 +509,30 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 			configPath = args[i]
 		case strings.HasPrefix(a, "--config="):
 			configPath = strings.TrimPrefix(a, "--config=")
+		case a == "--format":
+			if i+1 >= len(args) {
+				return fmt.Errorf("lint: --format requires a value")
+			}
+			i++
+			f, ferr := linter.ParseFormat(args[i])
+			if ferr != nil {
+				return fmt.Errorf("lint: %v", ferr)
+			}
+			format = f
+		case strings.HasPrefix(a, "--format="):
+			f, ferr := linter.ParseFormat(strings.TrimPrefix(a, "--format="))
+			if ferr != nil {
+				return fmt.Errorf("lint: %v", ferr)
+			}
+			format = f
+		case a == "--output":
+			if i+1 >= len(args) {
+				return fmt.Errorf("lint: --output requires a path")
+			}
+			i++
+			outputPath = args[i]
+		case strings.HasPrefix(a, "--output="):
+			outputPath = strings.TrimPrefix(a, "--output=")
 		default:
 			if path != "" {
 				return fmt.Errorf("lint: unexpected argument %q", a)
@@ -520,6 +556,12 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "loaded config from %s\n", cfgPath)
 	}
 
+	sink, closeSink, err := openOutput(outputPath, stdout)
+	if err != nil {
+		return fmt.Errorf("lint: %v", err)
+	}
+	defer closeSink()
+
 	var (
 		diagnostics []diag.Diagnostic
 		fileCount   int
@@ -528,16 +570,7 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 	)
 
 	emit := func(d diag.Diagnostic) error {
-		if jsonOut {
-			b, err := json.Marshal(d)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintln(stdout, string(b))
-		} else {
-			fmt.Fprintln(stdout, d.String())
-		}
-		return nil
+		return linter.WriteDiagnostic(sink, d, format)
 	}
 
 	process := func(p string) {
@@ -653,6 +686,20 @@ func fixOne(path string, src []byte, cfg linter.Config) (int, error) {
 		return 0, err
 	}
 	return len(fixed), nil
+}
+
+// openOutput resolves --output to a writer. Empty path or "-" means
+// stdout (no close); a real path opens for write+truncate. Caller
+// must defer the returned close func; it's a no-op for stdout.
+func openOutput(path string, stdout io.Writer) (io.Writer, func(), error) {
+	if path == "" || path == "-" {
+		return stdout, func() {}, nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, func() { _ = f.Close() }, nil
 }
 
 // resolveLintConfig loads the config that should govern this lint
@@ -814,8 +861,11 @@ Commands:
   check DIR     Parse every .py under DIR, summarise failures.
   symbols PATH  Build a symbol table for FILE, or report panics across DIR.
   diag PATH     Print semantic diagnostics for FILE or DIR. --json for JSONL.
-  lint PATH     Run pyflakes-style linter on FILE or DIR. --json for JSONL.
-                --fix rewrites files in place (F401 only).
+  lint PATH     Run pyflakes-style linter on FILE or DIR.
+                --format {text,json,github} chooses the diagnostic encoding.
+                --output PATH writes diagnostics to a file ("-" = stdout).
+                --fix rewrites files in place (F401, F811 dead-store).
+                --config PATH / --no-config control pyproject.toml discovery.
   bench DIR     Parse every .py under DIR and print parse/emit throughput.
   version       Print the gopapy version.
   help          Show this message.
