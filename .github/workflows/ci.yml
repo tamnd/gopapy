@@ -27,13 +27,13 @@ jobs:
         run: go version
 
       - name: go vet
-        run: go vet ./...
+        run: go vet ./... ./v2/...
 
       - name: go build
-        run: go build ./...
+        run: go build ./... ./v2/...
 
       - name: go test
-        run: go test ./...
+        run: go test ./... ./v2/...
 
   oracle:
     name: cpython oracle diff
@@ -173,4 +173,4 @@ jobs:
       # notes/Spec/1100/1132 for why hard alloc-budget gating is
       # deferred to the next version.
       - name: go test -bench
-        run: go test -run='^$' -bench=. -benchtime=3x -benchmem ./lex ./parser ./symbols
+        run: go test -run='^$' -bench=. -benchtime=3x -benchmem ./lex ./parser ./symbols ./v2/parser2

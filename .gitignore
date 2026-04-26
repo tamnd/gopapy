@@ -7,7 +7,6 @@
 
 # Go workspace
 /vendor/
-/go.work
 /go.work.sum
 
 # Editor / OS
