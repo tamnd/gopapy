@@ -53,6 +53,23 @@ its own package so analyzers and CLI tooling share one type.
     `CodeNonlocalNoBinding`, `CodeUsedBeforeAssign`) so future
     analyzer extensions can't collide on the next free code.
 
+### Fixed
+
+- `ast.emitDictSetElt` no longer panics on a `**y` item that lands in
+  set context (e.g. `{x, **y, z}`). The participle grammar accepts the
+  malformed mix; the emitter now mirrors the dict-context fallback in
+  `emitDictOrSet` and uses the unpacked expression as the element.
+- Each binary-fold emitter (`emitDisjunction`, `emitConjunction`,
+  `emitInversion`, `emitComparison`, `emitBitOr` / `BitXor` / `BitAnd`,
+  `emitShift` / `Sum` / `Term`, `emitFactor` / `Power` / `AwaitPrimary`
+  / `Primary`, plus `emitExpr` itself) nil-guards its required `Head`
+  field and returns a placeholder `Constant` when participle hands
+  back a partial parse tree. The fuzz contract — "no panic on any
+  input" — depended on these guards; both crashes were latent before
+  v0.1.7's fuzz pass found them.
+- New regression seeds in `ast/testdata/fuzz/FuzzEmit/` pin the inputs
+  the fuzzer minimized so the fixes don't regress.
+
 ### Verified
 
 - Stdlib parse + symbols + diag rates stay 100% on CPython 3.14.
@@ -60,6 +77,8 @@ its own package so analyzers and CLI tooling share one type.
   `1842 files, 0 parse-failed, 0 diagnostics`.
 - Oracle diff stays at 85 / 85 (diagnostics aren't part of `ast.dump`
   output).
+- Local 90-second fuzz pass after the guard additions reports zero
+  panics across ~5.7M executions.
 
 ## [0.1.6] - 2026-04-26
 
