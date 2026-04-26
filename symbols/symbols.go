@@ -13,6 +13,7 @@ package symbols
 
 import (
 	"github.com/tamnd/gopapy/v1/ast"
+	"github.com/tamnd/gopapy/v1/diag"
 )
 
 // Module is the top-level result of Build. The root scope mirrors the
@@ -91,11 +92,20 @@ type Binding struct {
 }
 
 // Diagnostic is a non-fatal semantic problem detected during scope
-// resolution.
-type Diagnostic struct {
-	Pos ast.Pos
-	Msg string
-}
+// resolution. The shape lives in the diag package so analyzers (the
+// linter, an eventual type checker) and CLI tooling can share one
+// type; symbols keeps the name as an alias so existing callers compile
+// unchanged.
+type Diagnostic = diag.Diagnostic
+
+// Stable diagnostic codes. The S prefix marks "symbols" diagnostics;
+// codes are zero-padded three digits and do not get reused once
+// retired. See docs and the v0.1.7 spec for the catalogue.
+const (
+	CodeGlobalAndNonlocal = "S001" // name declared both `global` and `nonlocal` in the same scope
+	CodeNonlocalNoBinding = "S002" // `nonlocal X` with no enclosing binding (reserved for v0.1.8 resolver)
+	CodeUsedBeforeAssign  = "S003" // local name referenced before its first binding (reserved)
+)
 
 // Build walks mod and returns the symbol table.
 func Build(mod *ast.Module) *Module {
@@ -167,10 +177,22 @@ func (b *builder) declare(scope *Scope, name string, pos ast.Pos, flag BindFlag)
 		scope.Symbols[name] = sym
 	}
 	if flag == FlagGlobal && sym.Has(FlagNonlocal) {
-		b.diagnostics = append(b.diagnostics, Diagnostic{Pos: pos, Msg: "name " + name + " is both nonlocal and global"})
+		b.diagnostics = append(b.diagnostics, Diagnostic{
+			Pos:      pos,
+			End:      pos,
+			Severity: diag.SeverityWarning,
+			Code:     CodeGlobalAndNonlocal,
+			Msg:      "name " + name + " is both nonlocal and global",
+		})
 	}
 	if flag == FlagNonlocal && sym.Has(FlagGlobal) {
-		b.diagnostics = append(b.diagnostics, Diagnostic{Pos: pos, Msg: "name " + name + " is both global and nonlocal"})
+		b.diagnostics = append(b.diagnostics, Diagnostic{
+			Pos:      pos,
+			End:      pos,
+			Severity: diag.SeverityWarning,
+			Code:     CodeGlobalAndNonlocal,
+			Msg:      "name " + name + " is both global and nonlocal",
+		})
 	}
 	sym.Flags |= flag
 }

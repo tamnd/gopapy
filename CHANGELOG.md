@@ -9,6 +9,58 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-04-26
+
+A standalone `diag` package for analyzer diagnostics, plus a
+`gopapy diag` CLI. Until now `symbols` carried its own
+`symbols.Diagnostic` type — fine while it was the only analyzer in
+the tree, but each new analyzer (the linter, an eventual type
+checker) would either reinvent the type or have to import `symbols`
+for a type that didn't belong to it. v0.1.7 promotes the shape to
+its own package so analyzers and CLI tooling share one type.
+
+### Added
+
+- New `gopapy/v1/diag` package with `Diagnostic` (Filename, Pos, End,
+  Severity, Code, Msg) and `Severity` enum
+  (`SeverityError`/`SeverityWarning`/`SeverityHint`).
+- `Diagnostic.String()` formats as
+  `filename:line:col: severity[code]: message` — the conventional
+  compiler-output shape that editors already parse for jump-to-source.
+- `Diagnostic.MarshalJSON()` emits a stable wire shape with severity
+  as a lowercase string for the `--json` CLI flag.
+- New `gopapy diag PATH` subcommand. PATH may be a file or directory;
+  the directory form walks every `.py` recursively. `--json` switches
+  output to JSONL. Exit code is 1 only when a `SeverityError`
+  diagnostic is reported (warnings and hints don't fail the run);
+  parse failures also fail.
+- `cmd/gopapy/diag_test.go` covers the human and JSON output shapes,
+  the directory walk, and the missing-PATH error.
+- New CI step `gopapy diag stdlib` runs the diag CLI against the
+  CPython 3.14 stdlib to make sure analyzers stay clean (zero
+  `SeverityError` diagnostics).
+
+### Changed
+
+- `symbols.Diagnostic` is now `type Diagnostic = diag.Diagnostic`.
+  Existing callers that read `Pos` and `Msg` compile unchanged; the
+  alias adds `Filename`, `End`, `Severity`, and `Code`.
+- Symbols-emitted diagnostics now carry `Severity = SeverityWarning`
+  and stable codes:
+  - `S001` — name declared both `global` and `nonlocal` in the same
+    scope (current emit site in `symbols.builder.declare`).
+  - `S002`, `S003` — reserved (declared as exported constants
+    `CodeNonlocalNoBinding`, `CodeUsedBeforeAssign`) so future
+    analyzer extensions can't collide on the next free code.
+
+### Verified
+
+- Stdlib parse + symbols + diag rates stay 100% on CPython 3.14.
+  `gopapy diag` on the local stdlib reports
+  `1842 files, 0 parse-failed, 0 diagnostics`.
+- Oracle diff stays at 85 / 85 (diagnostics aren't part of `ast.dump`
+  output).
+
 ## [0.1.6] - 2026-04-26
 
 End positions for AST nodes that map directly to a participle grammar
@@ -864,7 +916,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/tamnd/gopapy/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/tamnd/gopapy/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/tamnd/gopapy/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/tamnd/gopapy/compare/v0.1.3...v0.1.4
