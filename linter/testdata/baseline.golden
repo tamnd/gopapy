@@ -1,5 +1,14 @@
+fstrings.py:3:4: warning[F541]: f-string without any placeholders
+fstrings.py:4:4: warning[F541]: f-string without any placeholders
+fstrings.py:5:4: warning[F541]: f-string without any placeholders
 imports.py:2:0: warning[F401]: 'os' imported but unused
 imports.py:4:0: warning[F401]: 'OrderedDict' imported but unused
+is_lit.py:5:3: warning[F632]: use of `is` with a literal, did you mean `==`?
+is_lit.py:7:3: warning[F632]: use of `is` with a literal, did you mean `==`?
+is_lit.py:9:3: warning[F632]: use of `is` with a literal, did you mean `==`?
+is_lit.py:11:3: warning[F632]: use of `is` with a literal, did you mean `==`?
+is_lit.py:13:3: warning[F632]: use of `is` with a literal, did you mean `==`?
+is_lit.py:15:3: warning[F632]: use of `is` with a literal, did you mean `==`?
 locals.py:5:4: warning[F841]: local variable 'x' assigned but never used
 redef.py:8:0: warning[F811]: redefinition of unused 'helper'
 redef.py:16:4: warning[F811]: redefinition of unused 'm'

@@ -153,6 +153,107 @@ func TestFixF401(t *testing.T) {
 	}
 }
 
+func TestFixF811DeadStoreLiteral(t *testing.T) {
+	cases := []struct {
+		name      string
+		src       string
+		want      string
+		fixCount  int
+		fixedCode string
+	}{
+		{
+			name:      "literal-then-rebind",
+			src:       "def f():\n    x = 1\n    x = 2\n    return x\n",
+			want:      "def f():\n    x = 2\n    return x\n",
+			fixCount:  1,
+			fixedCode: "F811",
+		},
+		{
+			name:      "literal-then-rebind-string",
+			src:       "def f():\n    s = ''\n    s = 'hi'\n    return s\n",
+			want:      "def f():\n    s = 'hi'\n    return s\n",
+			fixCount:  1,
+			fixedCode: "F811",
+		},
+		{
+			name:      "non-literal-rhs-untouched",
+			src:       "def f():\n    x = expensive()\n    x = 2\n    return x\n",
+			want:      "def f():\n    x = expensive()\n    x = 2\n    return x\n",
+			fixCount:  0,
+			fixedCode: "",
+		},
+		{
+			name:      "non-adjacent-untouched",
+			src:       "def f():\n    x = 1\n    y = 2\n    x = 3\n    return x\n",
+			want:      "def f():\n    x = 1\n    y = 2\n    x = 3\n    return x\n",
+			fixCount:  0,
+			fixedCode: "",
+		},
+		{
+			name:      "annassign-rebind",
+			src:       "def f():\n    x = 1\n    x: int = 2\n    return x\n",
+			want:      "def f():\n    x: int = 2\n    return x\n",
+			fixCount:  1,
+			fixedCode: "F811",
+		},
+		{
+			name:      "augassign-keeps-store",
+			src:       "def f():\n    x = 1\n    x += 1\n    return x\n",
+			want:      "def f():\n    x = 1\n    x += 1\n    return x\n",
+			fixCount:  0,
+			fixedCode: "",
+		},
+		{
+			name:      "module-scope-untouched",
+			src:       "x = 1\nx = 2\nprint(x)\n",
+			want:      "x = 1\nx = 2\nprint(x)\n",
+			fixCount:  0,
+			fixedCode: "",
+		},
+		{
+			name:      "method-body-applies",
+			src:       "class C:\n    def m(self):\n        x = 1\n        x = 2\n        return x\n",
+			want:      "class C:\n    def m(self):\n        x = 2\n        return x\n",
+			fixCount:  1,
+			fixedCode: "F811",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, codes := fixSrc(t, tc.src)
+			if got != tc.want {
+				t.Errorf("source mismatch\n--- got ---\n%s\n--- want ---\n%s", got, tc.want)
+			}
+			if len(codes) != tc.fixCount {
+				t.Errorf("fixCount = %d, want %d (codes: %v)", len(codes), tc.fixCount, codes)
+			}
+			for _, c := range codes {
+				if c != tc.fixedCode {
+					t.Errorf("expected only %q fixes, got %q", tc.fixedCode, c)
+				}
+			}
+		})
+	}
+}
+
+func TestFixF811NoRegressionAfterFix(t *testing.T) {
+	// After the dead-store fix, a re-lint must report zero F811 for
+	// the inputs that had it.
+	src := "def f():\n    x = 1\n    x = 2\n    return x\n"
+	f, err := parser.ParseString("<test>", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	mod := ast.FromFile(f)
+	Fix(mod)
+	diags := Lint(mod)
+	for _, d := range diags {
+		if d.Code == "F811" {
+			t.Errorf("Fix left an F811 standing: %s", d.String())
+		}
+	}
+}
+
 func TestFixIdempotent(t *testing.T) {
 	// After a Fix, re-linting should report zero F401s on the result.
 	src := "import os, sys\nfrom m import x, y\nfrom __future__ import annotations\nprint(sys, y)\n"

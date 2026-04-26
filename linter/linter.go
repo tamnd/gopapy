@@ -24,9 +24,11 @@ import (
 // recognisability; codes are zero-padded three digits and do not get
 // reused once retired.
 const (
-	CodeUnusedImport       = "F401" // `import X` whose name is never read
-	CodeRedefinitionUnused = "F811" // name rebound without intervening use
-	CodeUnusedLocal        = "F841" // local assigned but never read
+	CodeUnusedImport               = "F401" // `import X` whose name is never read
+	CodeFStringWithoutPlaceholders = "F541" // f-string with no `{...}` interpolation
+	CodeIsWithLiteral              = "F632" // `is` / `is not` against a literal value
+	CodeRedefinitionUnused         = "F811" // name rebound without intervening use
+	CodeUnusedLocal                = "F841" // local assigned but never read
 )
 
 // Lint runs every check on mod and returns diagnostics in stable
@@ -36,6 +38,8 @@ func Lint(mod *ast.Module) []diag.Diagnostic {
 	sm := symbols.Build(mod)
 	var out []diag.Diagnostic
 	out = append(out, checkF401(sm, mod)...)
+	out = append(out, checkF541(mod)...)
+	out = append(out, checkF632(mod)...)
 	out = append(out, checkF811(sm)...)
 	out = append(out, checkF841(sm, mod)...)
 	sortDiagnostics(out)

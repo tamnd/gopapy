@@ -111,6 +111,140 @@ func TestF401(t *testing.T) {
 	}
 }
 
+func TestF541(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "no-placeholder",
+			src:  "x = f\"hello\"\n",
+			want: []string{"F541"},
+		},
+		{
+			name: "empty-fstring",
+			src:  "x = f\"\"\n",
+			want: []string{"F541"},
+		},
+		{
+			name: "single-quote-no-placeholder",
+			src:  "x = f'hi'\n",
+			want: []string{"F541"},
+		},
+		{
+			name: "with-placeholder",
+			src:  "y = 1\nx = f\"y={y}\"\n",
+			want: nil,
+		},
+		{
+			name: "plain-string-not-flagged",
+			src:  "x = \"hello\"\n",
+			want: nil,
+		},
+		{
+			name: "concat-with-placeholder",
+			src:  "y = 1\nx = f\"prefix {y}\"\n",
+			want: nil,
+		},
+		{
+			name: "nested-fstring-inner-flagged",
+			src:  "y = f\"outer {f'static'}\"\n",
+			want: []string{"F541"},
+		},
+		{
+			name: "noqa-suppresses",
+			src:  "x = f\"hello\"  # noqa: F541\n",
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lintSrc(t, tc.src)
+			if !equalStrings(got, tc.want) {
+				t.Errorf("got %v, want %v\nsrc:\n%s", got, tc.want, tc.src)
+			}
+		})
+	}
+}
+
+func TestF632(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "is-int",
+			src:  "x = 1\nif x is 1: pass\n",
+			want: []string{"F632"},
+		},
+		{
+			name: "is-str",
+			src:  "x = 'a'\nif x is 'a': pass\n",
+			want: []string{"F632"},
+		},
+		{
+			name: "is-bool",
+			src:  "x = True\nif x is True: pass\n",
+			want: []string{"F632"},
+		},
+		{
+			name: "is-not-int",
+			src:  "x = 1\nif x is not 2: pass\n",
+			want: []string{"F632"},
+		},
+		{
+			name: "is-tuple-literal",
+			src:  "x = ()\nif x is (1, 2): pass\n",
+			want: []string{"F632"},
+		},
+		{
+			name: "is-negative-int",
+			src:  "x = 0\nif x is -1: pass\n",
+			want: []string{"F632"},
+		},
+		{
+			name: "is-none-allowed",
+			src:  "x = None\nif x is None: pass\n",
+			want: nil,
+		},
+		{
+			name: "is-not-none-allowed",
+			src:  "x = 1\nif x is not None: pass\n",
+			want: nil,
+		},
+		{
+			name: "is-name-allowed",
+			src:  "x = 1\ny = 1\nif x is y: pass\n",
+			want: nil,
+		},
+		{
+			name: "eq-literal-not-flagged",
+			src:  "x = 1\nif x == 1: pass\n",
+			want: nil,
+		},
+		{
+			name: "chain-mixed",
+			src:  "x = 1\nif x is 1 is None: pass\n",
+			want: []string{"F632"},
+		},
+		{
+			name: "noqa-suppresses",
+			src:  "x = 1\nif x is 1: pass  # noqa: F632\n",
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lintSrc(t, tc.src)
+			if !equalStrings(got, tc.want) {
+				t.Errorf("got %v, want %v\nsrc:\n%s", got, tc.want, tc.src)
+			}
+		})
+	}
+}
+
 func TestF811(t *testing.T) {
 	cases := []struct {
 		name string

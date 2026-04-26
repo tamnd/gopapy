@@ -9,6 +9,34 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-04-26
+
+More pyflakes coverage at zero substrate cost. v0.1.13 shipped three
+checks; v0.1.14 wired up the fix loop; v0.1.15 takes the substrate
+out for another spin and adds three more checks plus one more fix.
+After this version the linter has six checks, two fixes, and parity
+with the high-frequency end of pyflakes' catalogue.
+
+### Added
+
+- `linter` check `F541` (f-string without any placeholders): fires
+  on `f"hello"`, `f""`, `f'no interpolation'`. Identifies any
+  `JoinedStr` whose values contain no `FormattedValue` /
+  `Interpolation`. The fix is deferred until `cst`-level prefix
+  preservation lands; the unparser today loses original `b` / `r` /
+  `u` prefixes too.
+- `linter` check `F632` (`is` / `is not` against a literal): fires
+  on `x is 1`, `x is "foo"`, `x is True`, `x is (1, 2)`, `x is -1`.
+  `is None` and `is not None` stay silent — that's the canonical
+  identity idiom. No auto-fix; the right replacement (`==` vs `!=`)
+  depends on intent the linter can't see.
+- `linter.Fix` now removes `name = CONSTANT` statements in
+  function/method bodies when the immediately-next statement rebinds
+  the same name. Adjacency is the safety guarantee: no read of `name`
+  can sit between the two statements, so dropping the literal store
+  preserves observable behavior. Side-effect-bearing right-hand
+  sides (`x = expensive(); x = 2`) stay untouched.
+
 ## [0.1.14] - 2026-04-26
 
 The substrate's first end-to-end loop. v0.1.13 reported problems;
@@ -1230,7 +1258,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.15...HEAD
+[0.1.15]: https://github.com/tamnd/gopapy/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/tamnd/gopapy/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/tamnd/gopapy/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/tamnd/gopapy/compare/v0.1.11...v0.1.12

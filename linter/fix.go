@@ -21,17 +21,18 @@ type FixedDiagnostic struct {
 // statements that don't change keep their pointer identity, which is
 // what cst.Trivia attaches to.
 //
-// v0.1.14 ships only F401 fixes. F811 and F841 stay hands-off:
-// removing the first binding (F811) could drop intentional decorator
-// or registration side effects; removing an unused local (F841)
-// could drop side effects of the right-hand side. Pyflakes / ruff
-// also leave both alone.
+// v0.1.15 adds one F811 shape: a dead store of a literal in a
+// function body where the immediately-next statement rebinds the
+// same name. F841 still stays hands-off — removing an unused local
+// could drop side effects of the right-hand side; pyflakes/ruff also
+// leave it alone.
 //
 // Fix recurses into module-level control flow (`if`, `try`, `with`,
-// `for`, `while`, `match`) because those don't introduce scopes — an
-// `import` inside `if posix:` binds at module scope and F401 flags
-// it, so Fix needs to reach it too. `def` and `class` bodies *do*
-// introduce scopes; their imports stay untouched.
+// `for`, `while`, `match`) for F401 because those don't introduce
+// scopes — an `import` inside `if posix:` binds at module scope and
+// F401 flags it, so Fix needs to reach it too. The F811 dead-store
+// pass walks the entire tree to find every FunctionDef/AsyncFunctionDef
+// body; it scans the function's top-level statement list only.
 func Fix(mod *ast.Module) (*ast.Module, []FixedDiagnostic) {
 	if mod == nil {
 		return mod, nil
@@ -45,6 +46,7 @@ func Fix(mod *ast.Module) (*ast.Module, []FixedDiagnostic) {
 		exempt: futureImportNames(mod),
 	}
 	mod.Body = f.fixStmts(mod.Body)
+	f.applyDeadStoreLiteralFix(mod)
 	return mod, f.fixed
 }
 
@@ -196,6 +198,101 @@ func (f *fixer) filterImportFrom(n *ast.ImportFrom) []*ast.Alias {
 		})
 	}
 	return kept
+}
+
+// applyDeadStoreLiteralFix removes `name = CONSTANT` statements in
+// function/method bodies when the very next statement rebinds `name`.
+// Because the two statements are adjacent, no read of `name` can sit
+// between them, so dropping the first preserves observable behavior.
+// The constant-RHS guard rules out side effects.
+//
+// The pass restricts itself to the top level of each FunctionDef /
+// AsyncFunctionDef body. F811 inside nested if/try/while can be fixed
+// in a later version; the conservative shape covers the common case
+// (a stale default a few lines above the real assignment) without
+// risking branch-aware reasoning.
+func (f *fixer) applyDeadStoreLiteralFix(mod *ast.Module) {
+	ast.WalkPreorder(mod, func(n ast.Node) {
+		switch fn := n.(type) {
+		case *ast.FunctionDef:
+			fn.Body = f.scanDeadStoreLiteral(fn.Body)
+		case *ast.AsyncFunctionDef:
+			fn.Body = f.scanDeadStoreLiteral(fn.Body)
+		}
+	})
+}
+
+func (f *fixer) scanDeadStoreLiteral(stmts []ast.StmtNode) []ast.StmtNode {
+	out := make([]ast.StmtNode, 0, len(stmts))
+	for i := 0; i < len(stmts); i++ {
+		s := stmts[i]
+		if i+1 < len(stmts) {
+			if name, ok := constantStoreName(s); ok {
+				if pos, ok := nextRebindPos(stmts[i+1], name); ok {
+					f.fixed = append(f.fixed, FixedDiagnostic{
+						Code: CodeRedefinitionUnused,
+						Pos:  pos,
+						Msg:  "redefinition of unused '" + name + "'",
+					})
+					continue
+				}
+			}
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// constantStoreName matches `name = CONSTANT`: a single-target Assign
+// whose target is a bare Name in Store context and whose value is an
+// *ast.Constant (no side effects).
+func constantStoreName(s ast.StmtNode) (string, bool) {
+	a, ok := s.(*ast.Assign)
+	if !ok || len(a.Targets) != 1 {
+		return "", false
+	}
+	nm, ok := a.Targets[0].(*ast.Name)
+	if !ok {
+		return "", false
+	}
+	if _, isStore := nm.Ctx.(*ast.Store); !isStore {
+		return "", false
+	}
+	if _, ok := a.Value.(*ast.Constant); !ok {
+		return "", false
+	}
+	return nm.Id, true
+}
+
+// nextRebindPos returns the position F811 would report at if `s`
+// rebinds `want` in the same scope. Accepts Assign and AnnAssign
+// (with a value); AugAssign is excluded because it reads the target
+// before writing, which would have already disqualified F811.
+func nextRebindPos(s ast.StmtNode, want string) (ast.Pos, bool) {
+	switch n := s.(type) {
+	case *ast.Assign:
+		if len(n.Targets) != 1 {
+			return ast.Pos{}, false
+		}
+		nm, ok := n.Targets[0].(*ast.Name)
+		if !ok || nm.Id != want {
+			return ast.Pos{}, false
+		}
+		if _, isStore := nm.Ctx.(*ast.Store); !isStore {
+			return ast.Pos{}, false
+		}
+		return nm.Pos, true
+	case *ast.AnnAssign:
+		if n.Value == nil {
+			return ast.Pos{}, false
+		}
+		nm, ok := n.Target.(*ast.Name)
+		if !ok || nm.Id != want {
+			return ast.Pos{}, false
+		}
+		return nm.Pos, true
+	}
+	return ast.Pos{}, false
 }
 
 // topImportName picks the binding name for `import a.b.c` — the
