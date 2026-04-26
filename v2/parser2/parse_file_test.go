@@ -239,6 +239,66 @@ func TestParseFileTable(t *testing.T) {
 			src:  `s = "a" f"b{x}c"` + "\n",
 			want: `Module(body=[Assign(targets=[Name(id="s")], value=JoinedStr(values=[Constant(value="a"), Constant(value="b"), FormattedValue(value=Name(id="x")), Constant(value="c")]))])`,
 		},
+		{
+			name: "match literal",
+			src:  "match x:\n    case 0:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchValue(value=Constant(value=0)), body=[Pass()])])])`,
+		},
+		{
+			name: "match capture and wildcard",
+			src:  "match x:\n    case y:\n        pass\n    case _:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchAs(name="y"), body=[Pass()]), MatchCase(pattern=MatchAs(), body=[Pass()])])])`,
+		},
+		{
+			name: "match singleton",
+			src:  "match x:\n    case None:\n        pass\n    case True:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchSingleton(value=<nil>), body=[Pass()]), MatchCase(pattern=MatchSingleton(value=true), body=[Pass()])])])`,
+		},
+		{
+			name: "match dotted value",
+			src:  "match x:\n    case Color.RED:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchValue(value=Attribute(value=Name(id="Color"), attr="RED")), body=[Pass()])])])`,
+		},
+		{
+			name: "match or",
+			src:  "match x:\n    case 1 | 2 | 3:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchOr(patterns=[MatchValue(value=Constant(value=1)), MatchValue(value=Constant(value=2)), MatchValue(value=Constant(value=3))]), body=[Pass()])])])`,
+		},
+		{
+			name: "match as",
+			src:  "match x:\n    case [1, 2] as pair:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchAs(pattern=MatchSequence(patterns=[MatchValue(value=Constant(value=1)), MatchValue(value=Constant(value=2))]), name="pair"), body=[Pass()])])])`,
+		},
+		{
+			name: "match sequence with star",
+			src:  "match x:\n    case [a, *rest]:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchSequence(patterns=[MatchAs(name="a"), MatchStar(name="rest")]), body=[Pass()])])])`,
+		},
+		{
+			name: "match mapping with rest",
+			src:  "match x:\n    case {\"k\": v, **rest}:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchMapping(keys=[Constant(value="k")], patterns=[MatchAs(name="v")], rest="rest"), body=[Pass()])])])`,
+		},
+		{
+			name: "match class kwargs",
+			src:  "match x:\n    case Point(x=0, y=0):\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchClass(cls=Name(id="Point"), patterns=[], kwd_attrs=["x", "y"], kwd_patterns=[MatchValue(value=Constant(value=0)), MatchValue(value=Constant(value=0))]), body=[Pass()])])])`,
+		},
+		{
+			name: "match guard",
+			src:  "match x:\n    case n if n > 0:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="x"), cases=[MatchCase(pattern=MatchAs(name="n"), guard=Compare(left=Name(id="n"), ops=[Gt], comparators=[Constant(value=0)]), body=[Pass()])])])`,
+		},
+		{
+			name: "match open sequence",
+			src:  "match xs:\n    case 0, *rest:\n        pass\n",
+			want: `Module(body=[Match(subject=Name(id="xs"), cases=[MatchCase(pattern=MatchSequence(patterns=[MatchValue(value=Constant(value=0)), MatchStar(name="rest")]), body=[Pass()])])])`,
+		},
+		{
+			name: "match name as soft keyword",
+			src:  "match = 1\nmatch(1)\n",
+			want: `Module(body=[Assign(targets=[Name(id="match")], value=Constant(value=1)), Expr(value=Call(func=Name(id="match"), args=[Constant(value=1)], keywords=[]))])`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
