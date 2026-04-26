@@ -366,6 +366,192 @@ func TestNoqaSuppressionApplies(t *testing.T) {
 	cleanExit(s)
 }
 
+func TestInitializeAdvertisesCodeAction(t *testing.T) {
+	s := newSession(t)
+	s.send("initialize", 1, map[string]interface{}{})
+	resp := s.recv()
+	caps := resp["result"].(map[string]interface{})["capabilities"].(map[string]interface{})
+	if caps["codeActionProvider"] != true {
+		t.Errorf("codeActionProvider = %v, want true", caps["codeActionProvider"])
+	}
+	cleanExit(s)
+}
+
+func TestCodeActionReturnsFixForUnusedImport(t *testing.T) {
+	s := newSession(t)
+	initOnly(s)
+	uri := "file:///tmp/fix.py"
+	s.send("textDocument/didOpen", nil, map[string]interface{}{
+		"textDocument": map[string]interface{}{
+			"uri": uri, "languageId": "python", "version": 1,
+			"text": "import os\n",
+		},
+	})
+	pub := s.recvNotification("textDocument/publishDiagnostics")
+	diags := pub["params"].(map[string]interface{})["diagnostics"].([]interface{})
+	s.send("textDocument/codeAction", 7, map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
+		"range": map[string]interface{}{
+			"start": map[string]interface{}{"line": 0, "character": 0},
+			"end":   map[string]interface{}{"line": 0, "character": 9},
+		},
+		"context": map[string]interface{}{
+			"diagnostics": diags,
+		},
+	})
+	resp := s.recv()
+	if toFloat(resp["id"]) != 7 {
+		t.Errorf("response id = %v, want 7", resp["id"])
+	}
+	actions, ok := resp["result"].([]interface{})
+	if !ok {
+		t.Fatalf("result missing or not array: %v", resp)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d: %v", len(actions), actions)
+	}
+	a := actions[0].(map[string]interface{})
+	if a["kind"] != "quickfix" {
+		t.Errorf("kind = %v, want quickfix", a["kind"])
+	}
+	if a["title"] != "gopapy: fix all" {
+		t.Errorf("title = %v, want gopapy: fix all", a["title"])
+	}
+	edit := a["edit"].(map[string]interface{})
+	changes := edit["changes"].(map[string]interface{})
+	textEdits := changes[uri].([]interface{})
+	if len(textEdits) != 1 {
+		t.Fatalf("expected 1 textEdit, got %d", len(textEdits))
+	}
+	te := textEdits[0].(map[string]interface{})
+	newText := te["newText"].(string)
+	// Post-fix unparse of `import os` is the empty module.
+	if strings.Contains(newText, "import os") {
+		t.Errorf("newText still contains import os: %q", newText)
+	}
+	cleanExit(s)
+}
+
+func TestCodeActionReturnsEmptyWhenNothingToFix(t *testing.T) {
+	s := newSession(t)
+	initOnly(s)
+	uri := "file:///tmp/clean.py"
+	s.send("textDocument/didOpen", nil, map[string]interface{}{
+		"textDocument": map[string]interface{}{
+			"uri": uri, "languageId": "python", "version": 1,
+			"text": "print(1)\n",
+		},
+	})
+	_ = s.recvNotification("textDocument/publishDiagnostics")
+	s.send("textDocument/codeAction", 8, map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
+		"range": map[string]interface{}{
+			"start": map[string]interface{}{"line": 0, "character": 0},
+			"end":   map[string]interface{}{"line": 0, "character": 8},
+		},
+		"context": map[string]interface{}{"diagnostics": []interface{}{}},
+	})
+	resp := s.recv()
+	actions := resp["result"].([]interface{})
+	if len(actions) != 0 {
+		t.Errorf("expected no actions, got %d: %v", len(actions), actions)
+	}
+	cleanExit(s)
+}
+
+func TestCodeActionRespectsOnlyFilter(t *testing.T) {
+	s := newSession(t)
+	initOnly(s)
+	uri := "file:///tmp/only.py"
+	s.send("textDocument/didOpen", nil, map[string]interface{}{
+		"textDocument": map[string]interface{}{
+			"uri": uri, "languageId": "python", "version": 1,
+			"text": "import os\n",
+		},
+	})
+	_ = s.recvNotification("textDocument/publishDiagnostics")
+	s.send("textDocument/codeAction", 9, map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
+		"range": map[string]interface{}{
+			"start": map[string]interface{}{"line": 0, "character": 0},
+			"end":   map[string]interface{}{"line": 0, "character": 9},
+		},
+		"context": map[string]interface{}{
+			"diagnostics": []interface{}{},
+			"only":        []interface{}{"refactor"},
+		},
+	})
+	resp := s.recv()
+	actions := resp["result"].([]interface{})
+	if len(actions) != 0 {
+		t.Errorf("only=refactor should filter out quickfix, got %d actions", len(actions))
+	}
+	cleanExit(s)
+}
+
+func TestCodeActionUnknownURIReturnsEmpty(t *testing.T) {
+	s := newSession(t)
+	initOnly(s)
+	s.send("textDocument/codeAction", 10, map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": "file:///tmp/never-opened.py"},
+		"range": map[string]interface{}{
+			"start": map[string]interface{}{"line": 0, "character": 0},
+			"end":   map[string]interface{}{"line": 0, "character": 0},
+		},
+		"context": map[string]interface{}{"diagnostics": []interface{}{}},
+	})
+	resp := s.recv()
+	actions, ok := resp["result"].([]interface{})
+	if !ok {
+		t.Fatalf("expected array result, got %v", resp)
+	}
+	if len(actions) != 0 {
+		t.Errorf("expected no actions for unknown URI, got %d", len(actions))
+	}
+	cleanExit(s)
+}
+
+func TestMatchesOnlyFilter(t *testing.T) {
+	cases := []struct {
+		kind string
+		only []string
+		want bool
+	}{
+		{"quickfix", nil, true},
+		{"quickfix", []string{}, true},
+		{"quickfix", []string{"quickfix"}, true},
+		{"quickfix", []string{"refactor"}, false},
+		{"quickfix.foo", []string{"quickfix"}, true},
+		{"quickfix", []string{"quickfix.foo"}, false},
+		{"quickfix", []string{"refactor", "quickfix"}, true},
+	}
+	for _, tc := range cases {
+		if got := matchesOnlyFilter(tc.kind, tc.only); got != tc.want {
+			t.Errorf("matchesOnlyFilter(%q, %v) = %v, want %v", tc.kind, tc.only, got, tc.want)
+		}
+	}
+}
+
+func TestDocumentEndPosition(t *testing.T) {
+	cases := []struct {
+		src       string
+		line, ch  int
+	}{
+		{"", 0, 0},
+		{"abc", 0, 3},
+		{"abc\n", 1, 0},
+		{"abc\ndef", 1, 3},
+		{"abc\ndef\n", 2, 0},
+	}
+	for _, tc := range cases {
+		got := documentEndPosition([]byte(tc.src))
+		if got.Line != tc.line || got.Character != tc.ch {
+			t.Errorf("documentEndPosition(%q) = {%d,%d}, want {%d,%d}",
+				tc.src, got.Line, got.Character, tc.line, tc.ch)
+		}
+	}
+}
+
 func TestUriToPath(t *testing.T) {
 	cases := []struct{ uri, want string }{
 		{"file:///tmp/x.py", "/tmp/x.py"},
