@@ -655,6 +655,112 @@ type ClassDef struct {
 func (*ClassDef) stmtNode() {}
 func (s *ClassDef) pos() Pos { return s.P }
 
+// Match is the PEP 634 `match SUBJECT: case ...` statement.
+type Match struct {
+	P       Pos
+	Subject Expr
+	Cases   []*MatchCase
+}
+
+func (*Match) stmtNode() {}
+func (s *Match) pos() Pos { return s.P }
+
+// MatchCase is one `case PATTERN [if GUARD]: BODY` arm.
+type MatchCase struct {
+	P       Pos
+	Pattern Pattern
+	Guard   Expr
+	Body    []Stmt
+}
+
+// Pattern is the PEP 634 pattern grammar tag interface.
+type Pattern interface {
+	patternNode()
+	pos() Pos
+}
+
+// MatchValue is a literal expression pattern (number, string, dotted
+// attribute access, signed numeric literal, complex literal sums).
+type MatchValue struct {
+	P     Pos
+	Value Expr
+}
+
+func (*MatchValue) patternNode() {}
+func (n *MatchValue) pos() Pos    { return n.P }
+
+// MatchSingleton is `None`, `True`, or `False` as a pattern.
+type MatchSingleton struct {
+	P     Pos
+	Value any
+}
+
+func (*MatchSingleton) patternNode() {}
+func (n *MatchSingleton) pos() Pos    { return n.P }
+
+// MatchSequence is `[p, q, *rest]` or `(p, q)` or paren-less
+// `p, q, *rest`.
+type MatchSequence struct {
+	P        Pos
+	Patterns []Pattern
+}
+
+func (*MatchSequence) patternNode() {}
+func (n *MatchSequence) pos() Pos    { return n.P }
+
+// MatchMapping is `{key: pat, **rest}`. Rest is "" if absent.
+type MatchMapping struct {
+	P        Pos
+	Keys     []Expr
+	Patterns []Pattern
+	Rest     string
+}
+
+func (*MatchMapping) patternNode() {}
+func (n *MatchMapping) pos() Pos    { return n.P }
+
+// MatchClass is `Cls(positional, kw=patt)`.
+type MatchClass struct {
+	P           Pos
+	Cls         Expr
+	Patterns    []Pattern
+	KwdAttrs    []string
+	KwdPatterns []Pattern
+}
+
+func (*MatchClass) patternNode() {}
+func (n *MatchClass) pos() Pos    { return n.P }
+
+// MatchStar is `*name` inside a sequence pattern. Empty Name means
+// `*_` — the wildcard star.
+type MatchStar struct {
+	P    Pos
+	Name string
+}
+
+func (*MatchStar) patternNode() {}
+func (n *MatchStar) pos() Pos    { return n.P }
+
+// MatchAs is `pat as NAME` or a bare capture (`NAME` with Pattern==nil)
+// or the wildcard (`_` with Pattern==nil and Name=="").
+type MatchAs struct {
+	P       Pos
+	Pattern Pattern
+	Name    string
+}
+
+func (*MatchAs) patternNode() {}
+func (n *MatchAs) pos() Pos    { return n.P }
+
+// MatchOr is `pat | pat | ...`.
+type MatchOr struct {
+	P        Pos
+	Patterns []Pattern
+}
+
+func (*MatchOr) patternNode() {}
+func (n *MatchOr) pos() Pos    { return n.P }
+
 // Dump returns a stable, single-line, parens-explicit textual
 // representation of the tree. The format mirrors CPython's `ast.dump`
 // well enough that v1 and v2 outputs can be diffed for parity tests.
@@ -899,8 +1005,126 @@ func dumpStmt(b *strings.Builder, s Stmt) {
 		b.WriteString(", decorators=[")
 		dumpList(b, n.DecoratorList)
 		b.WriteString("])")
+	case *Match:
+		b.WriteString("Match(subject=")
+		dump(b, n.Subject)
+		b.WriteString(", cases=[")
+		for i, c := range n.Cases {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("MatchCase(pattern=")
+			dumpPattern(b, c.Pattern)
+			if c.Guard != nil {
+				b.WriteString(", guard=")
+				dump(b, c.Guard)
+			}
+			b.WriteString(", body=")
+			dumpStmtList(b, c.Body)
+			b.WriteString(")")
+		}
+		b.WriteString("])")
 	default:
 		fmt.Fprintf(b, "<unknown stmt %T>", n)
+	}
+}
+
+func dumpPattern(b *strings.Builder, p Pattern) {
+	switch n := p.(type) {
+	case *MatchValue:
+		b.WriteString("MatchValue(value=")
+		dump(b, n.Value)
+		b.WriteString(")")
+	case *MatchSingleton:
+		fmt.Fprintf(b, "MatchSingleton(value=%v)", n.Value)
+	case *MatchSequence:
+		b.WriteString("MatchSequence(patterns=[")
+		for i, q := range n.Patterns {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			dumpPattern(b, q)
+		}
+		b.WriteString("])")
+	case *MatchMapping:
+		b.WriteString("MatchMapping(keys=[")
+		for i, k := range n.Keys {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			dump(b, k)
+		}
+		b.WriteString("], patterns=[")
+		for i, q := range n.Patterns {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			dumpPattern(b, q)
+		}
+		b.WriteString("]")
+		if n.Rest != "" {
+			fmt.Fprintf(b, ", rest=%q", n.Rest)
+		}
+		b.WriteString(")")
+	case *MatchClass:
+		b.WriteString("MatchClass(cls=")
+		dump(b, n.Cls)
+		b.WriteString(", patterns=[")
+		for i, q := range n.Patterns {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			dumpPattern(b, q)
+		}
+		b.WriteString("], kwd_attrs=[")
+		for i, a := range n.KwdAttrs {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "%q", a)
+		}
+		b.WriteString("], kwd_patterns=[")
+		for i, q := range n.KwdPatterns {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			dumpPattern(b, q)
+		}
+		b.WriteString("])")
+	case *MatchStar:
+		if n.Name == "" {
+			b.WriteString("MatchStar()")
+		} else {
+			fmt.Fprintf(b, "MatchStar(name=%q)", n.Name)
+		}
+	case *MatchAs:
+		if n.Pattern == nil && n.Name == "" {
+			b.WriteString("MatchAs()")
+			return
+		}
+		b.WriteString("MatchAs(")
+		if n.Pattern != nil {
+			b.WriteString("pattern=")
+			dumpPattern(b, n.Pattern)
+		}
+		if n.Name != "" {
+			if n.Pattern != nil {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "name=%q", n.Name)
+		}
+		b.WriteString(")")
+	case *MatchOr:
+		b.WriteString("MatchOr(patterns=[")
+		for i, q := range n.Patterns {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			dumpPattern(b, q)
+		}
+		b.WriteString("])")
+	default:
+		fmt.Fprintf(b, "<unknown pattern %T>", p)
 	}
 }
 

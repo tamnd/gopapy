@@ -7,9 +7,7 @@ import (
 
 // ParseFile parses src as a complete Python module and returns its
 // Module AST. filename is used only for error messages; the bytes
-// themselves come from src. f-strings and t-strings are not yet
-// supported (v0.1.31); a file containing them returns a position-
-// tagged error instead of mis-parsing.
+// themselves come from src.
 func ParseFile(filename, src string) (*Module, error) {
 	p, err := newStmtParser(src)
 	if err != nil {
@@ -78,7 +76,43 @@ func (p *parser) parseStatementLine() ([]Stmt, error) {
 		}
 		return []Stmt{s}, nil
 	}
+	if p.looksLikeMatchStmt() {
+		s, err := p.parseMatchStmt()
+		if err != nil {
+			return nil, err
+		}
+		return []Stmt{s}, nil
+	}
 	return p.parseSimpleStmtList()
+}
+
+// looksLikeMatchStmt reports whether the current `match` name token
+// is acting as a soft keyword. The next token must be one that can
+// start a subject expression in PEP 634; if it's an operator that
+// would bind `match` as a name use (`match = ...`, `match(...)`,
+// `match.x`, `match[i]`, `match: int`, etc.) we treat `match` as a
+// regular name instead.
+func (p *parser) looksLikeMatchStmt() bool {
+	if p.cur.kind != tkName || p.cur.val != "match" {
+		return false
+	}
+	nxt, err := p.peekTok()
+	if err != nil {
+		return false
+	}
+	switch nxt.kind {
+	case tkInt, tkFloat, tkString, tkFString, tkLBrack, tkLBrace,
+		tkMinus, tkPlus, tkTilde, tkStar, tkEllipsis:
+		return true
+	case tkName:
+		// `match NAME ...` - any name (including `case`, which would
+		// be the next case keyword if the body were empty, but the
+		// grammar requires at least one case so we still commit).
+		return !isReservedKeyword(nxt.val) || nxt.val == "not" ||
+			nxt.val == "lambda" || nxt.val == "await" || nxt.val == "yield" ||
+			nxt.val == "None" || nxt.val == "True" || nxt.val == "False"
+	}
+	return false
 }
 
 // parseSimpleStmtList reads one or more semicolon-separated small
@@ -658,14 +692,9 @@ func isCompoundKeyword(t token) bool {
 	case "if", "while", "for", "try", "with", "def", "class", "async":
 		return true
 	}
-	if t.val == "match" {
-		// match is a soft keyword. Treat it as compound only if it
-		// looks like the start of a match statement; lookahead would be
-		// needed to be precise. For v0.1.30 we don't ship match.
-		return false
-	}
-	// Decorators look like ordinary statements but they always come
-	// before def / async def / class.
+	// `match` is a soft keyword. parseStatementLine handles the
+	// soft-keyword lookahead via looksLikeMatchStmt rather than
+	// classifying it as a compound keyword here.
 	return false
 }
 
@@ -1245,3 +1274,625 @@ const (
 	paramStateKwOnly
 	paramStateDone
 )
+
+// ----- Match statement (PEP 634) -----
+
+func (p *parser) parseMatchStmt() (Stmt, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	subject, err := p.parseTestlistOrStarExpr()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(tkColon); err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkNewline {
+		return nil, fmt.Errorf("%d:%d: expected newline after match header",
+			p.cur.pos.Line, p.cur.pos.Col)
+	}
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkIndent {
+		return nil, fmt.Errorf("%d:%d: expected indented block in match",
+			p.cur.pos.Line, p.cur.pos.Col)
+	}
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	var cases []*MatchCase
+	for p.cur.kind != tkDedent && p.cur.kind != tkEOF {
+		if p.cur.kind == tkNewline {
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if p.cur.kind != tkName || p.cur.val != "case" {
+			return nil, fmt.Errorf("%d:%d: expected 'case' in match block",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		c, err := p.parseCaseArm()
+		if err != nil {
+			return nil, err
+		}
+		cases = append(cases, c)
+	}
+	if p.cur.kind == tkDedent {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+	}
+	if len(cases) == 0 {
+		return nil, fmt.Errorf("%d:%d: match statement requires at least one case",
+			pos.Line, pos.Col)
+	}
+	return &Match{P: pos, Subject: subject, Cases: cases}, nil
+}
+
+func (p *parser) parseCaseArm() (*MatchCase, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume `case`
+		return nil, err
+	}
+	pat, err := p.parsePatterns()
+	if err != nil {
+		return nil, err
+	}
+	var guard Expr
+	if p.cur.kind == tkName && p.cur.val == "if" {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		g, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		guard = g
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &MatchCase{P: pos, Pattern: pat, Guard: guard, Body: body}, nil
+}
+
+// parsePatterns is the case-arm entry. It allows a paren-less open
+// sequence (`case 0, *rest:`), but otherwise delegates to a single
+// as/or pattern.
+func (p *parser) parsePatterns() (Pattern, error) {
+	pos := p.cur.pos
+	first, isStar, err := p.parseMaybeStarPattern()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkComma {
+		if isStar {
+			return nil, fmt.Errorf("%d:%d: bare star pattern at top level",
+				pos.Line, pos.Col)
+		}
+		return first, nil
+	}
+	items := []Pattern{first}
+	for p.cur.kind == tkComma {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind == tkColon || (p.cur.kind == tkName && p.cur.val == "if") {
+			break
+		}
+		next, _, err := p.parseMaybeStarPattern()
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, next)
+	}
+	return &MatchSequence{P: pos, Patterns: items}, nil
+}
+
+// parseMaybeStarPattern parses either a `*name`/`*_` star pattern or
+// a normal as/or pattern. The bool tells the caller whether the
+// returned pattern was the star form.
+func (p *parser) parseMaybeStarPattern() (Pattern, bool, error) {
+	if p.cur.kind == tkStar {
+		pos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, false, err
+		}
+		if p.cur.kind != tkName {
+			return nil, false, fmt.Errorf("%d:%d: expected name after '*' in pattern",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		name := p.cur.val
+		if err := p.advance(); err != nil {
+			return nil, false, err
+		}
+		if name == "_" {
+			return &MatchStar{P: pos}, true, nil
+		}
+		return &MatchStar{P: pos, Name: name}, true, nil
+	}
+	pat, err := p.parseAsPattern()
+	if err != nil {
+		return nil, false, err
+	}
+	return pat, false, nil
+}
+
+func (p *parser) parseAsPattern() (Pattern, error) {
+	pos := p.cur.pos
+	or, err := p.parseOrPattern()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkName || p.cur.val != "as" {
+		return or, nil
+	}
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkName || isReservedKeyword(p.cur.val) {
+		return nil, fmt.Errorf("%d:%d: expected capture name after 'as'",
+			p.cur.pos.Line, p.cur.pos.Col)
+	}
+	name := p.cur.val
+	if name == "_" {
+		return nil, fmt.Errorf("%d:%d: cannot use '_' as 'as' target",
+			p.cur.pos.Line, p.cur.pos.Col)
+	}
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	return &MatchAs{P: pos, Pattern: or, Name: name}, nil
+}
+
+func (p *parser) parseOrPattern() (Pattern, error) {
+	pos := p.cur.pos
+	first, err := p.parseClosedPattern()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkPipe {
+		return first, nil
+	}
+	items := []Pattern{first}
+	for p.cur.kind == tkPipe {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		next, err := p.parseClosedPattern()
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, next)
+	}
+	return &MatchOr{P: pos, Patterns: items}, nil
+}
+
+func (p *parser) parseClosedPattern() (Pattern, error) {
+	pos := p.cur.pos
+	switch p.cur.kind {
+	case tkInt, tkFloat, tkString, tkFString, tkMinus, tkPlus:
+		return p.parseLiteralPattern()
+	case tkLBrack:
+		return p.parseSequencePatternBrackets()
+	case tkLParen:
+		return p.parseGroupOrSequencePattern()
+	case tkLBrace:
+		return p.parseMappingPattern()
+	case tkName:
+		switch p.cur.val {
+		case "None":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			return &MatchSingleton{P: pos, Value: nil}, nil
+		case "True":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			return &MatchSingleton{P: pos, Value: true}, nil
+		case "False":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			return &MatchSingleton{P: pos, Value: false}, nil
+		case "_":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			return &MatchAs{P: pos}, nil
+		}
+		return p.parseNameStartedPattern()
+	}
+	return nil, fmt.Errorf("%d:%d: unexpected token %s in pattern",
+		pos.Line, pos.Col, p.cur.kind)
+}
+
+// parseLiteralPattern handles signed numbers (incl. `a + bj`) and
+// strings. The value is wrapped in a MatchValue node.
+func (p *parser) parseLiteralPattern() (Pattern, error) {
+	pos := p.cur.pos
+	if p.cur.kind == tkString || p.cur.kind == tkFString {
+		s, err := p.parseStringAtom()
+		if err != nil {
+			return nil, err
+		}
+		return &MatchValue{P: pos, Value: s}, nil
+	}
+	real, err := p.parseSignedNumberLiteral()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind == tkPlus || p.cur.kind == tkMinus {
+		op := "Add"
+		if p.cur.kind == tkMinus {
+			op = "Sub"
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind != tkInt && p.cur.kind != tkFloat {
+			return nil, fmt.Errorf("%d:%d: expected imaginary literal after sign",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		imag, err := p.parseNumberLiteral()
+		if err != nil {
+			return nil, err
+		}
+		return &MatchValue{P: pos, Value: &BinOp{P: pos, Op: op, Left: real, Right: imag}}, nil
+	}
+	return &MatchValue{P: pos, Value: real}, nil
+}
+
+func (p *parser) parseSignedNumberLiteral() (Expr, error) {
+	if p.cur.kind == tkPlus || p.cur.kind == tkMinus {
+		neg := p.cur.kind == tkMinus
+		pos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind != tkInt && p.cur.kind != tkFloat {
+			return nil, fmt.Errorf("%d:%d: expected number after sign",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		num, err := p.parseNumberLiteral()
+		if err != nil {
+			return nil, err
+		}
+		if !neg {
+			return &UnaryOp{P: pos, Op: "UAdd", Operand: num}, nil
+		}
+		return &UnaryOp{P: pos, Op: "USub", Operand: num}, nil
+	}
+	return p.parseNumberLiteral()
+}
+
+func (p *parser) parseNumberLiteral() (Expr, error) {
+	tok := p.cur
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	switch tok.kind {
+	case tkInt:
+		return parseIntLiteral(tok)
+	case tkFloat:
+		return parseFloatLiteral(tok)
+	}
+	return nil, fmt.Errorf("%d:%d: expected number literal",
+		tok.pos.Line, tok.pos.Col)
+}
+
+// parseNameStartedPattern handles capture, value (dotted attribute),
+// and class patterns. Caller has verified cur is a non-special name.
+func (p *parser) parseNameStartedPattern() (Pattern, error) {
+	pos := p.cur.pos
+	name := p.cur.val
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tkDot {
+		// Bare name. Class form when followed by `(`, otherwise a
+		// capture pattern.
+		if p.cur.kind == tkLParen {
+			cls := Expr(&Name{P: pos, Id: name})
+			return p.parseClassPatternArgs(pos, cls)
+		}
+		if isReservedKeyword(name) && name != "match" && name != "case" {
+			return nil, fmt.Errorf("%d:%d: cannot use reserved name %q as capture",
+				pos.Line, pos.Col, name)
+		}
+		return &MatchAs{P: pos, Name: name}, nil
+	}
+	// Dotted: build Attribute chain, then either class or value pattern.
+	value := Expr(&Name{P: pos, Id: name})
+	for p.cur.kind == tkDot {
+		dotPos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind != tkName {
+			return nil, fmt.Errorf("%d:%d: expected attribute name after '.'",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		attr := p.cur.val
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		value = &Attribute{P: dotPos, Value: value, Attr: attr}
+	}
+	if p.cur.kind == tkLParen {
+		return p.parseClassPatternArgs(pos, value)
+	}
+	return &MatchValue{P: pos, Value: value}, nil
+}
+
+// parseClassPatternArgs parses `(positional, kw=pattern)` after the
+// class expression has been consumed. The `(` is the current token.
+func (p *parser) parseClassPatternArgs(pos Pos, cls Expr) (Pattern, error) {
+	if _, err := p.expect(tkLParen); err != nil {
+		return nil, err
+	}
+	var positional []Pattern
+	var kwAttrs []string
+	var kwPatterns []Pattern
+	seenKw := false
+	for p.cur.kind != tkRParen {
+		// keyword form: NAME `=` pattern
+		if p.cur.kind == tkName && !isReservedKeyword(p.cur.val) {
+			nxt, err := p.peekTok()
+			if err != nil {
+				return nil, err
+			}
+			if nxt.kind == tkAssign {
+				name := p.cur.val
+				if err := p.advance(); err != nil {
+					return nil, err
+				}
+				if err := p.advance(); err != nil { // consume =
+					return nil, err
+				}
+				val, err := p.parseAsPattern()
+				if err != nil {
+					return nil, err
+				}
+				kwAttrs = append(kwAttrs, name)
+				kwPatterns = append(kwPatterns, val)
+				seenKw = true
+				goto trail
+			}
+		}
+		if seenKw {
+			return nil, fmt.Errorf("%d:%d: positional pattern follows keyword pattern",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		{
+			pat, err := p.parseAsPattern()
+			if err != nil {
+				return nil, err
+			}
+			positional = append(positional, pat)
+		}
+	trail:
+		if p.cur.kind == tkComma {
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		break
+	}
+	if _, err := p.expect(tkRParen); err != nil {
+		return nil, err
+	}
+	return &MatchClass{
+		P:           pos,
+		Cls:         cls,
+		Patterns:    positional,
+		KwdAttrs:    kwAttrs,
+		KwdPatterns: kwPatterns,
+	}, nil
+}
+
+func (p *parser) parseSequencePatternBrackets() (Pattern, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume [
+		return nil, err
+	}
+	var items []Pattern
+	for p.cur.kind != tkRBrack {
+		item, _, err := p.parseMaybeStarPattern()
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+		if p.cur.kind != tkComma {
+			break
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := p.expect(tkRBrack); err != nil {
+		return nil, err
+	}
+	return &MatchSequence{P: pos, Patterns: items}, nil
+}
+
+// parseGroupOrSequencePattern handles `(p)` (group) vs `(p, q)`
+// (tuple-form sequence) vs `()` (empty sequence).
+func (p *parser) parseGroupOrSequencePattern() (Pattern, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume (
+		return nil, err
+	}
+	if p.cur.kind == tkRParen {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		return &MatchSequence{P: pos}, nil
+	}
+	first, isStar, err := p.parseMaybeStarPattern()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind == tkRParen {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if isStar {
+			// `(*x)` is an unusual single-star form — treat as 1-tuple.
+			return &MatchSequence{P: pos, Patterns: []Pattern{first}}, nil
+		}
+		return first, nil
+	}
+	items := []Pattern{first}
+	for p.cur.kind == tkComma {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind == tkRParen {
+			break
+		}
+		next, _, err := p.parseMaybeStarPattern()
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, next)
+	}
+	if _, err := p.expect(tkRParen); err != nil {
+		return nil, err
+	}
+	return &MatchSequence{P: pos, Patterns: items}, nil
+}
+
+// parseMappingPattern handles `{ key: pattern, **rest }`.
+func (p *parser) parseMappingPattern() (Pattern, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume {
+		return nil, err
+	}
+	var keys []Expr
+	var pats []Pattern
+	rest := ""
+	for p.cur.kind != tkRBrace {
+		if p.cur.kind == tkDoubleStar {
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if p.cur.kind != tkName || isReservedKeyword(p.cur.val) {
+				return nil, fmt.Errorf("%d:%d: expected name after '**' in mapping pattern",
+					p.cur.pos.Line, p.cur.pos.Col)
+			}
+			rest = p.cur.val
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if p.cur.kind == tkComma {
+				if err := p.advance(); err != nil {
+					return nil, err
+				}
+			}
+			break
+		}
+		key, err := p.parseMappingKey()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(tkColon); err != nil {
+			return nil, err
+		}
+		val, err := p.parseAsPattern()
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+		pats = append(pats, val)
+		if p.cur.kind != tkComma {
+			break
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := p.expect(tkRBrace); err != nil {
+		return nil, err
+	}
+	return &MatchMapping{P: pos, Keys: keys, Patterns: pats, Rest: rest}, nil
+}
+
+// parseMappingKey accepts a literal expression (signed number, string,
+// complex literal sum, None/True/False) or a dotted attribute access.
+func (p *parser) parseMappingKey() (Expr, error) {
+	pos := p.cur.pos
+	switch p.cur.kind {
+	case tkString, tkFString:
+		return p.parseStringAtom()
+	case tkInt, tkFloat, tkPlus, tkMinus:
+		real, err := p.parseSignedNumberLiteral()
+		if err != nil {
+			return nil, err
+		}
+		if p.cur.kind == tkPlus || p.cur.kind == tkMinus {
+			op := "Add"
+			if p.cur.kind == tkMinus {
+				op = "Sub"
+			}
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			imag, err := p.parseNumberLiteral()
+			if err != nil {
+				return nil, err
+			}
+			return &BinOp{P: pos, Op: op, Left: real, Right: imag}, nil
+		}
+		return real, nil
+	case tkName:
+		switch p.cur.val {
+		case "None":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			return &Constant{P: pos, Kind: "None"}, nil
+		case "True":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			return &Constant{P: pos, Kind: "True"}, nil
+		case "False":
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			return &Constant{P: pos, Kind: "False"}, nil
+		}
+		// Dotted name (value-pattern key).
+		name := p.cur.val
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		var v Expr = &Name{P: pos, Id: name}
+		for p.cur.kind == tkDot {
+			dotPos := p.cur.pos
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if p.cur.kind != tkName {
+				return nil, fmt.Errorf("%d:%d: expected attribute name after '.'",
+					p.cur.pos.Line, p.cur.pos.Col)
+			}
+			attr := p.cur.val
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			v = &Attribute{P: dotPos, Value: v, Attr: attr}
+		}
+		return v, nil
+	}
+	return nil, fmt.Errorf("%d:%d: unexpected token %s in mapping key",
+		pos.Line, pos.Col, p.cur.kind)
+}
+

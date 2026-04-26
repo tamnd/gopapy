@@ -163,6 +163,21 @@ def fstring_demo(name, count):
     log(f"hi {name!r}, count={count:>5}")
     log(f"raw: {{ {name} }} done")
     return t"name={name} count={count}"
+
+def match_demo(node):
+    match node:
+        case 0 | 1 | 2:
+            return "small"
+        case [a, *rest]:
+            return rest
+        case {"k": v, **rest}:
+            return v
+        case Point(x=0, y=0):
+            return "origin"
+        case Point(x, y) if x == y:
+            return "diag"
+        case _:
+            return "other"
 `
 
 func BenchmarkParseFile(b *testing.B) {

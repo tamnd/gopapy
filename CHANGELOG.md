@@ -9,6 +9,65 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.32] - 2026-04-26
+
+PEP 634 `match` / `case` lands in parser2. With this release the v2
+parser handles 77 of the 85 v1 grammar fixtures cleanly; the eight
+remaining misses are all features explicitly deferred (PEP 695
+type-params, PEP 646 `*Ts` in subscript / annotation positions, PEP
+758 except groups, the unicode-tag identifier corner). v1 is
+unchanged.
+
+### Added
+
+- `v2/parser2` — `ParseFile` accepts the full PEP 634 match
+  statement, including:
+  - literal patterns: numbers, signed numbers (`-1`), strings,
+    and complex-literal sums (`1+2j`, `-0-0j`),
+  - singleton patterns (`None`, `True`, `False`),
+  - capture and wildcard patterns (`name`, `_`),
+  - value patterns: dotted attribute chains (`Color.RED`,
+    `mod.Color.GREEN`),
+  - sequence patterns: `[...]`, `(...)`, paren-less open form
+    (`case 0, *rest:`), and the star sub-pattern,
+  - mapping patterns with optional `**rest` capture,
+  - class patterns with positional and keyword sub-patterns
+    (`Point(x, y=0)`),
+  - or-patterns (`a | b | c`),
+  - as-patterns (`pat as name`),
+  - guard expressions (`case n if n > 0:`).
+- AST: `Match`, `MatchCase`, plus the eight `Pattern` node types
+  (`MatchValue`, `MatchSingleton`, `MatchSequence`, `MatchMapping`,
+  `MatchClass`, `MatchStar`, `MatchAs`, `MatchOr`).
+- Soft-keyword treatment: `match` and `case` remain ordinary names
+  unless they appear at statement start in the disambiguating
+  positions PEP 634 specifies. `match = 1`, `match(...)`,
+  `match.x`, `match[i]` still parse as plain name uses.
+- Dump cases for the new nodes follow the existing parens-explicit
+  format so match test cases stay inline.
+
+### Performance
+
+End-to-end module parse, darwin/arm64 (Apple M4), shared
+`fileBenchSrc` (now 113 lines including the f-string + t-string
+sample and a small match block). Numbers from `BenchmarkParseFile`
+(v2) and `BenchmarkParseFileV1Compare` (v1):
+
+- v1 ParseFile: 2.28 ms/op, 0.94 MB/s
+- v2 ParseFile: 27.8 us/op, 77.2 MB/s
+- v2 is ~82x faster, ~82x higher throughput than v1 on the file
+  bench. Expression bench (`BenchmarkParseExpression`):
+  18.7 us/op v2 vs 3.55 ms/op v1 — ~190x faster.
+
+### Notes
+
+- The CLI still routes through v1. Switching `cmd/gopapy` to
+  parser2 is reserved for v0.2.0 once symbols/lint/LSP can consume
+  v2's AST.
+- Remaining gaps (deferred): PEP 695 type parameters, PEP 646 `*Ts`
+  in subscript / annotation position, PEP 758 parenthesised except
+  groups, the unicode-tag identifier corner.
+
 ## [0.1.31] - 2026-04-26
 
 PEP 701 f-strings and PEP 750 t-strings land in parser2. Both forms
@@ -1949,6 +2008,7 @@ generator expressions, `async`/`await` outside trivial expressions,
 literals, octal/binary/unicode-name string escapes.
 
 [Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.31...HEAD
+[0.1.32]: https://github.com/tamnd/gopapy/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/tamnd/gopapy/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/tamnd/gopapy/compare/v0.1.29...v0.1.30
 [0.1.29]: https://github.com/tamnd/gopapy/compare/v0.1.28...v0.1.29
