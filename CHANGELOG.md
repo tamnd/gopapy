@@ -9,6 +9,35 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.27] - 2026-04-26
+
+Maintenance release that prepares the parser for the v2 split. No
+user-visible behavior change; the value is the policy:
+`github.com/tamnd/gopapy/v1/parser` is feature-frozen as of this
+version, and the hand-written recursive-descent parser will land
+under `github.com/tamnd/gopapy/v2` starting at v0.1.28.
+
+### Added
+
+- `parser/doc.go` documenting the v0.1 freeze and the v2 migration
+  path. v1 keeps shipping bug fixes; new constructs and the parser
+  rewrite target v2.
+- `parser/api_test.go` with explicit smoke tests for every exported
+  entry point: `ParseFile`, `ParseString`, `ParseExpression`,
+  `ParseReader`. The wider parser_test.go covers grammar
+  correctness; this file locks in the public surface so a parser2
+  build that drops or renames any of these functions fails CI
+  immediately.
+
+### Notes
+
+- v1 is the maintenance line going forward. Anyone pinned to the
+  current `parser.File` AST shape (including its participle-era
+  Pos quirks) stays on v1 indefinitely. v2 ships in parallel and
+  is the path for new development.
+- Round-trip safety net is already in CI via `gopapy unparse
+  --check stdlib`; nothing added on that front.
+
 ## [0.1.26] - 2026-04-26
 
 `gopapy lsp` learns `textDocument/codeAction`. The v0.1.25 LSP shipped
@@ -1711,7 +1740,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.26...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.27...HEAD
+[0.1.27]: https://github.com/tamnd/gopapy/compare/v0.1.26...v0.1.27
 [0.1.26]: https://github.com/tamnd/gopapy/compare/v0.1.25...v0.1.26
 [0.1.25]: https://github.com/tamnd/gopapy/compare/v0.1.24...v0.1.25
 [0.1.24]: https://github.com/tamnd/gopapy/compare/v0.1.23...v0.1.24
