@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,16 +22,22 @@ import (
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.17"
+const version = "0.1.18"
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	if err := runWithStdin(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "gopapy:", err)
 		os.Exit(1)
 	}
 }
 
+// run is the test entry point that doesn't need stdin (every existing
+// test passes paths). New stdin-aware tests call runWithStdin directly.
 func run(args []string, stdout, stderr io.Writer) error {
+	return runWithStdin(args, bytes.NewReader(nil), stdout, stderr)
+}
+
+func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		usage(stderr)
 		return nil
@@ -73,7 +80,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "diag":
 		return diagCmd(args[1:], stdout, stderr)
 	case "lint":
-		return lintCmd(args[1:], stdout, stderr)
+		return lintCmd(args[1:], stdin, stdout, stderr)
 	case "bench":
 		if len(args) < 2 {
 			return fmt.Errorf("bench: missing DIR argument")
@@ -485,12 +492,22 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 // Configuration precedence: --config overrides discovery; --no-config
 // skips discovery entirely. Default behaviour walks up from the first
 // PATH argument looking for pyproject.toml.
-func lintCmd(args []string, stdout, stderr io.Writer) error {
+//
+// Stdin mode (PATH = "-"): the source body is read from stdin and
+// linted as a single file. --stdin-filename PATH gives the buffer
+// a logical name used for diagnostic filenames, per-file ignore
+// matching, and config discovery (the path doesn't have to exist on
+// disk). With --fix in stdin mode, the rewritten source goes to the
+// configured sink and the remaining diagnostics go to stderr — the
+// editor pipes stdout back into the buffer and renders stderr as
+// underlines.
+func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	format := linter.FormatText
 	fix := false
 	noConfig := false
 	configPath := ""
 	outputPath := ""
+	stdinFilename := ""
 	var path string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -533,6 +550,14 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 			outputPath = args[i]
 		case strings.HasPrefix(a, "--output="):
 			outputPath = strings.TrimPrefix(a, "--output=")
+		case a == "--stdin-filename":
+			if i+1 >= len(args) {
+				return fmt.Errorf("lint: --stdin-filename requires a path")
+			}
+			i++
+			stdinFilename = args[i]
+		case strings.HasPrefix(a, "--stdin-filename="):
+			stdinFilename = strings.TrimPrefix(a, "--stdin-filename=")
 		default:
 			if path != "" {
 				return fmt.Errorf("lint: unexpected argument %q", a)
@@ -543,6 +568,12 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 	if path == "" {
 		return fmt.Errorf("lint: missing PATH argument")
 	}
+
+	if path == "-" {
+		return lintStdin(stdin, stdinFilename, configPath, noConfig, fix,
+			format, outputPath, stdout, stderr)
+	}
+
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -647,6 +678,95 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("lint: %d parse failures", parseFailed)
 	}
 	return nil
+}
+
+// lintStdin handles `gopapy lint -`. The source body is read from
+// stdin to EOF and treated as a single file whose logical name is
+// stdinFilename (default "<stdin>"). Per-file ignores and config
+// discovery key off that name; with --fix, the rewritten source
+// goes to the configured sink and the diagnostics go to stderr so
+// an editor can pipe one stream into the buffer and render the
+// other as squiggles.
+func lintStdin(stdin io.Reader, stdinFilename, configPath string, noConfig, fix bool,
+	format linter.Format, outputPath string, stdout, stderr io.Writer,
+) error {
+	src, err := io.ReadAll(stdin)
+	if err != nil {
+		return fmt.Errorf("lint: read stdin: %v", err)
+	}
+	logical := stdinFilename
+	if logical == "" {
+		logical = "<stdin>"
+	}
+	// Discovery anchor: the user-supplied path if any, else the CWD.
+	// A real filename gets us into the right project; without one we
+	// fall back to "where the user invoked us from".
+	anchor := stdinFilename
+	if anchor == "" {
+		anchor = "."
+	}
+	cfg, cfgPath, err := resolveLintConfig(anchor, configPath, noConfig)
+	if err != nil {
+		return err
+	}
+	if cfgPath != "" {
+		fmt.Fprintf(stderr, "loaded config from %s\n", cfgPath)
+	}
+
+	sink, closeSink, err := openOutput(outputPath, stdout)
+	if err != nil {
+		return fmt.Errorf("lint: %v", err)
+	}
+	defer closeSink()
+
+	if fix {
+		// In stdin --fix mode the sink receives source bytes; the
+		// diagnostic stream moves to stderr so callers can split the
+		// two cleanly.
+		out, fixedDiags, ferr := fixStdin(logical, src, cfg)
+		if ferr != nil {
+			return fmt.Errorf("lint: parse stdin: %v", ferr)
+		}
+		if _, err := sink.Write([]byte(out)); err != nil {
+			return fmt.Errorf("lint: write fixed source: %v", err)
+		}
+		// After applying the fix we lint the rewritten body so the
+		// diagnostics reflect what the buffer will actually contain.
+		ds, derr := linter.LintFileWithConfig(logical, []byte(out), cfg)
+		if derr != nil {
+			return fmt.Errorf("lint: re-lint stdin: %v", derr)
+		}
+		for _, d := range ds {
+			_ = linter.WriteDiagnostic(stderr, d, format)
+		}
+		fmt.Fprintf(stderr, "stdin: %d diagnostics, %d fixes applied\n",
+			len(ds), len(fixedDiags))
+		return nil
+	}
+
+	ds, derr := linter.LintFileWithConfig(logical, src, cfg)
+	if derr != nil {
+		return fmt.Errorf("lint: parse stdin: %v", derr)
+	}
+	for _, d := range ds {
+		_ = linter.WriteDiagnostic(sink, d, format)
+	}
+	return nil
+}
+
+// fixStdin parses src, applies safe fixes, and returns the rewritten
+// body plus the list of fixed diagnostics. Mirrors fixOne minus the
+// disk dance: there's no path to atomic-rename onto.
+func fixStdin(filename string, src []byte, cfg linter.Config) (string, []linter.FixedDiagnostic, error) {
+	cf, err := cst.Parse(filename, src)
+	if err != nil {
+		return "", nil, err
+	}
+	_, fixed := linter.FixWithConfig(cf.AST, cfg, filename)
+	if len(fixed) == 0 {
+		return string(src), nil, nil
+	}
+	return cf.Unparse(), fixed, nil
 }
 
 // fixOne reads, parses, fixes, and re-emits one file. Returns the
@@ -862,9 +982,14 @@ Commands:
   symbols PATH  Build a symbol table for FILE, or report panics across DIR.
   diag PATH     Print semantic diagnostics for FILE or DIR. --json for JSONL.
   lint PATH     Run pyflakes-style linter on FILE or DIR.
+                PATH = "-" reads source from stdin (use --stdin-filename
+                to give the buffer a logical name for diagnostics and
+                per-file ignores).
                 --format {text,json,github} chooses the diagnostic encoding.
                 --output PATH writes diagnostics to a file ("-" = stdout).
-                --fix rewrites files in place (F401, F811 dead-store).
+                --fix rewrites files in place (F401, F811 dead-store);
+                in stdin mode --fix writes the rewritten source to the
+                output sink and the diagnostics to stderr.
                 --config PATH / --no-config control pyproject.toml discovery.
   bench DIR     Parse every .py under DIR and print parse/emit throughput.
   version       Print the gopapy version.
