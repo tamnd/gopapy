@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-// tokKind enumerates the lexical categories parser2 understands today.
+// tokKind enumerates the lexical categories parser2 understands.
 // Anything outside this set is rejected as out-of-scope so failures
 // surface loudly rather than silently dropping into garbage parses.
 type tokKind int
@@ -18,13 +18,48 @@ const (
 	tkFloat
 	tkString
 	tkName
-	tkPlus
-	tkMinus
-	tkStar
-	tkSlash
-	tkTilde
-	tkLParen
-	tkRParen
+
+	// Arithmetic
+	tkPlus       // +
+	tkMinus      // -
+	tkStar       // *
+	tkDoubleStar // **
+	tkSlash      // /
+	tkDoubleSl   // //
+	tkPercent    // %
+	tkAt         // @
+
+	// Bitwise + shift
+	tkAmp    // &
+	tkPipe   // |
+	tkCaret  // ^
+	tkTilde  // ~
+	tkLShift // <<
+	tkRShift // >>
+
+	// Comparison
+	tkLt    // <
+	tkGt    // >
+	tkLe    // <=
+	tkGe    // >=
+	tkEqEq  // ==
+	tkNotEq // !=
+
+	// Assignment-ish
+	tkAssign // =  (only meaningful inside call kwargs / lambda defaults)
+	tkWalrus // :=
+
+	// Brackets and delimiters
+	tkLParen   // (
+	tkRParen   // )
+	tkLBrack   // [
+	tkRBrack   // ]
+	tkLBrace   // {
+	tkRBrace   // }
+	tkComma    // ,
+	tkColon    // :
+	tkDot      // .
+	tkEllipsis // ...
 )
 
 func (k tokKind) String() string {
@@ -45,14 +80,64 @@ func (k tokKind) String() string {
 		return "-"
 	case tkStar:
 		return "*"
+	case tkDoubleStar:
+		return "**"
 	case tkSlash:
 		return "/"
+	case tkDoubleSl:
+		return "//"
+	case tkPercent:
+		return "%"
+	case tkAt:
+		return "@"
+	case tkAmp:
+		return "&"
+	case tkPipe:
+		return "|"
+	case tkCaret:
+		return "^"
 	case tkTilde:
 		return "~"
+	case tkLShift:
+		return "<<"
+	case tkRShift:
+		return ">>"
+	case tkLt:
+		return "<"
+	case tkGt:
+		return ">"
+	case tkLe:
+		return "<="
+	case tkGe:
+		return ">="
+	case tkEqEq:
+		return "=="
+	case tkNotEq:
+		return "!="
+	case tkAssign:
+		return "="
+	case tkWalrus:
+		return ":="
 	case tkLParen:
 		return "("
 	case tkRParen:
 		return ")"
+	case tkLBrack:
+		return "["
+	case tkRBrack:
+		return "]"
+	case tkLBrace:
+		return "{"
+	case tkRBrace:
+		return "}"
+	case tkComma:
+		return ","
+	case tkColon:
+		return ":"
+	case tkDot:
+		return "."
+	case tkEllipsis:
+		return "..."
 	}
 	return fmt.Sprintf("tok(%d)", int(k))
 }
@@ -63,9 +148,9 @@ type token struct {
 	pos  Pos
 }
 
-// scanner is a tiny single-pass tokenizer. It tracks line/col so
-// errors point at the right spot. Reused buffers and per-call
-// allocations are kept to a minimum because the bench depends on it.
+// scanner is a single-pass tokenizer with peek-ahead for multi-char
+// operators. Reused buffers and per-call allocations are kept to a
+// minimum because the bench depends on it.
 type scanner struct {
 	src  string
 	off  int
@@ -94,11 +179,32 @@ func (s *scanner) advance(n int) {
 	s.off += n
 }
 
+func (s *scanner) peekByte(n int) byte {
+	if s.off+n >= len(s.src) {
+		return 0
+	}
+	return s.src[s.off+n]
+}
+
 func (s *scanner) skipSpace() {
 	for s.off < len(s.src) {
 		c := s.src[s.off]
 		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
 			s.advance(1)
+			continue
+		}
+		// Line continuation: backslash + newline is whitespace inside
+		// expressions.
+		if c == '\\' && s.peekByte(1) == '\n' {
+			s.advance(2)
+			continue
+		}
+		// Python comments run to end-of-line; treat like whitespace
+		// inside expressions.
+		if c == '#' {
+			for s.off < len(s.src) && s.src[s.off] != '\n' {
+				s.advance(1)
+			}
 			continue
 		}
 		break
@@ -112,48 +218,179 @@ func (s *scanner) next() (token, error) {
 	}
 	start := s.pos()
 	c := s.src[s.off]
-	switch {
-	case c == '+':
-		s.advance(1)
-		return token{kind: tkPlus, val: "+", pos: start}, nil
-	case c == '-':
-		s.advance(1)
-		return token{kind: tkMinus, val: "-", pos: start}, nil
-	case c == '*':
+
+	// Multi-char operators must be checked before single-char fallbacks.
+	switch c {
+	case '*':
+		if s.peekByte(1) == '*' {
+			s.advance(2)
+			return token{kind: tkDoubleStar, val: "**", pos: start}, nil
+		}
 		s.advance(1)
 		return token{kind: tkStar, val: "*", pos: start}, nil
-	case c == '/':
+	case '/':
+		if s.peekByte(1) == '/' {
+			s.advance(2)
+			return token{kind: tkDoubleSl, val: "//", pos: start}, nil
+		}
 		s.advance(1)
 		return token{kind: tkSlash, val: "/", pos: start}, nil
-	case c == '~':
+	case '<':
+		if s.peekByte(1) == '<' {
+			s.advance(2)
+			return token{kind: tkLShift, val: "<<", pos: start}, nil
+		}
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkLe, val: "<=", pos: start}, nil
+		}
+		s.advance(1)
+		return token{kind: tkLt, val: "<", pos: start}, nil
+	case '>':
+		if s.peekByte(1) == '>' {
+			s.advance(2)
+			return token{kind: tkRShift, val: ">>", pos: start}, nil
+		}
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkGe, val: ">=", pos: start}, nil
+		}
+		s.advance(1)
+		return token{kind: tkGt, val: ">", pos: start}, nil
+	case '=':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkEqEq, val: "==", pos: start}, nil
+		}
+		s.advance(1)
+		return token{kind: tkAssign, val: "=", pos: start}, nil
+	case '!':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkNotEq, val: "!=", pos: start}, nil
+		}
+		return token{}, fmt.Errorf("%d:%d: '!' is not a valid token",
+			start.Line, start.Col)
+	case ':':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkWalrus, val: ":=", pos: start}, nil
+		}
+		s.advance(1)
+		return token{kind: tkColon, val: ":", pos: start}, nil
+	case '.':
+		// `...` ellipsis literal beats single `.`
+		if s.peekByte(1) == '.' && s.peekByte(2) == '.' {
+			s.advance(3)
+			return token{kind: tkEllipsis, val: "...", pos: start}, nil
+		}
+		// `.5` is a float literal.
+		if isDigit(s.peekByte(1)) {
+			return s.scanNumber(start)
+		}
+		s.advance(1)
+		return token{kind: tkDot, val: ".", pos: start}, nil
+	case '+':
+		s.advance(1)
+		return token{kind: tkPlus, val: "+", pos: start}, nil
+	case '-':
+		s.advance(1)
+		return token{kind: tkMinus, val: "-", pos: start}, nil
+	case '%':
+		s.advance(1)
+		return token{kind: tkPercent, val: "%", pos: start}, nil
+	case '@':
+		s.advance(1)
+		return token{kind: tkAt, val: "@", pos: start}, nil
+	case '&':
+		s.advance(1)
+		return token{kind: tkAmp, val: "&", pos: start}, nil
+	case '|':
+		s.advance(1)
+		return token{kind: tkPipe, val: "|", pos: start}, nil
+	case '^':
+		s.advance(1)
+		return token{kind: tkCaret, val: "^", pos: start}, nil
+	case '~':
 		s.advance(1)
 		return token{kind: tkTilde, val: "~", pos: start}, nil
-	case c == '(':
+	case '(':
 		s.advance(1)
 		return token{kind: tkLParen, val: "(", pos: start}, nil
-	case c == ')':
+	case ')':
 		s.advance(1)
 		return token{kind: tkRParen, val: ")", pos: start}, nil
-	case c == '"' || c == '\'':
-		return s.scanString(start, c)
-	case isDigit(c) || (c == '.' && s.off+1 < len(s.src) && isDigit(s.src[s.off+1])):
+	case '[':
+		s.advance(1)
+		return token{kind: tkLBrack, val: "[", pos: start}, nil
+	case ']':
+		s.advance(1)
+		return token{kind: tkRBrack, val: "]", pos: start}, nil
+	case '{':
+		s.advance(1)
+		return token{kind: tkLBrace, val: "{", pos: start}, nil
+	case '}':
+		s.advance(1)
+		return token{kind: tkRBrace, val: "}", pos: start}, nil
+	case ',':
+		s.advance(1)
+		return token{kind: tkComma, val: ",", pos: start}, nil
+	case '"', '\'':
+		return s.scanString(start, c, "")
+	}
+
+	switch {
+	case isDigit(c):
 		return s.scanNumber(start)
 	case isIdentStart(rune(c)) || c >= 0x80:
-		return s.scanName(start)
+		return s.scanNameOrPrefixedString(start)
 	}
-	return token{}, fmt.Errorf("%d:%d: unexpected character %q", start.Line, start.Col, c)
+	return token{}, fmt.Errorf("%d:%d: unexpected character %q",
+		start.Line, start.Col, c)
 }
 
+// scanNumber handles int (decimal, hex, oct, bin), float (with
+// optional fraction and exponent), and complex (j/J suffix) literals.
+// Underscore separators are stripped from the value text for
+// strconv.Parse* to consume.
 func (s *scanner) scanNumber(start Pos) (token, error) {
 	begin := s.off
 	isFloat := false
-	for s.off < len(s.src) && isDigit(s.src[s.off]) {
+
+	// Hex / oct / bin literals.
+	if s.src[s.off] == '0' && s.off+1 < len(s.src) {
+		next := s.src[s.off+1]
+		if next == 'x' || next == 'X' {
+			s.advance(2)
+			for s.off < len(s.src) && (isHexDigit(s.src[s.off]) || s.src[s.off] == '_') {
+				s.advance(1)
+			}
+			return token{kind: tkInt, val: s.src[begin:s.off], pos: start}, nil
+		}
+		if next == 'o' || next == 'O' {
+			s.advance(2)
+			for s.off < len(s.src) && ((s.src[s.off] >= '0' && s.src[s.off] <= '7') || s.src[s.off] == '_') {
+				s.advance(1)
+			}
+			return token{kind: tkInt, val: s.src[begin:s.off], pos: start}, nil
+		}
+		if next == 'b' || next == 'B' {
+			s.advance(2)
+			for s.off < len(s.src) && (s.src[s.off] == '0' || s.src[s.off] == '1' || s.src[s.off] == '_') {
+				s.advance(1)
+			}
+			return token{kind: tkInt, val: s.src[begin:s.off], pos: start}, nil
+		}
+	}
+
+	// Decimal / float / complex.
+	for s.off < len(s.src) && (isDigit(s.src[s.off]) || s.src[s.off] == '_') {
 		s.advance(1)
 	}
 	if s.off < len(s.src) && s.src[s.off] == '.' {
 		isFloat = true
 		s.advance(1)
-		for s.off < len(s.src) && isDigit(s.src[s.off]) {
+		for s.off < len(s.src) && (isDigit(s.src[s.off]) || s.src[s.off] == '_') {
 			s.advance(1)
 		}
 	}
@@ -163,9 +400,15 @@ func (s *scanner) scanNumber(start Pos) (token, error) {
 		if s.off < len(s.src) && (s.src[s.off] == '+' || s.src[s.off] == '-') {
 			s.advance(1)
 		}
-		for s.off < len(s.src) && isDigit(s.src[s.off]) {
+		for s.off < len(s.src) && (isDigit(s.src[s.off]) || s.src[s.off] == '_') {
 			s.advance(1)
 		}
+	}
+	if s.off < len(s.src) && (s.src[s.off] == 'j' || s.src[s.off] == 'J') {
+		s.advance(1)
+		// Complex literal — represented as a float-kind Constant with
+		// the trailing 'j' preserved in val.
+		return token{kind: tkFloat, val: s.src[begin:s.off], pos: start}, nil
 	}
 	val := s.src[begin:s.off]
 	kind := tkInt
@@ -175,16 +418,89 @@ func (s *scanner) scanNumber(start Pos) (token, error) {
 	return token{kind: kind, val: val, pos: start}, nil
 }
 
-func (s *scanner) scanString(start Pos, quote byte) (token, error) {
-	s.advance(1)
+// scanNameOrPrefixedString handles bare identifiers and string
+// literals with prefixes like `b`, `r`, `rb`, `f`, `t`, etc. It
+// peeks one rune past the identifier; if that rune is `"` or `'`,
+// it commits to scanning a prefixed string literal.
+func (s *scanner) scanNameOrPrefixedString(start Pos) (token, error) {
+	begin := s.off
+	for s.off < len(s.src) {
+		r, size := utf8.DecodeRuneInString(s.src[s.off:])
+		if !isIdentPart(r) {
+			break
+		}
+		s.advance(size)
+	}
+	val := s.src[begin:s.off]
+	// Prefixed string literal? Up to two-char prefixes: b, r, u, f, t,
+	// br, rb, fr, rf, tr, rt.
+	if s.off < len(s.src) && (s.src[s.off] == '"' || s.src[s.off] == '\'') {
+		if isStringPrefix(val) {
+			quote := s.src[s.off]
+			return s.scanString(start, quote, val)
+		}
+	}
+	return token{kind: tkName, val: val, pos: start}, nil
+}
+
+func isStringPrefix(p string) bool {
+	if len(p) == 0 || len(p) > 2 {
+		return false
+	}
+	low := strings.ToLower(p)
+	switch low {
+	case "b", "r", "u", "f", "t",
+		"br", "rb", "fr", "rf", "tr", "rt", "bu", "ub":
+		return true
+	}
+	return false
+}
+
+// scanString parses a quoted string literal and returns its decoded
+// text in the token value. F-strings and t-strings are flagged as
+// out-of-scope at this version. Triple-quoted strings are supported.
+func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error) {
+	low := strings.ToLower(prefix)
+	if strings.ContainsAny(low, "ft") {
+		kind := "f-string"
+		if strings.ContainsRune(low, 't') {
+			kind = "t-string"
+		}
+		return token{}, fmt.Errorf("%d:%d: %s literals are not implemented in v0.1.29",
+			start.Line, start.Col, kind)
+	}
+	// The prefix bytes were already consumed by scanNameOrPrefixedString;
+	// the scanner is positioned at the opening quote.
+	// Triple quoted?
+	triple := s.peekByte(0) == quote && s.peekByte(1) == quote && s.peekByte(2) == quote
+	if triple {
+		s.advance(3)
+	} else {
+		s.advance(1)
+	}
+	raw := strings.ContainsRune(low, 'r')
+	bytesPrefix := strings.ContainsRune(low, 'b')
 	var b strings.Builder
 	for s.off < len(s.src) {
 		c := s.src[s.off]
-		if c == quote {
+		if triple {
+			if c == quote && s.peekByte(1) == quote && s.peekByte(2) == quote {
+				s.advance(3)
+				val := b.String()
+				if bytesPrefix {
+					return token{kind: tkString, val: "b:" + val, pos: start}, nil
+				}
+				return token{kind: tkString, val: val, pos: start}, nil
+			}
+		} else if c == quote {
 			s.advance(1)
-			return token{kind: tkString, val: b.String(), pos: start}, nil
+			val := b.String()
+			if bytesPrefix {
+				return token{kind: tkString, val: "b:" + val, pos: start}, nil
+			}
+			return token{kind: tkString, val: val, pos: start}, nil
 		}
-		if c == '\\' && s.off+1 < len(s.src) {
+		if !raw && c == '\\' && s.off+1 < len(s.src) {
 			esc := s.src[s.off+1]
 			switch esc {
 			case 'n':
@@ -201,6 +517,8 @@ func (s *scanner) scanString(start Pos, quote byte) (token, error) {
 				b.WriteByte('"')
 			case '0':
 				b.WriteByte(0)
+			case '\n':
+				// line continuation inside string: skip
 			default:
 				b.WriteByte('\\')
 				b.WriteByte(esc)
@@ -214,20 +532,10 @@ func (s *scanner) scanString(start Pos, quote byte) (token, error) {
 	return token{}, fmt.Errorf("%d:%d: unterminated string literal", start.Line, start.Col)
 }
 
-func (s *scanner) scanName(start Pos) (token, error) {
-	begin := s.off
-	for s.off < len(s.src) {
-		r, size := utf8.DecodeRuneInString(s.src[s.off:])
-		if !isIdentPart(r) {
-			break
-		}
-		s.advance(size)
-	}
-	val := s.src[begin:s.off]
-	return token{kind: tkName, val: val, pos: start}, nil
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+func isHexDigit(c byte) bool {
+	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
-
-func isDigit(c byte) bool      { return c >= '0' && c <= '9' }
 func isIdentStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
 func isIdentPart(r rune) bool {
 	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
