@@ -17,6 +17,7 @@ const (
 	tkInt
 	tkFloat
 	tkString
+	tkFString
 	tkName
 
 	// Arithmetic
@@ -95,6 +96,8 @@ func (k tokKind) String() string {
 		return "float"
 	case tkString:
 		return "string"
+	case tkFString:
+		return "fstring"
 	case tkName:
 		return "name"
 	case tkPlus:
@@ -202,9 +205,28 @@ func (k tokKind) String() string {
 }
 
 type token struct {
-	kind tokKind
-	val  string
-	pos  Pos
+	kind     tokKind
+	val      string
+	pos      Pos
+	fpayload *fstringPayload
+}
+
+// fstringPayload carries the parsed structure of an f-string or
+// t-string literal. The lexer slices the body into alternating text
+// and interpolation segments; the parser then walks the segments to
+// build JoinedStr / TemplateStr nodes.
+type fstringPayload struct {
+	template bool
+	segments []fstringSegment
+}
+
+type fstringSegment struct {
+	isInterp bool
+	text     string          // decoded text (for !isInterp)
+	exprSrc  string          // source of the expression (for isInterp)
+	convert  int             // -1, 'r', 's', or 'a'
+	spec     *fstringPayload // optional format spec, recursively parsed
+	pos      Pos             // position of the segment start
 }
 
 // scanner is a single-pass tokenizer with peek-ahead for multi-char
@@ -751,13 +773,16 @@ func isStringPrefix(p string) bool {
 // out-of-scope at this version. Triple-quoted strings are supported.
 func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error) {
 	low := strings.ToLower(prefix)
-	if strings.ContainsAny(low, "ft") {
-		kind := "f-string"
-		if strings.ContainsRune(low, 't') {
-			kind = "t-string"
-		}
-		return token{}, fmt.Errorf("%d:%d: %s literals are not implemented in v0.1.30",
-			start.Line, start.Col, kind)
+	isF := strings.ContainsRune(low, 'f')
+	isT := strings.ContainsRune(low, 't')
+	if isF && isT {
+		return token{}, fmt.Errorf("%d:%d: cannot combine 'f' and 't' string prefixes", start.Line, start.Col)
+	}
+	if isT && strings.ContainsRune(low, 'b') {
+		return token{}, fmt.Errorf("%d:%d: cannot combine 'b' and 't' string prefixes", start.Line, start.Col)
+	}
+	if isF || isT {
+		return s.scanFTString(start, quote, low, isT)
 	}
 	// The prefix bytes were already consumed by scanNameOrPrefixedString;
 	// the scanner is positioned at the opening quote.
@@ -820,6 +845,277 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 		s.advance(1)
 	}
 	return token{}, fmt.Errorf("%d:%d: unterminated string literal", start.Line, start.Col)
+}
+
+// scanFTString scans the body of an f-string or t-string into a
+// payload of alternating text + interpolation segments. Format
+// specs are themselves f-string bodies and are scanned recursively
+// via scanFTBody. The scanner is positioned at the opening quote
+// when called.
+func (s *scanner) scanFTString(start Pos, quote byte, low string, isT bool) (token, error) {
+	triple := s.peekByte(0) == quote && s.peekByte(1) == quote && s.peekByte(2) == quote
+	if triple {
+		s.advance(3)
+	} else {
+		s.advance(1)
+	}
+	raw := strings.ContainsRune(low, 'r')
+	segs, err := s.scanFTBody(start, quote, raw, triple, false)
+	if err != nil {
+		return token{}, err
+	}
+	return token{
+		kind: tkFString,
+		pos:  start,
+		fpayload: &fstringPayload{
+			template: isT,
+			segments: segs,
+		},
+	}, nil
+}
+
+// scanFTBody walks the body of an f/t-string up to a terminating
+// quote (or, when inSpec is true, an unmatched `}` or `:`). The
+// returned segments interleave text and interpolation pieces. When
+// inSpec is true, the closing brace is left unconsumed for the
+// caller to handle.
+func (s *scanner) scanFTBody(start Pos, quote byte, raw, triple, inSpec bool) ([]fstringSegment, error) {
+	var segs []fstringSegment
+	var b strings.Builder
+	textPos := s.pos()
+	flush := func() {
+		if b.Len() > 0 {
+			segs = append(segs, fstringSegment{text: b.String(), pos: textPos})
+			b.Reset()
+		}
+	}
+	for s.off < len(s.src) {
+		c := s.src[s.off]
+		if !inSpec {
+			if triple {
+				if c == quote && s.peekByte(1) == quote && s.peekByte(2) == quote {
+					s.advance(3)
+					flush()
+					return segs, nil
+				}
+			} else if c == quote {
+				s.advance(1)
+				flush()
+				return segs, nil
+			}
+		} else {
+			// Inside a format spec we stop at an unescaped `}` (the
+			// end of the enclosing interpolation). `{` opens a nested
+			// interpolation, handled below.
+			if c == '}' {
+				flush()
+				return segs, nil
+			}
+		}
+		if c == '{' {
+			if s.peekByte(1) == '{' {
+				b.WriteByte('{')
+				s.advance(2)
+				continue
+			}
+			flush()
+			interpPos := s.pos()
+			s.advance(1) // consume {
+			seg, err := s.scanFTInterp(interpPos, quote, raw, triple)
+			if err != nil {
+				return nil, err
+			}
+			segs = append(segs, seg)
+			textPos = s.pos()
+			continue
+		}
+		if c == '}' {
+			if s.peekByte(1) == '}' {
+				b.WriteByte('}')
+				s.advance(2)
+				continue
+			}
+			return nil, fmt.Errorf("%d:%d: single '}' is not allowed", s.line, s.col)
+		}
+		if !raw && c == '\\' && s.off+1 < len(s.src) {
+			esc := s.src[s.off+1]
+			switch esc {
+			case 'n':
+				b.WriteByte('\n')
+			case 't':
+				b.WriteByte('\t')
+			case 'r':
+				b.WriteByte('\r')
+			case '\\':
+				b.WriteByte('\\')
+			case '\'':
+				b.WriteByte('\'')
+			case '"':
+				b.WriteByte('"')
+			case '0':
+				b.WriteByte(0)
+			case '\n':
+				// line continuation
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(esc)
+			}
+			s.advance(2)
+			continue
+		}
+		b.WriteByte(c)
+		s.advance(1)
+	}
+	if inSpec {
+		flush()
+		return segs, nil
+	}
+	return nil, fmt.Errorf("%d:%d: unterminated f-string literal", start.Line, start.Col)
+}
+
+// scanFTInterp scans one `{...}` interpolation. The opening `{` has
+// already been consumed; on return the scanner sits past the closing
+// `}`. The expression source is captured verbatim and parsed lazily
+// in parseAtom — that keeps the lexer free of expression-grammar
+// knowledge.
+func (s *scanner) scanFTInterp(interpPos Pos, outerQuote byte, outerRaw, outerTriple bool) (fstringSegment, error) {
+	exprStart := s.off
+	depth := 0
+	// PEP 701: track nested string literals so quotes inside the
+	// expression can match the outer string.
+	for s.off < len(s.src) {
+		c := s.src[s.off]
+		switch {
+		case c == '{' || c == '(' || c == '[':
+			depth++
+			s.advance(1)
+		case c == ')' || c == ']':
+			if depth == 0 {
+				return fstringSegment{}, fmt.Errorf("%d:%d: unexpected '%c' in f-string expression",
+					s.line, s.col, c)
+			}
+			depth--
+			s.advance(1)
+		case c == '}':
+			if depth > 0 {
+				depth--
+				s.advance(1)
+				continue
+			}
+			// End of expression part.
+			exprSrc := s.src[exprStart:s.off]
+			s.advance(1) // consume }
+			return fstringSegment{
+				isInterp: true,
+				exprSrc:  strings.TrimSpace(exprSrc),
+				convert:  -1,
+				pos:      interpPos,
+			}, nil
+		case c == '!' && depth == 0 && s.peekByte(1) != '=':
+			// Conversion suffix.
+			exprSrc := s.src[exprStart:s.off]
+			s.advance(1)
+			if s.off >= len(s.src) {
+				return fstringSegment{}, fmt.Errorf("%d:%d: expected conversion char", s.line, s.col)
+			}
+			convCh := s.src[s.off]
+			if convCh != 'r' && convCh != 's' && convCh != 'a' {
+				return fstringSegment{}, fmt.Errorf("%d:%d: invalid conversion '%c'", s.line, s.col, convCh)
+			}
+			s.advance(1)
+			seg := fstringSegment{
+				isInterp: true,
+				exprSrc:  strings.TrimSpace(exprSrc),
+				convert:  int(convCh),
+				pos:      interpPos,
+			}
+			// Optional format spec follows.
+			if s.off < len(s.src) && s.src[s.off] == ':' {
+				s.advance(1)
+				specSegs, err := s.scanFTBody(interpPos, outerQuote, outerRaw, outerTriple, true)
+				if err != nil {
+					return fstringSegment{}, err
+				}
+				seg.spec = &fstringPayload{segments: specSegs}
+			}
+			if s.off >= len(s.src) || s.src[s.off] != '}' {
+				return fstringSegment{}, fmt.Errorf("%d:%d: expected '}' to close interpolation", s.line, s.col)
+			}
+			s.advance(1)
+			return seg, nil
+		case c == ':' && depth == 0:
+			exprSrc := s.src[exprStart:s.off]
+			s.advance(1)
+			specSegs, err := s.scanFTBody(interpPos, outerQuote, outerRaw, outerTriple, true)
+			if err != nil {
+				return fstringSegment{}, err
+			}
+			seg := fstringSegment{
+				isInterp: true,
+				exprSrc:  strings.TrimSpace(exprSrc),
+				convert:  -1,
+				pos:      interpPos,
+				spec:     &fstringPayload{segments: specSegs},
+			}
+			if s.off >= len(s.src) || s.src[s.off] != '}' {
+				return fstringSegment{}, fmt.Errorf("%d:%d: expected '}' to close interpolation", s.line, s.col)
+			}
+			s.advance(1)
+			return seg, nil
+		case c == '\'' || c == '"':
+			// Skip a nested string literal so its braces don't confuse us.
+			if err := s.skipNestedString(); err != nil {
+				return fstringSegment{}, err
+			}
+		case c == '#':
+			return fstringSegment{}, fmt.Errorf("%d:%d: comments not allowed in f-string expression",
+				s.line, s.col)
+		default:
+			s.advance(1)
+		}
+	}
+	return fstringSegment{}, fmt.Errorf("%d:%d: unterminated f-string interpolation", s.line, s.col)
+}
+
+// skipNestedString advances past a nested string literal inside an
+// f-string interpolation. Handles single and triple quotes, and the
+// PEP 701 case where the inner quote may match the outer.
+func (s *scanner) skipNestedString() error {
+	q := s.src[s.off]
+	startLine, startCol := s.line, s.col
+	triple := s.peekByte(1) == q && s.peekByte(2) == q
+	if triple {
+		s.advance(3)
+		for s.off < len(s.src) {
+			if s.src[s.off] == q && s.peekByte(1) == q && s.peekByte(2) == q {
+				s.advance(3)
+				return nil
+			}
+			if s.src[s.off] == '\\' && s.off+1 < len(s.src) {
+				s.advance(2)
+				continue
+			}
+			s.advance(1)
+		}
+		return fmt.Errorf("%d:%d: unterminated triple-quoted string in f-string", startLine, startCol)
+	}
+	s.advance(1)
+	for s.off < len(s.src) {
+		c := s.src[s.off]
+		if c == q {
+			s.advance(1)
+			return nil
+		}
+		if c == '\\' && s.off+1 < len(s.src) {
+			s.advance(2)
+			continue
+		}
+		if c == '\n' {
+			return fmt.Errorf("%d:%d: unterminated string in f-string", startLine, startCol)
+		}
+		s.advance(1)
+	}
+	return fmt.Errorf("%d:%d: unterminated string in f-string", startLine, startCol)
 }
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }

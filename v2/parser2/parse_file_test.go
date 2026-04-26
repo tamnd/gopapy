@@ -204,6 +204,41 @@ func TestParseFileTable(t *testing.T) {
 			src:  "# top comment\n\nx = 1\n\n# trailing\n",
 			want: `Module(body=[Assign(targets=[Name(id="x")], value=Constant(value=1))])`,
 		},
+		{
+			name: "fstring no interp",
+			src:  `f"hello"` + "\n",
+			want: `Module(body=[Expr(value=JoinedStr(values=[Constant(value="hello")]))])`,
+		},
+		{
+			name: "fstring single interp",
+			src:  `x = f"hi {name}"` + "\n",
+			want: `Module(body=[Assign(targets=[Name(id="x")], value=JoinedStr(values=[Constant(value="hi "), FormattedValue(value=Name(id="name"))]))])`,
+		},
+		{
+			name: "fstring conversion",
+			src:  `f"{x!r}"` + "\n",
+			want: `Module(body=[Expr(value=JoinedStr(values=[FormattedValue(value=Name(id="x"), conversion=114)]))])`,
+		},
+		{
+			name: "fstring format spec",
+			src:  `f"{x:>10}"` + "\n",
+			want: `Module(body=[Expr(value=JoinedStr(values=[FormattedValue(value=Name(id="x"), format_spec=JoinedStr(values=[Constant(value=">10")]))]))])`,
+		},
+		{
+			name: "fstring escaped braces",
+			src:  `f"{{ {x} }}"` + "\n",
+			want: `Module(body=[Expr(value=JoinedStr(values=[Constant(value="{ "), FormattedValue(value=Name(id="x")), Constant(value=" }")]))])`,
+		},
+		{
+			name: "tstring single interp",
+			src:  `t"hi {name}"` + "\n",
+			want: `Module(body=[Expr(value=TemplateStr(strings=[Constant(value="hi "), Constant(value="")], interpolations=[Interpolation(value=Name(id="name"), str="name")]))])`,
+		},
+		{
+			name: "adjacent plain and fstring",
+			src:  `s = "a" f"b{x}c"` + "\n",
+			want: `Module(body=[Assign(targets=[Name(id="s")], value=JoinedStr(values=[Constant(value="a"), Constant(value="b"), FormattedValue(value=Name(id="x")), Constant(value="c")]))])`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -227,8 +262,6 @@ func TestParseFileErrors(t *testing.T) {
 	}{
 		{"unindented after if", "if x:\npass\n", "expected indented block"},
 		{"missing colon", "if x\n    pass\n", "expected :"},
-		{"fstring rejected", `f"hi"`, "f-string"},
-		{"tstring rejected", `t"hi"`, "t-string"},
 		{"assign to literal", "1 = x\n", "cannot assign to literal"},
 	}
 	for _, tc := range cases {

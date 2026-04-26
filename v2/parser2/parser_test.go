@@ -346,8 +346,8 @@ var errTable = []struct {
 	{"trailing_garbage", "1 2", "unexpected token"},
 	{"bad_kw_no_eq", "f(x =", "unexpected token"},
 	{"unterminated_string", `"hello`, "unterminated string"},
-	{"fstring_not_implemented", `f"hi"`, "f-string"},
-	{"tstring_not_implemented", `t"hi"`, "t-string"},
+	{"fstring_bad_conversion", `f"{x!q}"`, "invalid conversion"},
+	{"fstring_unterminated", `f"hi`, "unterminated"},
 	{"if_no_else", "a if b", "expected 'else'"},
 	{"lambda_no_colon", "lambda x", "expected"},
 }
