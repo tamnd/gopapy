@@ -73,11 +73,15 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 		if len(args) < 2 {
 			return fmt.Errorf("dump: missing FILE argument")
 		}
-		mod2, err := parseFile2(args[1])
+		src, err := os.ReadFile(args[1])
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, parser2.DumpModule(mod2))
+		f, err := parser.ParseFile(args[1], src)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, ast.Dump(ast.FromFile(f)))
 		return nil
 	case "unparse":
 		return unparseCmd(args[1:], stdout, stderr)
@@ -131,7 +135,13 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 		if isIntentionalBadFixture(path) {
 			return nil
 		}
-		if _, perr := parseFile2(path); perr != nil {
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			failed++
+			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, readErr)
+			return nil
+		}
+		if _, perr := parser.ParseFile(path, src); perr != nil {
 			failed++
 			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, perr)
 		} else {
