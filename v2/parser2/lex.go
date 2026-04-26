@@ -60,6 +60,29 @@ const (
 	tkColon    // :
 	tkDot      // .
 	tkEllipsis // ...
+	tkSemi     // ;
+	tkArrow    // ->
+
+	// Augmented assignment operators (statement mode)
+	tkPlusAssign       // +=
+	tkMinusAssign      // -=
+	tkStarAssign       // *=
+	tkSlashAssign      // /=
+	tkDoubleSlAssign   // //=
+	tkPercentAssign    // %=
+	tkDoubleStarAssign // **=
+	tkAmpAssign        // &=
+	tkPipeAssign       // |=
+	tkCaretAssign      // ^=
+	tkLShiftAssign     // <<=
+	tkRShiftAssign     // >>=
+	tkAtAssign         // @=
+
+	// Statement-level synthetic tokens. Only emitted when the scanner
+	// is in statement mode; ParseExpression never sees them.
+	tkNewline // logical newline at statement boundary
+	tkIndent  // leading whitespace grew vs previous line
+	tkDedent  // leading whitespace shrank vs previous line
 )
 
 func (k tokKind) String() string {
@@ -138,6 +161,42 @@ func (k tokKind) String() string {
 		return "."
 	case tkEllipsis:
 		return "..."
+	case tkSemi:
+		return ";"
+	case tkArrow:
+		return "->"
+	case tkPlusAssign:
+		return "+="
+	case tkMinusAssign:
+		return "-="
+	case tkStarAssign:
+		return "*="
+	case tkSlashAssign:
+		return "/="
+	case tkDoubleSlAssign:
+		return "//="
+	case tkPercentAssign:
+		return "%="
+	case tkDoubleStarAssign:
+		return "**="
+	case tkAmpAssign:
+		return "&="
+	case tkPipeAssign:
+		return "|="
+	case tkCaretAssign:
+		return "^="
+	case tkLShiftAssign:
+		return "<<="
+	case tkRShiftAssign:
+		return ">>="
+	case tkAtAssign:
+		return "@="
+	case tkNewline:
+		return "NEWLINE"
+	case tkIndent:
+		return "INDENT"
+	case tkDedent:
+		return "DEDENT"
 	}
 	return fmt.Sprintf("tok(%d)", int(k))
 }
@@ -151,15 +210,50 @@ type token struct {
 // scanner is a single-pass tokenizer with peek-ahead for multi-char
 // operators. Reused buffers and per-call allocations are kept to a
 // minimum because the bench depends on it.
+//
+// In expression mode (the default and what ParseExpression uses) the
+// scanner treats `\n` as whitespace and never emits NEWLINE / INDENT /
+// DEDENT tokens. In statement mode (set via stmtMode for ParseFile)
+// it emits a NEWLINE at every logical line boundary, INDENT when the
+// leading whitespace of the next logical line is greater than the
+// indent stack top, DEDENT(s) when it falls below, and tracks bracket
+// depth so newlines inside (), [], {} stay invisible per Python's
+// implicit line-joining rule.
 type scanner struct {
 	src  string
 	off  int
 	line int
 	col  int
+
+	// Statement-mode state. Zero value is fine for expression mode.
+	stmtMode        bool
+	indentStack     []int // current open indent levels; always starts with 0
+	bracketDepth    int   // (), [], {} nesting; >0 disables NL/IN/DE
+	atLineStart     bool  // true at file start and after NEWLINE
+	pendingDedents  int   // queued DEDENTs to emit
+	eofNewlineDone  bool  // whether the trailing NEWLINE-before-EOF was emitted
+	eofDedentsDone  bool  // whether the trailing DEDENT chain was emitted
+	lastEmittedKind tokKind
 }
 
 func newScanner(src string) *scanner {
 	return &scanner{src: src, line: 1, col: 0}
+}
+
+// newStmtScanner returns a scanner primed for statement-level tokens:
+// NEWLINE, INDENT, DEDENT plus everything ParseExpression already
+// understands. The indent stack starts at [0]; `atLineStart` starts
+// true so the first non-blank line gets indent-checked against zero
+// (rejecting any leading whitespace at top level).
+func newStmtScanner(src string) *scanner {
+	return &scanner{
+		src:         src,
+		line:        1,
+		col:         0,
+		stmtMode:    true,
+		indentStack: []int{0},
+		atLineStart: true,
+	}
 }
 
 func (s *scanner) pos() Pos { return Pos{Line: s.line, Col: s.col} }
@@ -186,21 +280,32 @@ func (s *scanner) peekByte(n int) byte {
 	return s.src[s.off+n]
 }
 
+// skipSpace eats whitespace and comments. In expression mode it
+// consumes `\n` like any other space; in statement mode `\n` outside
+// brackets stays put so `next` can convert it into a NEWLINE token.
 func (s *scanner) skipSpace() {
 	for s.off < len(s.src) {
 		c := s.src[s.off]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+		if s.stmtMode && s.bracketDepth == 0 && c == '\n' {
+			break
+		}
+		if c == ' ' || c == '\t' || c == '\r' {
 			s.advance(1)
 			continue
 		}
-		// Line continuation: backslash + newline is whitespace inside
-		// expressions.
+		if c == '\n' {
+			s.advance(1)
+			continue
+		}
+		// Line continuation: backslash + newline is whitespace
+		// regardless of mode.
 		if c == '\\' && s.peekByte(1) == '\n' {
 			s.advance(2)
 			continue
 		}
-		// Python comments run to end-of-line; treat like whitespace
-		// inside expressions.
+		// Python comments run to end-of-line; treat like whitespace.
+		// In statement mode the trailing `\n` is left for next() so a
+		// comment followed by a newline still produces a NEWLINE token.
 		if c == '#' {
 			for s.off < len(s.src) && s.src[s.off] != '\n' {
 				s.advance(1)
@@ -212,8 +317,122 @@ func (s *scanner) skipSpace() {
 }
 
 func (s *scanner) next() (token, error) {
+	tok, err := s.nextInternal()
+	if err == nil {
+		s.lastEmittedKind = tok.kind
+	}
+	return tok, err
+}
+
+func (s *scanner) nextInternal() (token, error) {
+	// Drain any queued DEDENTs first so the caller sees them in the
+	// correct order. Each DEDENT pops one level off the indent stack.
+	if s.pendingDedents > 0 {
+		s.pendingDedents--
+		s.indentStack = s.indentStack[:len(s.indentStack)-1]
+		return token{kind: tkDedent, pos: s.pos()}, nil
+	}
+
+	// Statement-mode line-start handling. Runs before skipSpace so the
+	// leading indent is measurable. Skips blank/comment-only lines
+	// without emitting NEWLINE (CPython's NL semantic). Inside brackets
+	// indentation is irrelevant, so the branch is gated on
+	// bracketDepth == 0.
+	if s.stmtMode && s.atLineStart && s.bracketDepth == 0 {
+		for {
+			indent := 0
+			for s.off < len(s.src) {
+				c := s.src[s.off]
+				if c == ' ' {
+					indent++
+					s.advance(1)
+					continue
+				}
+				if c == '\t' {
+					// CPython's tab stop: round up to next multiple of 8.
+					indent += 8 - (indent % 8)
+					s.advance(1)
+					continue
+				}
+				break
+			}
+			// Blank line or comment-only line: not a logical line, just
+			// keep scanning. Don't touch the indent stack.
+			if s.off >= len(s.src) {
+				break
+			}
+			if s.src[s.off] == '\n' {
+				s.advance(1)
+				continue
+			}
+			if s.src[s.off] == '#' {
+				for s.off < len(s.src) && s.src[s.off] != '\n' {
+					s.advance(1)
+				}
+				continue
+			}
+			// Real content on this line. Compare indent against stack.
+			s.atLineStart = false
+			top := s.indentStack[len(s.indentStack)-1]
+			if indent > top {
+				s.indentStack = append(s.indentStack, indent)
+				return token{kind: tkIndent, pos: s.pos()}, nil
+			}
+			if indent < top {
+				// Count how many levels we need to drop without mutating
+				// the stack. Pop one here and let the drain branch handle
+				// the rest, popping one per emitted DEDENT.
+				count := 0
+				i := len(s.indentStack) - 1
+				for i > 0 && s.indentStack[i] > indent {
+					count++
+					i--
+				}
+				if s.indentStack[i] != indent {
+					return token{}, fmt.Errorf("%d:%d: unindent does not match any outer indentation level",
+						s.line, s.col)
+				}
+				s.indentStack = s.indentStack[:len(s.indentStack)-1]
+				s.pendingDedents = count - 1
+				return token{kind: tkDedent, pos: s.pos()}, nil
+			}
+			break
+		}
+	}
+
 	s.skipSpace()
+
+	// Statement-mode logical newline.
+	if s.stmtMode && s.bracketDepth == 0 && s.off < len(s.src) && s.src[s.off] == '\n' {
+		pos := s.pos()
+		s.advance(1)
+		s.atLineStart = true
+		// Suppress doubled NEWLINEs at the lexer level so the parser
+		// doesn't have to. CPython's tokenizer also collapses these.
+		if s.lastEmittedKind == tkNewline || s.lastEmittedKind == 0 {
+			return s.nextInternal()
+		}
+		return token{kind: tkNewline, pos: pos}, nil
+	}
+
 	if s.off >= len(s.src) {
+		// At EOF in statement mode, synthesize a trailing NEWLINE (if
+		// the file didn't end with one) followed by enough DEDENTs to
+		// drain the indent stack. Then EOF.
+		if s.stmtMode && !s.eofNewlineDone {
+			s.eofNewlineDone = true
+			if s.lastEmittedKind != tkNewline && s.lastEmittedKind != 0 {
+				return token{kind: tkNewline, pos: s.pos()}, nil
+			}
+		}
+		if s.stmtMode && !s.eofDedentsDone {
+			s.eofDedentsDone = true
+			if len(s.indentStack) > 1 {
+				s.pendingDedents = len(s.indentStack) - 2
+				s.indentStack = s.indentStack[:len(s.indentStack)-1]
+				return token{kind: tkDedent, pos: s.pos()}, nil
+			}
+		}
 		return token{kind: tkEOF, pos: s.pos()}, nil
 	}
 	start := s.pos()
@@ -223,20 +442,40 @@ func (s *scanner) next() (token, error) {
 	switch c {
 	case '*':
 		if s.peekByte(1) == '*' {
+			if s.peekByte(2) == '=' {
+				s.advance(3)
+				return token{kind: tkDoubleStarAssign, val: "**=", pos: start}, nil
+			}
 			s.advance(2)
 			return token{kind: tkDoubleStar, val: "**", pos: start}, nil
+		}
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkStarAssign, val: "*=", pos: start}, nil
 		}
 		s.advance(1)
 		return token{kind: tkStar, val: "*", pos: start}, nil
 	case '/':
 		if s.peekByte(1) == '/' {
+			if s.peekByte(2) == '=' {
+				s.advance(3)
+				return token{kind: tkDoubleSlAssign, val: "//=", pos: start}, nil
+			}
 			s.advance(2)
 			return token{kind: tkDoubleSl, val: "//", pos: start}, nil
+		}
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkSlashAssign, val: "/=", pos: start}, nil
 		}
 		s.advance(1)
 		return token{kind: tkSlash, val: "/", pos: start}, nil
 	case '<':
 		if s.peekByte(1) == '<' {
+			if s.peekByte(2) == '=' {
+				s.advance(3)
+				return token{kind: tkLShiftAssign, val: "<<=", pos: start}, nil
+			}
 			s.advance(2)
 			return token{kind: tkLShift, val: "<<", pos: start}, nil
 		}
@@ -248,6 +487,10 @@ func (s *scanner) next() (token, error) {
 		return token{kind: tkLt, val: "<", pos: start}, nil
 	case '>':
 		if s.peekByte(1) == '>' {
+			if s.peekByte(2) == '=' {
+				s.advance(3)
+				return token{kind: tkRShiftAssign, val: ">>=", pos: start}, nil
+			}
 			s.advance(2)
 			return token{kind: tkRShift, val: ">>", pos: start}, nil
 		}
@@ -291,50 +534,97 @@ func (s *scanner) next() (token, error) {
 		s.advance(1)
 		return token{kind: tkDot, val: ".", pos: start}, nil
 	case '+':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkPlusAssign, val: "+=", pos: start}, nil
+		}
 		s.advance(1)
 		return token{kind: tkPlus, val: "+", pos: start}, nil
 	case '-':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkMinusAssign, val: "-=", pos: start}, nil
+		}
+		if s.peekByte(1) == '>' {
+			s.advance(2)
+			return token{kind: tkArrow, val: "->", pos: start}, nil
+		}
 		s.advance(1)
 		return token{kind: tkMinus, val: "-", pos: start}, nil
 	case '%':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkPercentAssign, val: "%=", pos: start}, nil
+		}
 		s.advance(1)
 		return token{kind: tkPercent, val: "%", pos: start}, nil
 	case '@':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkAtAssign, val: "@=", pos: start}, nil
+		}
 		s.advance(1)
 		return token{kind: tkAt, val: "@", pos: start}, nil
 	case '&':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkAmpAssign, val: "&=", pos: start}, nil
+		}
 		s.advance(1)
 		return token{kind: tkAmp, val: "&", pos: start}, nil
 	case '|':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkPipeAssign, val: "|=", pos: start}, nil
+		}
 		s.advance(1)
 		return token{kind: tkPipe, val: "|", pos: start}, nil
 	case '^':
+		if s.peekByte(1) == '=' {
+			s.advance(2)
+			return token{kind: tkCaretAssign, val: "^=", pos: start}, nil
+		}
 		s.advance(1)
 		return token{kind: tkCaret, val: "^", pos: start}, nil
 	case '~':
 		s.advance(1)
 		return token{kind: tkTilde, val: "~", pos: start}, nil
 	case '(':
+		s.bracketDepth++
 		s.advance(1)
 		return token{kind: tkLParen, val: "(", pos: start}, nil
 	case ')':
+		if s.bracketDepth > 0 {
+			s.bracketDepth--
+		}
 		s.advance(1)
 		return token{kind: tkRParen, val: ")", pos: start}, nil
 	case '[':
+		s.bracketDepth++
 		s.advance(1)
 		return token{kind: tkLBrack, val: "[", pos: start}, nil
 	case ']':
+		if s.bracketDepth > 0 {
+			s.bracketDepth--
+		}
 		s.advance(1)
 		return token{kind: tkRBrack, val: "]", pos: start}, nil
 	case '{':
+		s.bracketDepth++
 		s.advance(1)
 		return token{kind: tkLBrace, val: "{", pos: start}, nil
 	case '}':
+		if s.bracketDepth > 0 {
+			s.bracketDepth--
+		}
 		s.advance(1)
 		return token{kind: tkRBrace, val: "}", pos: start}, nil
 	case ',':
 		s.advance(1)
 		return token{kind: tkComma, val: ",", pos: start}, nil
+	case ';':
+		s.advance(1)
+		return token{kind: tkSemi, val: ";", pos: start}, nil
 	case '"', '\'':
 		return s.scanString(start, c, "")
 	}
@@ -466,7 +756,7 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 		if strings.ContainsRune(low, 't') {
 			kind = "t-string"
 		}
-		return token{}, fmt.Errorf("%d:%d: %s literals are not implemented in v0.1.29",
+		return token{}, fmt.Errorf("%d:%d: %s literals are not implemented in v0.1.30",
 			start.Line, start.Col, kind)
 	}
 	// The prefix bytes were already consumed by scanNameOrPrefixedString;

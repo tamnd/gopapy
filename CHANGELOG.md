@@ -9,6 +9,65 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.30] - 2026-04-26
+
+Statements land in parser2. The v2 module now parses whole Python
+modules end-to-end via a new `ParseFile` entry point, with a
+hand-written INDENT/DEDENT lexer modelled on CPython's tokenize and
+the full statement AST (assign, aug-assign, ann-assign, control
+flow, try/except, with, def/async def, class, decorators, imports,
+global/nonlocal, del, assert, raise/from). f-strings, t-strings,
+match, type-params, and PEP 646/758 edge forms remain deferred.
+v1 is unchanged.
+
+### Added
+
+- `v2/parser2.ParseFile(filename, src)` and `ParseString` — return a
+  `*Module` whose `Body` is a list of statement nodes. Backed by a
+  new statement-mode scanner that maintains an indent stack, tracks
+  bracket depth (no NEWLINE/INDENT/DEDENT inside `()[]{}`), and
+  synthesises a trailing NEWLINE + DEDENT chain at EOF.
+- Statement AST: `Module`, `ExprStmt`, `Assign` (chained targets),
+  `AugAssign`, `AnnAssign`, `Return`, `Raise` (with `from`),
+  `Pass`/`Break`/`Continue`, `Import`/`ImportFrom`/`Alias`,
+  `Global`/`Nonlocal`, `Delete`, `Assert`, `If` (elif lowered to
+  nested If), `While`, `For`/`AsyncFor`, `Try` with
+  `ExceptHandler`/`else`/`finally`, `With`/`AsyncWith` with
+  `WithItem`, `FunctionDef`/`AsyncFunctionDef`, `ClassDef`,
+  decorators on def/async def/class.
+- Expression AST: `Await`, `Yield`, `YieldFrom`. `await EXPR` parses
+  at unary level; `yield`, `yield EXPR`, `yield from EXPR` parse at
+  the top of `parseExpr`.
+- Augmented assignment family: `+= -= *= /= //= %= **= &= |= ^= <<= >>= @=`.
+- Function-parameter parsing covers positional-only `/`, keyword-only
+  `*`, `*args`, `**kwargs`, defaults, and per-param annotations.
+  Class bases accept positional, `*args`, `**kwargs`, and keyword
+  forms (including `metaclass=`).
+- DumpModule and per-statement dumpers using the existing
+  parens-explicit single-line format, so test cases stay inline.
+
+### Performance
+
+End-to-end module parse, darwin/arm64 (Apple M4), corpus is the
+93-line `fileBenchSrc` shared between
+`parser/bench_v2_compare_test.go` and `v2/parser2/bench_test.go`:
+
+- v1 ParseFile: 1.87 ms/op, 0.88 MB/s, 4.24 MB/op, 49,982 allocs/op
+- v2 ParseFile: 20.0 us/op, 82.1 MB/s, 19.4 KB/op, 481 allocs/op
+- v2 is ~94x faster, ~93x higher throughput, ~219x less memory,
+  ~104x fewer allocations than v1.
+
+### Notes
+
+- v0.1.30 is feature-complete enough to parse 47 of 85 v1 grammar
+  fixtures cleanly; the 38 misses are entirely accounted for by
+  features explicitly deferred to later releases (f/t-strings,
+  match, type-params, PEP 646/758, the `x󠄀` unicode-tag identifier
+  edge case).
+- v1 remains the default in `cmd/gopapy`. Switching the CLI to
+  parser2 is its own release once symbols/lint/LSP can consume v2's
+  AST.
+
 ## [0.1.29] - 2026-04-26
 
 Full expression coverage in parser2. Everything in Python's expression
@@ -1837,7 +1896,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.29...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.30...HEAD
+[0.1.30]: https://github.com/tamnd/gopapy/compare/v0.1.29...v0.1.30
 [0.1.29]: https://github.com/tamnd/gopapy/compare/v0.1.28...v0.1.29
 [0.1.28]: https://github.com/tamnd/gopapy/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/tamnd/gopapy/compare/v0.1.26...v0.1.27

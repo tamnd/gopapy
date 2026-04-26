@@ -114,6 +114,9 @@ func (p *parser) parseExpr() (Expr, error) {
 	if p.isKeyword("lambda") {
 		return p.parseLambda()
 	}
+	if p.isKeyword("yield") {
+		return p.parseYieldExpr()
+	}
 	// walrus at top level: NAME ':=' expr
 	if p.cur.kind == tkName && !isReservedKeyword(p.cur.val) {
 		nxt, err := p.peekTok()
@@ -125,6 +128,44 @@ func (p *parser) parseExpr() (Expr, error) {
 		}
 	}
 	return p.parseTernary()
+}
+
+// parseYieldExpr handles `yield`, `yield expr`, or `yield from expr`.
+// Caller has confirmed cur is the `yield` keyword.
+func (p *parser) parseYieldExpr() (Expr, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	if p.isKeyword("from") {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		v, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &YieldFrom{P: pos, Value: v}, nil
+	}
+	// bare yield: stop at expression-list terminators
+	if isYieldTerminator(p.cur.kind) {
+		return &Yield{P: pos}, nil
+	}
+	v, err := p.parseTestlistOrStarExpr()
+	if err != nil {
+		return nil, err
+	}
+	return &Yield{P: pos, Value: v}, nil
+}
+
+// isYieldTerminator reports kinds that end a bare `yield`.
+func isYieldTerminator(k tokKind) bool {
+	switch k {
+	case tkRParen, tkRBrack, tkRBrace, tkComma, tkColon,
+		tkSemi, tkNewline, tkEOF, tkDedent, tkAssign:
+		return true
+	}
+	return false
 }
 
 // parseNamedExprFromName consumes `NAME := expr`. cur is the name.
@@ -474,6 +515,17 @@ func (p *parser) parseUnary() (Expr, error) {
 		}
 		return &UnaryOp{P: op.pos, Op: unaryOpString(op.kind), Operand: operand}, nil
 	}
+	if p.isKeyword("await") {
+		pos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		operand, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		return &Await{P: pos, Value: operand}, nil
+	}
 	return p.parsePower()
 }
 
@@ -695,6 +747,17 @@ func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
 			v, err := p.parseExpr()
 			if err != nil {
 				return nil, nil, pos, err
+			}
+			if len(args) == 0 && len(kwargs) == 0 && p.isKeyword("for") {
+				gens, err := p.parseComprehensionClauses()
+				if err != nil {
+					return nil, nil, pos, err
+				}
+				args = append(args, &GeneratorExp{P: v.pos(), Elt: v, Gens: gens})
+				if _, err := p.expect(tkRParen); err != nil {
+					return nil, nil, pos, err
+				}
+				return args, kwargs, pos, nil
 			}
 			args = append(args, v)
 		}
