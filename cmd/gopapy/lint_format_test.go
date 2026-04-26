@@ -159,6 +159,64 @@ func TestLintCmd_OutputToFile(t *testing.T) {
 	}
 }
 
+// TestLintCmd_FormatSARIF checks that --format sarif emits a single
+// well-formed SARIF 2.1.0 document on stdout with our tool name in
+// the driver block.
+func TestLintCmd_FormatSARIF(t *testing.T) {
+	path := writeLintFormatFixture(t, lintFormatFixtureSrc)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"lint", "--no-config", "--format", "sarif", path}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v\n%s", err, stdout.String())
+	}
+	if doc["version"] != "2.1.0" {
+		t.Errorf("sarif version = %v, want 2.1.0", doc["version"])
+	}
+	runs, ok := doc["runs"].([]any)
+	if !ok || len(runs) != 1 {
+		t.Fatalf("runs missing or not a single-element array: %v", doc["runs"])
+	}
+	driver := runs[0].(map[string]any)["tool"].(map[string]any)["driver"].(map[string]any)
+	if driver["name"] != "gopapy" {
+		t.Errorf("tool.driver.name = %v, want gopapy", driver["name"])
+	}
+	results := runs[0].(map[string]any)["results"].([]any)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].(map[string]any)["ruleId"] != "F401" {
+		t.Errorf("ruleId = %v, want F401", results[0].(map[string]any)["ruleId"])
+	}
+}
+
+// TestLintCmd_FormatSARIFToFile mirrors TestLintCmd_OutputToFile but
+// for SARIF; the whole document goes to the file in one shot.
+func TestLintCmd_FormatSARIFToFile(t *testing.T) {
+	path := writeLintFormatFixture(t, lintFormatFixtureSrc)
+	outPath := filepath.Join(t.TempDir(), "out.sarif")
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"lint", "--no-config", "--format", "sarif", "--output", outPath, path}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("--output should leave stdout empty, got: %q", stdout.String())
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read sarif file: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("invalid SARIF JSON in file: %v\n%s", err, body)
+	}
+	if doc["version"] != "2.1.0" {
+		t.Errorf("sarif version = %v, want 2.1.0", doc["version"])
+	}
+}
+
 // TestLintCmd_OutputDashIsStdout makes "-" explicit since users may
 // pass it expecting the standard convention.
 func TestLintCmd_OutputDashIsStdout(t *testing.T) {

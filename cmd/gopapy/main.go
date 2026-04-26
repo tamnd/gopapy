@@ -24,7 +24,7 @@ import (
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.23"
+const version = "0.1.24"
 
 func main() {
 	if err := runWithStdin(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
@@ -481,11 +481,12 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 // remaining diagnostics after the fix are emitted on stdout.
 //
 // --format chooses the diagnostic encoding: text (default), json
-// (NDJSON, ruff-compatible flat schema), or github (GH Actions
-// workflow command lines for inline PR annotations). --output PATH
-// writes the diagnostic stream to a file instead of stdout; "-" is
-// stdout. The config-load and run-summary lines stay on stderr so
-// machine consumers see only diagnostics on the chosen sink.
+// (NDJSON, ruff-compatible flat schema), github (GH Actions workflow
+// command lines for inline PR annotations), or sarif (a single SARIF
+// 2.1.0 log document for code-scanning ingest). --output PATH writes
+// the diagnostic stream to a file instead of stdout; "-" is stdout.
+// The config-load and run-summary lines stay on stderr so machine
+// consumers see only diagnostics on the chosen sink.
 //
 // --json is kept as a deprecated alias for --format json so v0.1.16
 // scripts keep working; it now uses the flat schema documented in
@@ -642,6 +643,12 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	)
 
 	emit := func(d diag.Diagnostic) error {
+		// SARIF is a whole-document format; the per-diagnostic write
+		// path can't emit it, so we collect into `diagnostics` above
+		// and flush once at the end.
+		if format == linter.FormatSARIF {
+			return nil
+		}
 		return linter.WriteDiagnostic(sink, d, format)
 	}
 
@@ -737,10 +744,27 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		process(path)
 	}
 
+	if format == linter.FormatSARIF {
+		if err := linter.WriteSARIFLog(sink, diagnostics, sarifTool()); err != nil {
+			return fmt.Errorf("lint: write sarif: %v", err)
+		}
+	}
+
 	if parseFailed > 0 {
 		return fmt.Errorf("lint: %d parse failures", parseFailed)
 	}
 	return nil
+}
+
+// sarifTool builds the SARIF tool descriptor from the current build's
+// version constant. Centralised so stdin-mode and dir-mode write the
+// same `tool.driver` block.
+func sarifTool() linter.ToolInfo {
+	return linter.ToolInfo{
+		Name:           "gopapy",
+		Version:        version,
+		InformationURI: "https://github.com/tamnd/gopapy",
+	}
 }
 
 // lintStdin handles `gopapy lint -`. The source body is read from
@@ -799,8 +823,14 @@ func lintStdin(stdin io.Reader, stdinFilename, configPath string, noConfig, fix 
 		if derr != nil {
 			return fmt.Errorf("lint: re-lint stdin: %v", derr)
 		}
-		for _, d := range ds {
-			_ = linter.WriteDiagnostic(stderr, d, format)
+		if format == linter.FormatSARIF {
+			if err := linter.WriteSARIFLog(stderr, ds, sarifTool()); err != nil {
+				return fmt.Errorf("lint: write sarif: %v", err)
+			}
+		} else {
+			for _, d := range ds {
+				_ = linter.WriteDiagnostic(stderr, d, format)
+			}
 		}
 		fmt.Fprintf(stderr, "stdin: %d diagnostics, %d fixes applied\n",
 			len(ds), len(fixedDiags))
@@ -810,6 +840,12 @@ func lintStdin(stdin io.Reader, stdinFilename, configPath string, noConfig, fix 
 	ds, derr := linter.LintFileWithConfig(logical, src, cfg)
 	if derr != nil {
 		return fmt.Errorf("lint: parse stdin: %v", derr)
+	}
+	if format == linter.FormatSARIF {
+		if err := linter.WriteSARIFLog(sink, ds, sarifTool()); err != nil {
+			return fmt.Errorf("lint: write sarif: %v", err)
+		}
+		return nil
 	}
 	for _, d := range ds {
 		_ = linter.WriteDiagnostic(sink, d, format)
@@ -1104,7 +1140,7 @@ Commands:
                 PATH = "-" reads source from stdin (use --stdin-filename
                 to give the buffer a logical name for diagnostics and
                 per-file ignores).
-                --format {text,json,github} chooses the diagnostic encoding.
+                --format {text,json,github,sarif} chooses the diagnostic encoding.
                 --output PATH writes diagnostics to a file ("-" = stdout).
                 --fix rewrites files in place (F401, F811 dead-store);
                 in stdin mode --fix writes the rewritten source to the
