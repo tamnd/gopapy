@@ -22,7 +22,7 @@ import (
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.18"
+const version = "0.1.19"
 
 func main() {
 	if err := runWithStdin(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {

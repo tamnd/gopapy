@@ -68,9 +68,11 @@ func (c Config) EnabledFor(filename, code string) bool {
 func AllCodes() []string {
 	return []string{
 		CodeUnusedImport,
+		CodePercentFormatMismatch,
 		CodeFStringWithoutPlaceholders,
 		CodeIsWithLiteral,
 		CodeRedefinitionUnused,
+		CodeUndefinedName,
 		CodeUnusedLocal,
 	}
 }
