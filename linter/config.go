@@ -76,6 +76,7 @@ func AllCodes() []string {
 		CodeUnusedLocal,
 		CodeComparisonToNone,
 		CodeComparisonToBool,
+		CodeInvalidEscape,
 	}
 }
 

@@ -9,6 +9,42 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-04-26
+
+W605 (`invalid-escape-sequence`) lands. The check needs raw source
+bytes — by the time we have a Constant node, the string-fold has
+resolved `"\\p"` and `"\p"` to the same value, so the AST can't
+distinguish them. The substrate already exposed the raw bytes via
+`cst.File.Tokens()`; what was missing was a path through the linter
+that gave a check access to them.
+
+The plumbing is small: `LintFile` already parses through `cst.Parse`,
+so the source-aware checks run after the AST pass and merge into
+the same diagnostic stream. `Lint(mod)` (the AST-only entry point)
+deliberately doesn't run them — there's no source to give. Callers
+who want full coverage use `LintFile` / `LintFiles`, which is what
+the CLI and the parallel path already do.
+
+### Added
+
+- **W605** (`invalid-escape-sequence`) fires on `"\p"`, `"\d"`, and
+  the rest of the unrecognized-escape family in non-raw string
+  literals. Raw strings (`r"\p"`, `R"\p"`) are exempt — backslashes
+  there are literal. F-strings and t-strings are scanned only
+  outside `{...}` placeholders; the placeholder itself is a Python
+  expression (or a format spec) and has its own rules.
+- Bytes literals get the same treatment with str-only escapes
+  excluded: `b"A"`, `b"\N{LATIN ...}"` fire because `\u`,
+  `\U`, `\N` are str-only.
+
+### Notes
+
+- No auto-fix. `r"\p"` vs `"\\p"` is an intent question only the
+  author can answer; pycodestyle / pyflakes also leave it alone.
+- `linter.AllCodes()` returns 10 (was 9).
+- `Lint(mod)` does not surface W605 — documented limitation. Use
+  `LintFile`. Same shape as `# noqa` not applying via `Lint`.
+
 ## [0.1.22] - 2026-04-26
 
 The first two pycodestyle checks land. Both target the same pattern
@@ -1538,7 +1574,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.22...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.23...HEAD
+[0.1.23]: https://github.com/tamnd/gopapy/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/tamnd/gopapy/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/tamnd/gopapy/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/tamnd/gopapy/compare/v0.1.19...v0.1.20

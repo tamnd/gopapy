@@ -33,6 +33,7 @@ const (
 	CodeUnusedLocal                = "F841" // local assigned but never read
 	CodeComparisonToNone           = "E711" // `== None` / `!= None` instead of `is`
 	CodeComparisonToBool           = "E712" // `== True` / `== False` instead of `is`
+	CodeInvalidEscape              = "W605" // `\p` and friends in non-raw string literals
 )
 
 // Lint runs every check on mod and returns diagnostics in stable
@@ -72,12 +73,20 @@ func LintFile(filename string, src []byte) ([]diag.Diagnostic, error) {
 // LintFileWithConfig parses src, runs every check enabled by cfg
 // (including per-file ignores keyed off filename), applies # noqa
 // suppression, and stamps Filename on each surviving diagnostic.
+//
+// Source-aware checks (those that need raw bytes — W605 and any
+// future siblings) run here too, against the cst.File. They never
+// run via Lint(mod) because there's no source to give them; that's
+// a documented limitation, callers wanting full coverage use
+// LintFile.
 func LintFileWithConfig(filename string, src []byte, cfg Config) ([]diag.Diagnostic, error) {
 	cf, err := cst.Parse(filename, src)
 	if err != nil {
 		return nil, err
 	}
 	diags := LintWithConfig(cf.AST, cfg)
+	diags = append(diags, runSourceChecks(cf, cfg)...)
+	sortDiagnostics(diags)
 	noqa := buildNoqaIndex(cf)
 	out := diags[:0]
 	for _, d := range diags {
@@ -91,6 +100,18 @@ func LintFileWithConfig(filename string, src []byte, cfg Config) ([]diag.Diagnos
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// runSourceChecks runs every check that needs raw source bytes
+// (cst.File.Tokens / cst.File.Source). Each check is gated on its
+// own code being enabled under cfg; per-file ignores apply later in
+// the LintFileWithConfig filtering pass.
+func runSourceChecks(cf *cst.File, cfg Config) []diag.Diagnostic {
+	var out []diag.Diagnostic
+	if cfg.Enabled(CodeInvalidEscape) {
+		out = append(out, checkW605(cf)...)
+	}
+	return out
 }
 
 // filterEnabled drops diagnostics whose code is not enabled under
