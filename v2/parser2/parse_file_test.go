@@ -354,6 +354,26 @@ func TestParseFileTable(t *testing.T) {
 			src:  "type = 1\ntype(x)\n",
 			want: `Module(body=[Assign(targets=[Name(id="type")], value=Constant(value=1)), Expr(value=Call(func=Name(id="type"), args=[Name(id="x")], keywords=[]))])`,
 		},
+		{
+			name: "pep646 starred subscript",
+			src:  "a: tuple[int, *Ts]\n",
+			want: `Module(body=[AnnAssign(target=Name(id="a"), annotation=Subscript(value=Name(id="tuple"), slice=Tuple([Name(id="int"), Starred(value=Name(id="Ts"))])), simple=true)])`,
+		},
+		{
+			name: "pep646 starred annotation",
+			src:  "def f(*args: *Ts) -> None: pass\n",
+			want: `Module(body=[FunctionDef(name="f", args=Arguments(args=[], vararg=args), body=[Pass()], decorators=[], returns=Constant(value=None))])`,
+		},
+		{
+			name: "pep758 paren-less except tuple",
+			src:  "try:\n    pass\nexcept ValueError, TypeError:\n    pass\n",
+			want: `Module(body=[Try(body=[Pass()], handlers=[ExceptHandler(type=Tuple([Name(id="ValueError"), Name(id="TypeError")]), name="", body=[Pass()])], orelse=[], finalbody=[])])`,
+		},
+		{
+			name: "unicode identifier",
+			src:  "ä = 1\n蟒 = 2\n",
+			want: `Module(body=[Assign(targets=[Name(id="ä")], value=Constant(value=1)), Assign(targets=[Name(id="蟒")], value=Constant(value=2))])`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

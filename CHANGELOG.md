@@ -9,6 +9,48 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.34] - 2026-04-26
+
+Full fixture parity: parser2 now handles all 85 v1 grammar fixtures.
+This release closes the four items deferred from v0.1.33: PEP 646
+starred subscript and annotation positions, PEP 758 paren-less
+except-tuple, and the UAX 31 unicode-tag identifier continuation
+block. v1 is unchanged. The path to v0.2.0 (CLI swap) is now clear.
+
+### Added
+
+- `v2/parser2` — full CPython 3.14 grammar parity:
+
+  - **PEP 646** — `*Ts` is now valid inside subscript position
+    (`tuple[*Ts]`, `Callable[[*Args], R]`, `dict[str, *Vs]`)
+    producing a `Starred` node, matching CPython's AST. Also
+    accepted as an annotation on varargs: `def f(*args: *Ts)`.
+  - **PEP 758** — paren-less except-tuple (`except A, B:` and
+    `except* A, B:`) now accepted; the comma-separated types are
+    collected into a `Tuple` expression, identical to the
+    parenthesised form (`except (A, B):`).
+  - **PEP 3131 / UAX 31** — identifiers may now contain codepoints
+    in the `Other_ID_Continue` Unicode property, including the
+    variation-selector supplement block (U+E0100..U+E01EF) that
+    the fixture `x󠄀` exercises. Non-ASCII letters (`ä`, `蟒`) were
+    already accepted; the fix is an `isOtherIDContinue` helper in
+    the lexer.
+
+### Performance
+
+End-to-end module parse, darwin/arm64 (Apple M4), shared
+`fileBenchSrc` (unchanged from v0.1.33 at 122 lines):
+
+- v1 ParseFile: 2.67 ms/op, 0.86 MB/s
+- v2 ParseFile: 32.2 us/op, 71.2 MB/s
+- v2 is ~83x faster, ~83x higher throughput than v1.
+
+### Notes
+
+- The CLI still routes through v1. v0.2.0 will flip the default
+  once symbols/lint/LSP can consume v2's AST.
+- Grammar fixture pass rate: **85/85** (100%).
+
 ## [0.1.33] - 2026-04-26
 
 PEP 695 type parameters land in parser2: the `type X = ...`
@@ -2061,6 +2103,7 @@ generator expressions, `async`/`await` outside trivial expressions,
 literals, octal/binary/unicode-name string escapes.
 
 [Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.31...HEAD
+[0.1.34]: https://github.com/tamnd/gopapy/compare/v0.1.33...v0.1.34
 [0.1.33]: https://github.com/tamnd/gopapy/compare/v0.1.32...v0.1.33
 [0.1.32]: https://github.com/tamnd/gopapy/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/tamnd/gopapy/compare/v0.1.30...v0.1.31

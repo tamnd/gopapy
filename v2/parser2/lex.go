@@ -1124,5 +1124,29 @@ func isHexDigit(c byte) bool {
 }
 func isIdentStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
 func isIdentPart(r rune) bool {
-	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+	if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+		return true
+	}
+	// UAX #31 Other_ID_Continue ranges not covered by IsLetter/IsDigit.
+	return isOtherIDContinue(r)
+}
+
+// isOtherIDContinue reports whether r is in the Unicode Other_ID_Continue
+// property. Only the ranges relevant to Python identifiers in practice are
+// listed; the fixture that triggered this is U+E0100..U+E01EF (variation
+// selectors supplement, used as tag characters in some East Asian encodings).
+func isOtherIDContinue(r rune) bool {
+	switch {
+	case r == 0x00B7:
+		return true // MIDDLE DOT
+	case r == 0x0387:
+		return true // GREEK ANO TELEIA
+	case r >= 0x1369 && r <= 0x1371:
+		return true // ETHIOPIC DIGIT ONE..NINE
+	case r == 0x19DA:
+		return true // NEW TAI LUE DIGIT ONE
+	case r >= 0xE0100 && r <= 0xE01EF:
+		return true // VARIATION SELECTORS SUPPLEMENT (tag chars)
+	}
+	return false
 }

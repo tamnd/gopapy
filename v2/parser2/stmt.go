@@ -938,9 +938,29 @@ func (p *parser) parseTryStmt() (Stmt, error) {
 		var typ Expr
 		var name string
 		if p.cur.kind != tkColon {
-			typ, err = p.parseExpr()
-			if err != nil {
-				return nil, err
+			first, err2 := p.parseExpr()
+			if err2 != nil {
+				return nil, err2
+			}
+			typ = first
+			// PEP 758: paren-less except-tuple `except A, B:`.
+			if p.cur.kind == tkComma {
+				tupPos := first.pos()
+				elts := []Expr{first}
+				for p.cur.kind == tkComma {
+					if err := p.advance(); err != nil {
+						return nil, err
+					}
+					if p.cur.kind == tkColon || p.isKeyword("as") {
+						break
+					}
+					next, err2 := p.parseExpr()
+					if err2 != nil {
+						return nil, err2
+					}
+					elts = append(elts, next)
+				}
+				typ = &Tuple{P: tupPos, Elts: elts}
 			}
 			if p.isKeyword("as") {
 				if err := p.advance(); err != nil {
@@ -1301,8 +1321,22 @@ func (p *parser) parseFuncParam() (*Arg, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
+		// PEP 646: `*args: *Ts` — starred annotation expression.
+		annPos := p.cur.pos
 		var err error
-		ann, err = p.parseExpr()
+		if p.cur.kind == tkStar {
+			if err = p.advance(); err != nil {
+				return nil, err
+			}
+			var inner Expr
+			inner, err = p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			ann = &Starred{P: annPos, Value: inner}
+		} else {
+			ann, err = p.parseExpr()
+		}
 		if err != nil {
 			return nil, err
 		}

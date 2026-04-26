@@ -631,6 +631,17 @@ func (p *parser) parseSubscriptBody() (Expr, error) {
 
 func (p *parser) parseSubscriptItem() (Expr, error) {
 	pos := p.cur.pos
+	// PEP 646: `*Ts` is valid inside a subscript (e.g. `tuple[*Ts]`).
+	if p.cur.kind == tkStar {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &Starred{P: pos, Value: val}, nil
+	}
 	var lower Expr
 	if p.cur.kind != tkColon {
 		v, err := p.parseExpr()
