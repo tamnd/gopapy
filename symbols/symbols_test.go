@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/tamnd/gopapy/v1/ast"
+	"github.com/tamnd/gopapy/v1/diag"
 	"github.com/tamnd/gopapy/v1/parser"
 )
 
@@ -240,6 +241,19 @@ func TestGlobalNonlocalConflictDiagnostic(t *testing.T) {
 	m := build(t, src)
 	if len(m.Diagnostics) == 0 {
 		t.Fatalf("expected diagnostic for conflicting global/nonlocal")
+	}
+	d := m.Diagnostics[0]
+	if d.Code != CodeGlobalAndNonlocal {
+		t.Errorf("Code = %q, want %q", d.Code, CodeGlobalAndNonlocal)
+	}
+	if d.Severity != diag.SeverityWarning {
+		t.Errorf("Severity = %v, want SeverityWarning", d.Severity)
+	}
+	if d.Pos.Lineno == 0 {
+		t.Errorf("Pos not populated: %+v", d.Pos)
+	}
+	if d.Msg == "" {
+		t.Errorf("Msg empty")
 	}
 }
 

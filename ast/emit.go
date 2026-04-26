@@ -669,6 +669,9 @@ func emitExprOpt(e *parser.Expression) ExprNode {
 }
 
 func emitExpr(e *parser.Expression) ExprNode {
+	if e == nil {
+		return placeholderExpr()
+	}
 	if e.Yield != nil {
 		return emitYield(e.Yield)
 	}
@@ -705,7 +708,17 @@ func emitExpr(e *parser.Expression) ExprNode {
 	return body
 }
 
+// placeholderExpr is the safe-shape returned when participle hands the
+// emitter a partial parse tree (typically from malformed input the
+// grammar accepts during backtracking). The fuzz contract is "no panic
+// on any input"; this is the universal degraded-mode value used when a
+// required Head field comes back nil.
+func placeholderExpr() ExprNode { return &Constant{} }
+
 func emitDisjunction(d *parser.Disjunction) ExprNode {
+	if d == nil || d.Head == nil {
+		return placeholderExpr()
+	}
 	if len(d.Tail) == 0 {
 		return emitConjunction(d.Head)
 	}
@@ -718,6 +731,9 @@ func emitDisjunction(d *parser.Disjunction) ExprNode {
 }
 
 func emitConjunction(c *parser.Conjunction) ExprNode {
+	if c == nil || c.Head == nil {
+		return placeholderExpr()
+	}
 	if len(c.Tail) == 0 {
 		return emitInversion(c.Head)
 	}
@@ -730,6 +746,9 @@ func emitConjunction(c *parser.Conjunction) ExprNode {
 }
 
 func emitInversion(i *parser.Inversion) ExprNode {
+	if i == nil {
+		return placeholderExpr()
+	}
 	// participle sets `Not` while trying the `not @@` alternative and
 	// does not unset it when it backtracks to the `Comparison` branch.
 	// Trust the field shape over the boolean: a real `not` form has Inv
@@ -737,10 +756,16 @@ func emitInversion(i *parser.Inversion) ExprNode {
 	if i.Not && i.Inv != nil {
 		return &UnaryOp{Pos: spanPos(i.Pos, i.EndPos), Op: &Not{}, Operand: emitInversion(i.Inv)}
 	}
+	if i.Comp == nil {
+		return placeholderExpr()
+	}
 	return emitComparison(i.Comp)
 }
 
 func emitComparison(c *parser.Comparison) ExprNode {
+	if c == nil || c.Head == nil {
+		return placeholderExpr()
+	}
 	if len(c.Tail) == 0 {
 		return emitBitOr(c.Head)
 	}
@@ -783,6 +808,9 @@ func cmpOp(r *parser.CmpRight) CmpopNode {
 }
 
 func emitBitOr(b *parser.BitOr) ExprNode {
+	if b == nil || b.Head == nil {
+		return placeholderExpr()
+	}
 	if len(b.Tail) == 0 {
 		return emitBitXor(b.Head)
 	}
@@ -794,6 +822,9 @@ func emitBitOr(b *parser.BitOr) ExprNode {
 }
 
 func emitBitXor(b *parser.BitXor) ExprNode {
+	if b == nil || b.Head == nil {
+		return placeholderExpr()
+	}
 	if len(b.Tail) == 0 {
 		return emitBitAnd(b.Head)
 	}
@@ -805,6 +836,9 @@ func emitBitXor(b *parser.BitXor) ExprNode {
 }
 
 func emitBitAnd(b *parser.BitAnd) ExprNode {
+	if b == nil || b.Head == nil {
+		return placeholderExpr()
+	}
 	if len(b.Tail) == 0 {
 		return emitShift(b.Head)
 	}
@@ -816,6 +850,9 @@ func emitBitAnd(b *parser.BitAnd) ExprNode {
 }
 
 func emitShift(s *parser.Shift) ExprNode {
+	if s == nil || s.Head == nil {
+		return placeholderExpr()
+	}
 	if len(s.Tail) == 0 {
 		return emitSum(s.Head)
 	}
@@ -831,6 +868,9 @@ func emitShift(s *parser.Shift) ExprNode {
 }
 
 func emitSum(s *parser.Sum) ExprNode {
+	if s == nil || s.Head == nil {
+		return placeholderExpr()
+	}
 	if len(s.Tail) == 0 {
 		return emitTerm(s.Head)
 	}
@@ -846,6 +886,9 @@ func emitSum(s *parser.Sum) ExprNode {
 }
 
 func emitTerm(t *parser.Term) ExprNode {
+	if t == nil || t.Head == nil {
+		return placeholderExpr()
+	}
 	if len(t.Tail) == 0 {
 		return emitFactor(t.Head)
 	}
@@ -874,6 +917,9 @@ func termOp(s string) OperatorNode {
 }
 
 func emitFactor(f *parser.Factor) ExprNode {
+	if f == nil {
+		return placeholderExpr()
+	}
 	if f.Unary != "" {
 		var op UnaryopNode
 		switch f.Unary {
@@ -891,6 +937,9 @@ func emitFactor(f *parser.Factor) ExprNode {
 
 // Power is right-associative: `a ** b ** c` is `a ** (b ** c)`.
 func emitPower(p *parser.Power) ExprNode {
+	if p == nil {
+		return placeholderExpr()
+	}
 	base := emitAwaitPrimary(p.Await)
 	if p.Exp == nil {
 		return base
@@ -899,6 +948,9 @@ func emitPower(p *parser.Power) ExprNode {
 }
 
 func emitAwaitPrimary(a *parser.AwaitPrimary) ExprNode {
+	if a == nil {
+		return placeholderExpr()
+	}
 	val := emitPrimary(a.Primary)
 	if a.Await {
 		return &Await{Pos: spanPos(a.Pos, a.EndPos), Value: val}
@@ -907,6 +959,9 @@ func emitAwaitPrimary(a *parser.AwaitPrimary) ExprNode {
 }
 
 func emitPrimary(p *parser.Primary) ExprNode {
+	if p == nil || p.Atom == nil {
+		return placeholderExpr()
+	}
 	cur := emitAtom(p.Atom)
 	for _, t := range p.Trailers {
 		cur = applyTrailer(cur, t)
@@ -1090,6 +1145,19 @@ func emitComps(cs []*parser.CompFor) []*Comprehension {
 func emitDictSetElt(it *parser.DictItemOrExpr) ExprNode {
 	if it.StarSet != nil {
 		return &Starred{Pos: spanPos(it.Pos, it.EndPos), Value: emitExpr(it.StarSet), Ctx: &Load{}}
+	}
+	// `{x, **y}` is malformed Python (mixing set elements with dict
+	// unpacking). The participle grammar lets the shape through; mirror
+	// the dict-context fallback in emitDictOrSet and treat the unpacked
+	// expression as the element so we don't dereference a nil Key.
+	if it.Key == nil {
+		if it.DStar != nil {
+			return emitExpr(it.DStar)
+		}
+		if it.Value != nil {
+			return emitExpr(it.Value)
+		}
+		return &Constant{Pos: spanPos(it.Pos, it.EndPos)}
 	}
 	return emitExpr(it.Key)
 }

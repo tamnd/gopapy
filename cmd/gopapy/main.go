@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,11 +13,12 @@ import (
 	"time"
 
 	"github.com/tamnd/gopapy/v1/ast"
+	"github.com/tamnd/gopapy/v1/diag"
 	"github.com/tamnd/gopapy/v1/parser"
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.6"
+const version = "0.1.7"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -73,6 +75,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("symbols: missing PATH argument")
 		}
 		return symbolsCmd(args[1], stdout, stderr)
+	case "diag":
+		return diagCmd(args[1:], stdout, stderr)
 	case "bench":
 		if len(args) < 2 {
 			return fmt.Errorf("bench: missing DIR argument")
@@ -203,6 +207,108 @@ func benchCmd(dir string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "total: %s\n", (parseDur + emitDur).Round(time.Millisecond))
 	if parseFailed > 0 {
 		fmt.Fprintf(stdout, "parse-failed: %d\n", parseFailed)
+	}
+	return nil
+}
+
+// diagCmd parses one file or every .py under a directory, runs symbols
+// to surface semantic diagnostics, and prints them in either the
+// default `filename:line:col: severity[code]: message` form or one JSON
+// object per line (`--json`). The exit code is 1 if any diagnostic at
+// SeverityError was reported; warnings and hints never fail the run
+// (matching the v0.1.7 spec contract that warnings are advisory). Parse
+// errors do fail with exit 1, since a file that doesn't parse can't be
+// analysed.
+func diagCmd(args []string, stdout, stderr io.Writer) error {
+	jsonOut := false
+	var path string
+	for _, a := range args {
+		switch a {
+		case "--json":
+			jsonOut = true
+		default:
+			if path != "" {
+				return fmt.Errorf("diag: unexpected argument %q", a)
+			}
+			path = a
+		}
+	}
+	if path == "" {
+		return fmt.Errorf("diag: missing PATH argument")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+
+	var (
+		diagnostics []diag.Diagnostic
+		fileCount   int
+		parseFailed int
+		errorCount  int
+	)
+
+	emit := func(d diag.Diagnostic) error {
+		if d.Severity == diag.SeverityError {
+			errorCount++
+		}
+		if jsonOut {
+			b, err := json.Marshal(d)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(stdout, string(b))
+		} else {
+			fmt.Fprintln(stdout, d.String())
+		}
+		return nil
+	}
+
+	process := func(p string) {
+		fileCount++
+		f, perr := parseFile(p)
+		if perr != nil {
+			parseFailed++
+			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", p, perr)
+			return
+		}
+		mod := symbols.Build(ast.FromFile(f))
+		for _, d := range mod.Diagnostics {
+			d.Filename = p
+			diagnostics = append(diagnostics, d)
+			_ = emit(d)
+		}
+	}
+
+	if info.IsDir() {
+		const gcEvery = 16
+		walkErr := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			if !strings.HasSuffix(p, ".py") {
+				return nil
+			}
+			if isIntentionalBadFixture(p) {
+				return nil
+			}
+			process(p)
+			if fileCount%gcEvery == 0 {
+				runtime.GC()
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return walkErr
+		}
+		fmt.Fprintf(stderr, "%d files, %d parse-failed, %d diagnostics\n",
+			fileCount, parseFailed, len(diagnostics))
+	} else {
+		process(path)
+	}
+
+	if errorCount > 0 || parseFailed > 0 {
+		return fmt.Errorf("diag: %d errors, %d parse failures", errorCount, parseFailed)
 	}
 	return nil
 }
@@ -345,6 +451,7 @@ Commands:
   unparse FILE  Round-trip the file through Unparse and print the result.
   check DIR     Parse every .py under DIR, summarise failures.
   symbols PATH  Build a symbol table for FILE, or report panics across DIR.
+  diag PATH     Print semantic diagnostics for FILE or DIR. --json for JSONL.
   bench DIR     Parse every .py under DIR and print parse/emit throughput.
   version       Print the gopapy version.
   help          Show this message.

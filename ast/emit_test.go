@@ -202,3 +202,38 @@ func TestEmit_DictAndSet(t *testing.T) {
 		t.Errorf("Set elts = %d", len(s.Elts))
 	}
 }
+
+// TestEmit_DictSetMalformedDoesNotPanic covers a class of malformed-Python
+// inputs the participle grammar lets through: mixing set elements with
+// dict-style `**y` unpacking. CPython rejects these at parse time but
+// the bootstrap grammar doesn't, so the emitter has to handle them
+// without dereferencing a nil Key. The fuzz pass on PR #19 surfaced
+// `{x, **y, z}` and friends as nil-pointer panics; this test pins the
+// fix.
+func TestEmit_DictSetMalformedDoesNotPanic(t *testing.T) {
+	cases := []string{
+		"{x, **y}",
+		"{x, **y, z}",
+		"{*x, **y}",
+		"{x, *y, **z}",
+		"a = {x, **y}",
+		"({x, **y})",
+	}
+	for _, src := range cases {
+		t.Run(src, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("panic on %q: %v", src, r)
+				}
+			}()
+			f, err := parser.ParseString("<test>", src)
+			if err != nil {
+				// The grammar rejecting it is fine — we only care that
+				// the *emitter* doesn't crash on the shapes it does
+				// accept.
+				return
+			}
+			_ = FromFile(f)
+		})
+	}
+}
