@@ -299,6 +299,61 @@ func TestParseFileTable(t *testing.T) {
 			src:  "match = 1\nmatch(1)\n",
 			want: `Module(body=[Assign(targets=[Name(id="match")], value=Constant(value=1)), Expr(value=Call(func=Name(id="match"), args=[Constant(value=1)], keywords=[]))])`,
 		},
+		{
+			name: "type alias bare",
+			src:  "type Vector = list[float]\n",
+			want: `Module(body=[TypeAlias(name=Name(id="Vector"), value=Subscript(value=Name(id="list"), slice=Name(id="float")))])`,
+		},
+		{
+			name: "type alias with params",
+			src:  "type Alias[T] = int\n",
+			want: `Module(body=[TypeAlias(name=Name(id="Alias"), type_params=[TypeVar(name="T")], value=Name(id="int"))])`,
+		},
+		{
+			name: "generic function",
+			src:  "def f[T](x): pass\n",
+			want: `Module(body=[FunctionDef(name="f", args=Arguments(args=[x]), body=[Pass()], decorators=[], returns=nil, type_params=[TypeVar(name="T")])])`,
+		},
+		{
+			name: "generic class with bases",
+			src:  "class C[T, U](Base): pass\n",
+			want: `Module(body=[ClassDef(name="C", bases=[Name(id="Base")], keywords=[], body=[Pass()], decorators=[], type_params=[TypeVar(name="T"), TypeVar(name="U")])])`,
+		},
+		{
+			name: "type param with bound",
+			src:  "def f[T: int](x): pass\n",
+			want: `Module(body=[FunctionDef(name="f", args=Arguments(args=[x]), body=[Pass()], decorators=[], returns=nil, type_params=[TypeVar(name="T", bound=Name(id="int"))])])`,
+		},
+		{
+			name: "type param with constrained bound",
+			src:  "def f[T: (int, str)](x): pass\n",
+			want: `Module(body=[FunctionDef(name="f", args=Arguments(args=[x]), body=[Pass()], decorators=[], returns=nil, type_params=[TypeVar(name="T", bound=Tuple([Name(id="int"), Name(id="str")]))])])`,
+		},
+		{
+			name: "type param with default",
+			src:  "def f[T = int](x): pass\n",
+			want: `Module(body=[FunctionDef(name="f", args=Arguments(args=[x]), body=[Pass()], decorators=[], returns=nil, type_params=[TypeVar(name="T", default_value=Name(id="int"))])])`,
+		},
+		{
+			name: "type var tuple",
+			src:  "def f[*Ts](xs): pass\n",
+			want: `Module(body=[FunctionDef(name="f", args=Arguments(args=[xs]), body=[Pass()], decorators=[], returns=nil, type_params=[TypeVarTuple(name="Ts")])])`,
+		},
+		{
+			name: "param spec",
+			src:  "def f[**P](f): pass\n",
+			want: `Module(body=[FunctionDef(name="f", args=Arguments(args=[f]), body=[Pass()], decorators=[], returns=nil, type_params=[ParamSpec(name="P")])])`,
+		},
+		{
+			name: "mixed type params",
+			src:  "def f[T: int, *Ts, **P](x): pass\n",
+			want: `Module(body=[FunctionDef(name="f", args=Arguments(args=[x]), body=[Pass()], decorators=[], returns=nil, type_params=[TypeVar(name="T", bound=Name(id="int")), TypeVarTuple(name="Ts"), ParamSpec(name="P")])])`,
+		},
+		{
+			name: "type name as soft keyword",
+			src:  "type = 1\ntype(x)\n",
+			want: `Module(body=[Assign(targets=[Name(id="type")], value=Constant(value=1)), Expr(value=Call(func=Name(id="type"), args=[Name(id="x")], keywords=[]))])`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

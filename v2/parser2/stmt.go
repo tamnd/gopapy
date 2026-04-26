@@ -83,7 +83,32 @@ func (p *parser) parseStatementLine() ([]Stmt, error) {
 		}
 		return []Stmt{s}, nil
 	}
+	if p.looksLikeTypeAlias() {
+		s, err := p.parseTypeAliasStmt()
+		if err != nil {
+			return nil, err
+		}
+		return []Stmt{s}, nil
+	}
 	return p.parseSimpleStmtList()
+}
+
+// looksLikeTypeAlias reports whether the current `type` name is the
+// soft keyword introducing a PEP 695 type alias. The trigger is
+// `type NAME` at statement start. `type = 1`, `type(x)`, `type.x`,
+// `type[K]` etc. remain plain name uses.
+func (p *parser) looksLikeTypeAlias() bool {
+	if p.cur.kind != tkName || p.cur.val != "type" {
+		return false
+	}
+	nxt, err := p.peekTok()
+	if err != nil {
+		return false
+	}
+	if nxt.kind != tkName {
+		return false
+	}
+	return !isReservedKeyword(nxt.val)
 }
 
 // looksLikeMatchStmt reports whether the current `match` name token
@@ -1048,6 +1073,14 @@ func (p *parser) parseFunctionDef(decorators []Expr, async bool) (Stmt, error) {
 	if err := p.advance(); err != nil {
 		return nil, err
 	}
+	var typeParams []TypeParam
+	if p.cur.kind == tkLBrack {
+		var err error
+		typeParams, err = p.parseTypeParams()
+		if err != nil {
+			return nil, err
+		}
+	}
 	if _, err := p.expect(tkLParen); err != nil {
 		return nil, err
 	}
@@ -1073,9 +1106,9 @@ func (p *parser) parseFunctionDef(decorators []Expr, async bool) (Stmt, error) {
 		return nil, err
 	}
 	if async {
-		return &AsyncFunctionDef{P: pos, Name: name, Args: args, Body: body, DecoratorList: decorators, Returns: returns}, nil
+		return &AsyncFunctionDef{P: pos, Name: name, TypeParams: typeParams, Args: args, Body: body, DecoratorList: decorators, Returns: returns}, nil
 	}
-	return &FunctionDef{P: pos, Name: name, Args: args, Body: body, DecoratorList: decorators, Returns: returns}, nil
+	return &FunctionDef{P: pos, Name: name, TypeParams: typeParams, Args: args, Body: body, DecoratorList: decorators, Returns: returns}, nil
 }
 
 func (p *parser) parseClassDef(decorators []Expr) (Stmt, error) {
@@ -1091,6 +1124,14 @@ func (p *parser) parseClassDef(decorators []Expr) (Stmt, error) {
 	if err := p.advance(); err != nil {
 		return nil, err
 	}
+	var typeParams []TypeParam
+	if p.cur.kind == tkLBrack {
+		var err error
+		typeParams, err = p.parseTypeParams()
+		if err != nil {
+			return nil, err
+		}
+	}
 	var bases []Expr
 	var keywords []*Keyword
 	if p.cur.kind == tkLParen {
@@ -1104,7 +1145,7 @@ func (p *parser) parseClassDef(decorators []Expr) (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ClassDef{P: pos, Name: name, Bases: bases, Keywords: keywords, Body: body, DecoratorList: decorators}, nil
+	return &ClassDef{P: pos, Name: name, TypeParams: typeParams, Bases: bases, Keywords: keywords, Body: body, DecoratorList: decorators}, nil
 }
 
 // parseBlock reads `: NEWLINE INDENT stmts DEDENT` or, in the inline
@@ -1894,5 +1935,152 @@ func (p *parser) parseMappingKey() (Expr, error) {
 	}
 	return nil, fmt.Errorf("%d:%d: unexpected token %s in mapping key",
 		pos.Line, pos.Col, p.cur.kind)
+}
+
+// ----- Type-parameter clause + type alias (PEP 695) -----
+
+func (p *parser) parseTypeAliasStmt() (Stmt, error) {
+	pos := p.cur.pos
+	if err := p.advance(); err != nil { // consume `type`
+		return nil, err
+	}
+	if p.cur.kind != tkName {
+		return nil, fmt.Errorf("%d:%d: expected name in type alias",
+			p.cur.pos.Line, p.cur.pos.Col)
+	}
+	namePos := p.cur.pos
+	nameStr := p.cur.val
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	var typeParams []TypeParam
+	if p.cur.kind == tkLBrack {
+		var err error
+		typeParams, err = p.parseTypeParams()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if _, err := p.expect(tkAssign); err != nil {
+		return nil, err
+	}
+	value, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind == tkSemi {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+	}
+	if p.cur.kind == tkNewline {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+	}
+	return &TypeAlias{
+		P:          pos,
+		Name:       &Name{P: namePos, Id: nameStr},
+		TypeParams: typeParams,
+		Value:      value,
+	}, nil
+}
+
+func (p *parser) parseTypeParams() ([]TypeParam, error) {
+	if _, err := p.expect(tkLBrack); err != nil {
+		return nil, err
+	}
+	var params []TypeParam
+	for p.cur.kind != tkRBrack {
+		tp, err := p.parseTypeParam()
+		if err != nil {
+			return nil, err
+		}
+		params = append(params, tp)
+		if p.cur.kind != tkComma {
+			break
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := p.expect(tkRBrack); err != nil {
+		return nil, err
+	}
+	return params, nil
+}
+
+func (p *parser) parseTypeParam() (TypeParam, error) {
+	pos := p.cur.pos
+	switch p.cur.kind {
+	case tkStar:
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind != tkName {
+			return nil, fmt.Errorf("%d:%d: expected name after '*' in type-parameter list",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		name := p.cur.val
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		def, err := p.parseTypeParamDefault()
+		if err != nil {
+			return nil, err
+		}
+		return &TypeVarTuple{P: pos, Name: name, DefaultValue: def}, nil
+	case tkDoubleStar:
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind != tkName {
+			return nil, fmt.Errorf("%d:%d: expected name after '**' in type-parameter list",
+				p.cur.pos.Line, p.cur.pos.Col)
+		}
+		name := p.cur.val
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		def, err := p.parseTypeParamDefault()
+		if err != nil {
+			return nil, err
+		}
+		return &ParamSpec{P: pos, Name: name, DefaultValue: def}, nil
+	}
+	if p.cur.kind != tkName {
+		return nil, fmt.Errorf("%d:%d: expected type parameter",
+			p.cur.pos.Line, p.cur.pos.Col)
+	}
+	name := p.cur.val
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	var bound Expr
+	if p.cur.kind == tkColon {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		b, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		bound = b
+	}
+	def, err := p.parseTypeParamDefault()
+	if err != nil {
+		return nil, err
+	}
+	return &TypeVar{P: pos, Name: name, Bound: bound, DefaultValue: def}, nil
+}
+
+func (p *parser) parseTypeParamDefault() (Expr, error) {
+	if p.cur.kind != tkAssign {
+		return nil, nil
+	}
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	return p.parseExpr()
 }
 

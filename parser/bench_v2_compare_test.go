@@ -177,6 +177,15 @@ def match_demo(node):
             return "diag"
         case _:
             return "other"
+
+type Vector = list[float]
+
+def first[T](xs: list[T]) -> T:
+    return xs[0]
+
+class Box[T]:
+    def __init__(self, x: T) -> None:
+        self.x = x
 `
 
 func BenchmarkParseFileV1Compare(b *testing.B) {
