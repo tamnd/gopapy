@@ -9,6 +9,93 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-04-26
+
+End positions for AST nodes that map directly to a participle grammar
+struct. Every node currently set `EndLineno = Lineno` and
+`EndColOffset = ColOffset`; downstream tooling that wants to underline
+a span (linters, formatters, language servers) was getting a
+zero-width caret. v0.1.6 starts populating real spans.
+
+The end positions come from participle's `EndPos` field — the
+position of the token immediately after the construct. That's not
+byte-exact with CPython's `end_col_offset` (which points to the
+position past the last character of the construct), but it's a real
+span instead of a zero-width caret. True CPython-faithful end
+positions need a hand-written parser; that lands in v0.2.x.
+
+### Added
+
+- `EndPos plexer.Position` field on every grammar struct in
+  `parser/grammar.go` and `parser/grammar_expr.go` that already had
+  `Pos plexer.Position`. participle populates the field automatically
+  with the position of the token consumed immediately after the
+  struct.
+- `ast.spanPos(start, end plexer.Position) Pos` emitter helper. Mirror
+  of `pos()` but writes both ends.
+- `ast/endpos_test.go` table-tests 22 multi-line and multi-column
+  constructs (function def, class def, if / else, try / except,
+  for / while, with, async def, multi-line list / dict literal,
+  return value, call args, binop chain, compare chain, subscript,
+  attribute chain, tuple / list / dict literal, lambda, ifexp, unary).
+  Each asserts that `(EndLineno, EndColOffset)` is strictly after
+  `(Lineno, ColOffset)`.
+
+### Constructs that gained accurate end positions
+
+Every AST node emitted from a participle struct that carries
+`Pos`+`EndPos`. Concretely: `SimpleStmt`, `Return`, `Raise`, `Delete`,
+`Import`, `ImportFrom`, `Alias` (from `DottedAsName` / `ImportAs`),
+`Assign` / `AnnAssign` / `AugAssign`, the inner `Tuple` of an
+`AssignTarget` / `TargetList` / `SubscriptList`, `Starred`, `If`,
+`While`, `For`, `With`, `Try` / `TryStar`, `ExceptHandler`,
+`FunctionDef` / `AsyncFunctionDef`, `ClassDef`, `TypeVar` /
+`TypeVarTuple` / `ParamSpec`, `AsyncFor`, `AsyncWith`, `Arg`,
+`Keyword`, `NamedExpr`, `Lambda`, `IfExp`, `BoolOp`, `UnaryOp`,
+`Compare`, `BinOp` (every level: BitOr / BitXor / BitAnd / Shift /
+Sum / Term / Pow), `Await`, `Attribute`, `Call`, `Subscript`, `Slice`,
+`Atom` (`Name` / `Constant` / `List` / `Dict` / `Set` / `Tuple` /
+`Paren` / `GeneratorExp` / etc.), `Starred` (in dict/set element and
+star-or-expr position), `Yield` / `YieldFrom`.
+
+### Constructs that did not (deferred to v0.1.7+)
+
+Synthesized AST nodes — those without a 1:1 participle struct —
+keep using `pos()` (end == start) until the constituent-walking code
+lands. These are:
+
+- The implicit `Tuple` wrapping multi-value `return 1, 2` and the
+  trailing-comma `return 1,` form (`emit.go: emitReturn`).
+- The implicit `Tuple` wrapping a multi-value augmented-assign RHS
+  (`emit.go: emitAssign`).
+- The `*` `Alias` synthesized for `from x import *`
+  (`emit.go: emitFrom`).
+- The implicit `Tuple` wrapping multi-element `except (A, B)` types
+  (`emit.go: emitTry`).
+- The implicit `Tuple` wrapping `for x in a, b:` iterators
+  (`emit.go: emitForIter`).
+- The `Starred` wrapping `*args: *Ts` annotations
+  (`emit.go: paramArg`).
+- The `GeneratorExp` synthesized from a single bare `f(x for x in xs)`
+  call (`emit.go: emitCallArgs`).
+- The inner `Name` target of a `NamedExpr` (`emit.go: emitExpr` walrus
+  branch).
+- The implicit `Tuple` wrapping multi-value `yield a, b`
+  (`emit.go: emitYield`).
+
+Each of these needs a "union of children's spans" helper to produce
+the right end position. That helper is the v0.1.7+ follow-up.
+
+### Verified
+
+- Stdlib parse and symbols rates stay at 1842 / 1842 on CPython 3.14.
+- Oracle diff stays at 85 / 85. End positions are show-empty-skipped
+  in `ast.dump` at the default level, so adding them doesn't change
+  the dump output for the regression fixtures.
+- `pos()` is kept and now documents its "end == start" contract
+  explicitly so synthesized-node sites read intentionally rather than
+  as oversight.
+
 ## [0.1.5] - 2026-04-26
 
 A targeted performance pass. The first version of gopapy that lands
@@ -777,7 +864,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/tamnd/gopapy/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/tamnd/gopapy/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/tamnd/gopapy/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/tamnd/gopapy/compare/v0.1.2...v0.1.3
