@@ -20,9 +20,10 @@ func Generate(m *Module, pkg string) (map[string][]byte, error) {
 	idx := buildIndex(m)
 	out := map[string][]byte{}
 	for name, fn := range map[string]func(*Module, *index, string) string{
-		"nodes_gen.go": genNodes,
-		"visit_gen.go": genVisit,
-		"dump_gen.go":  genDump,
+		"nodes_gen.go":     genNodes,
+		"visit_gen.go":     genVisit,
+		"transform_gen.go": genTransform,
+		"dump_gen.go":      genDump,
 	} {
 		src := fn(m, idx, pkg)
 		formatted, err := format.Source([]byte(src))
@@ -338,6 +339,87 @@ func hasNodeChild(fields []*Field, idx *index) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// File: transform_gen.go
+// ---------------------------------------------------------------------------
+
+// genTransform emits transformChildren — the assignment-shaped counterpart to
+// walkChildren. Each child slot is read, passed to Apply, and the (possibly
+// replaced) result written back. The same case skipping rule applies: nodes
+// with no node-typed fields get no case.
+func genTransform(m *Module, idx *index, pkg string) string {
+	var b strings.Builder
+	writeHeader(&b, pkg)
+	b.WriteString(`
+// transformChildren reads each node-typed child slot, runs Apply on it, and
+// writes the (possibly replaced) value back. Generated mirror of
+// walkChildren — see transform.go for the surrounding driver and semantics.
+func transformChildren(n Node, t Transformer) {
+	switch n := n.(type) {
+`)
+
+	defs := append([]*Def(nil), m.Defs...)
+	sort.SliceStable(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
+
+	for _, d := range defs {
+		if d.IsProduct {
+			emitTransformProduct(&b, d, idx)
+		} else {
+			for _, c := range d.Constructors {
+				emitTransformConstructor(&b, c, idx)
+			}
+		}
+	}
+	b.WriteString("\t}\n}\n")
+
+	// Silence "declared and not used" on n in cases that have no node fields
+	// — but the case-skipping below means n is always referenced. No-op.
+	return b.String()
+}
+
+func emitTransformProduct(b *strings.Builder, d *Def, idx *index) {
+	emitTransformFields(b, goTypeName(d.Name), d.Fields, idx)
+}
+
+func emitTransformConstructor(b *strings.Builder, c *Constructor, idx *index) {
+	emitTransformFields(b, goTypeName(c.Name), c.Fields, idx)
+}
+
+func emitTransformFields(b *strings.Builder, name string, fields []*Field, idx *index) {
+	if !hasNodeChild(fields, idx) {
+		return
+	}
+	fmt.Fprintf(b, "\tcase *%s:\n", name)
+	for _, f := range fields {
+		if isBuiltinScalar(f.Type) {
+			continue
+		}
+		field := "n." + goFieldName(f.Name)
+		elem := childElemType(f, idx)
+		switch {
+		case f.Seq, f.OptSeq:
+			fmt.Fprintf(b, "\t\t%s = transformList[%s](t, %s)\n", field, elem, field)
+		default:
+			fmt.Fprintf(b, "\t\t%s = transformOne[%s](t, %s)\n", field, elem, field)
+		}
+	}
+}
+
+// childElemType returns the Go type used for the generic parameter of
+// transformOne / transformList: the same as goFieldType but without the
+// surrounding `[]`.
+func childElemType(f *Field, idx *index) string {
+	base := mapBuiltin(f.Type)
+	if base == "" {
+		if idx.isSum(f.Type) {
+			base = sumIfaceName(f.Type)
+		} else {
+			base = "*" + goTypeName(f.Type)
+		}
+	}
+	return base
 }
 
 // ---------------------------------------------------------------------------

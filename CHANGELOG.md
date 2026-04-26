@@ -9,6 +9,39 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-04-26
+
+The rewriting counterpart to v0.1.8's `Visitor`. v0.1.8 closed the
+read side; v0.1.10 closes the write side. A `Transformer` whose
+`Transform(n)` returns the replacement node — same shape as
+CPython's `NodeTransformer`. Constant folding, name renaming,
+decorator stripping, and any codemod live on this substrate.
+
+### Added
+
+- `ast.Transformer` interface (`Transform(n Node) Node`). Returning
+  the receiver continues the walk (descend into children, replacing
+  each child slot). Returning a different node replaces the original
+  in its parent slot without recursing into the replacement.
+  Returning nil removes the node from a list slot, or sets a scalar
+  slot to its zero value.
+- `ast.Apply(t Transformer, n Node) Node` drives the rewriter and
+  returns the (possibly replaced) root.
+- Generated `ast/transform_gen.go` mirrors `walkChildren`'s case
+  structure. The generator (`internal/asdlgen`) gained a `genTransform`
+  pass, so future ASDL changes regenerate transform code in the same
+  go-generate run.
+- `ast/transform_test.go` covers identity (no-op), scalar replacement
+  (rename), constant folding (BinOp → Constant), list removal
+  (drop every Pass), root replacement, and the nil-arg no-op
+  contract.
+
+### Verified
+
+- `go test ./... -race` green across every package — no data races
+  in the new generic helpers under concurrent transforms.
+- Stdlib parse + symbols + diag rates stay 100% on CPython 3.14.
+
 ## [0.1.9] - 2026-04-26
 
 Comment-to-AST attachment in the `cst` layer. Comments survived
@@ -1037,7 +1070,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/tamnd/gopapy/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/tamnd/gopapy/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/tamnd/gopapy/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/tamnd/gopapy/compare/v0.1.6...v0.1.7
