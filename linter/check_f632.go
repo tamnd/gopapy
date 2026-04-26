@@ -65,6 +65,13 @@ func isIsOp(op ast.CmpopNode) bool {
 // isLiteralForIs returns true when e is a literal that should never
 // be compared with `is`. `None` is excluded because `is None` is the
 // canonical identity check.
+//
+// `Ellipsis` and `NotImplemented` parse as Name (not Constant), so
+// they're matched by name. The bare-dots form `...` parses as a
+// Constant with kind ConstantEllipsis and goes through the Constant
+// branch. `type(x) is type(y)` is intentionally not flagged: that
+// shape is the canonical "same exact type" check in Python and
+// pyflakes leaves it alone.
 func isLiteralForIs(e ast.ExprNode) bool {
 	switch v := e.(type) {
 	case *ast.Constant:
@@ -84,6 +91,14 @@ func isLiteralForIs(e ast.ExprNode) bool {
 			case *ast.USub, *ast.UAdd, *ast.Invert:
 				return true
 			}
+		}
+	case *ast.Name:
+		// Singletons whose `is` comparison outside a dunder is
+		// almost always wrong. `None` is excluded above and stays
+		// the canonical identity check.
+		switch v.Id {
+		case "Ellipsis", "NotImplemented":
+			return true
 		}
 	}
 	return false

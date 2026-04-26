@@ -9,6 +9,37 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-04-26
+
+F632 widens its right-hand-side set to include the named singletons
+`Ellipsis` and `NotImplemented`. The bare-dots literal `...` was
+already covered (it parses as `Constant(kind=Ellipsis)`), but the
+spelled-out names — which parse as `Name`, not `Constant` — slipped
+through. Pyflakes flags both; gopapy now matches.
+
+`type(x) is type(y)` is intentionally *not* flagged: that shape is
+the canonical "exactly the same type, ignoring inheritance" check
+in Python and pyflakes leaves it alone too.
+
+No new codes; F632 just covers more of the same shape.
+
+### Added
+
+- F632 now fires on `x is Ellipsis`, `x is NotImplemented`, and
+  the `is not` counterparts. The check stays scoped to the
+  right-hand side of `is` / `is not`; identity comparison via `==`
+  is fine and stays unflagged.
+
+### Notes
+
+- Two items from roadmap v6's "remaining batch" are not in this
+  release because the gaps don't actually exist:
+  - F811 on `from X import Y` redefinition has worked since
+    v0.1.13 (the symbol table treats every alias as a binding).
+  - F541 on t-strings stays suppressed by design — t-strings are
+    `Template` objects, not strings, so the `t` prefix has runtime
+    semantics that the prefix-only-noise lint doesn't apply to.
+
 ## [0.1.20] - 2026-04-26
 
 `gopapy lint` now walks files in parallel by default and ships an
@@ -1467,7 +1498,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.20...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.21...HEAD
+[0.1.21]: https://github.com/tamnd/gopapy/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/tamnd/gopapy/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/tamnd/gopapy/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/tamnd/gopapy/compare/v0.1.17...v0.1.18
