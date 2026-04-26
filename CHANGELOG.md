@@ -9,6 +9,57 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-04-26
+
+A linter without a config story is a linter you fight. v0.1.16 gives
+gopapy one: a `[tool.gopapy.lint]` section in `pyproject.toml`, a
+`Config` struct that backs it, walk-up discovery so any file inside a
+project picks up the right rules, and `--config` / `--no-config` CLI
+flags for the cases where discovery is wrong. Per-file ignores arrive
+in the same shape ruff and flake8 use, so existing muscle memory
+transfers. The auto-fix loop honours the same gates: a project that
+ignores F401 for `tests/*` won't have its test imports rewritten
+under `gopapy lint --fix`.
+
+### Added
+
+- `linter.Config{Select, Ignore, PerFile}`: a single struct that
+  decides which checks fire for which files. `Enabled(code)` answers
+  the global question; `EnabledFor(filename, code)` layers per-file
+  globs on top. `Validate()` rejects unknown codes at load time so
+  typos in a config surface as a clear error rather than silent
+  no-ops. `AllCodes()` enumerates every code the linter knows about.
+- `linter.LoadConfig(path)` reads a `pyproject.toml` and returns the
+  parsed `Config`. Co-existence with non-gopapy sections (`[tool.poetry]`,
+  `[tool.ruff]`, `[build-system]`) is mandatory; only the
+  `[tool.gopapy.lint]` table is consumed. Malformed TOML, missing
+  files, and unknown codes all surface as errors.
+- `linter.DiscoverConfig(start)` walks up parent directories from
+  `start` (file or dir) until it finds a `pyproject.toml` with a
+  `[tool.gopapy.lint]` table. Returns the parsed `Config`, the
+  resolved path, and any load error. No config found is not an
+  error: callers get a zero `Config` and an empty path.
+- `linter.LintWithConfig(mod, cfg)` and
+  `linter.LintFileWithConfig(filename, src, cfg)` are config-aware
+  twins of `Lint` / `LintFile`. The `File` variant applies per-file
+  ignores keyed off `filename`; the bare-module variant only honours
+  global `Select` / `Ignore`.
+- `linter.FixWithConfig(mod, cfg, filename)` gates each fix kind by
+  the config: F401 fix runs only when `F401` is enabled for that
+  file, F811 fix only when `F811` is enabled. Per-file-ignore lets a
+  project preserve unused imports in `__init__.py` re-export hubs
+  while still pruning them everywhere else.
+- `gopapy lint --config PATH` loads an explicit config file and skips
+  discovery. `gopapy lint --no-config` skips discovery without
+  loading anything; CLI default arguments still apply. When a config
+  is loaded (whether by discovery or `--config`), the resolved path
+  is echoed to stderr as `loaded config from PATH` so it's obvious
+  which file is in effect.
+- `github.com/BurntSushi/toml v1.6.0` enters `go.mod` as the first
+  non-test runtime dependency. The TOML parser is small, dependency-free,
+  widely used, and battle-tested against real-world `pyproject.toml`
+  files.
+
 ## [0.1.15] - 2026-04-26
 
 More pyflakes coverage at zero substrate cost. v0.1.13 shipped three
@@ -1258,7 +1309,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/tamnd/gopapy/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/tamnd/gopapy/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/tamnd/gopapy/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/tamnd/gopapy/compare/v0.1.12...v0.1.13

@@ -21,7 +21,7 @@ import (
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.15"
+const version = "0.1.16"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -466,20 +466,37 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 // DIR. Output mirrors diagCmd. Exit code follows the pyflakes
 // convention: warnings never fail the run; only parse failures do.
 //
-// With --fix, each file is parsed, fixed (only safe F401 fixes
-// today), unparsed back to source via cst.Unparse, and rewritten in
-// place atomically (temp file + rename). The remaining diagnostics
-// after the fix are emitted on stdout.
+// With --fix, each file is parsed, fixed (only codes enabled by the
+// loaded config — F401 and F811-literal today), unparsed back to
+// source via cst.Unparse, and rewritten in place atomically. The
+// remaining diagnostics after the fix are emitted on stdout.
+//
+// Configuration precedence: --config overrides discovery; --no-config
+// skips discovery entirely. Default behaviour walks up from the first
+// PATH argument looking for pyproject.toml.
 func lintCmd(args []string, stdout, stderr io.Writer) error {
 	jsonOut := false
 	fix := false
+	noConfig := false
+	configPath := ""
 	var path string
-	for _, a := range args {
-		switch a {
-		case "--json":
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
 			jsonOut = true
-		case "--fix":
+		case a == "--fix":
 			fix = true
+		case a == "--no-config":
+			noConfig = true
+		case a == "--config":
+			if i+1 >= len(args) {
+				return fmt.Errorf("lint: --config requires a path")
+			}
+			i++
+			configPath = args[i]
+		case strings.HasPrefix(a, "--config="):
+			configPath = strings.TrimPrefix(a, "--config=")
 		default:
 			if path != "" {
 				return fmt.Errorf("lint: unexpected argument %q", a)
@@ -493,6 +510,14 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
+	}
+
+	cfg, cfgPath, err := resolveLintConfig(path, configPath, noConfig)
+	if err != nil {
+		return err
+	}
+	if cfgPath != "" {
+		fmt.Fprintf(stderr, "loaded config from %s\n", cfgPath)
 	}
 
 	var (
@@ -524,7 +549,7 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 			return
 		}
 		if fix {
-			fixed, ferr := fixOne(p, src)
+			fixed, ferr := fixOne(p, src, cfg)
 			if ferr != nil {
 				parseFailed++
 				fmt.Fprintf(stderr, "FAIL fix %s: %v\n", p, ferr)
@@ -542,7 +567,7 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 				return
 			}
 		}
-		ds, lerr := linter.LintFile(p, src)
+		ds, lerr := linter.LintFileWithConfig(p, src, cfg)
 		if lerr != nil {
 			parseFailed++
 			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", p, lerr)
@@ -595,12 +620,16 @@ func lintCmd(args []string, stdout, stderr io.Writer) error {
 // number of fixes applied; 0 means the file is left untouched on
 // disk. The write goes through a temp file in the same directory
 // and a rename so a crash mid-write can't truncate the source.
-func fixOne(path string, src []byte) (int, error) {
+//
+// Codes ignored by cfg (globally or per-file) are skipped inside
+// linter.FixWithConfig, so the on-disk file stays consistent with
+// the diagnostics the user is allowed to see.
+func fixOne(path string, src []byte, cfg linter.Config) (int, error) {
 	cf, err := cst.Parse(path, src)
 	if err != nil {
 		return 0, err
 	}
-	_, fixed := linter.Fix(cf.AST)
+	_, fixed := linter.FixWithConfig(cf.AST, cfg, path)
 	if len(fixed) == 0 {
 		return 0, nil
 	}
@@ -624,6 +653,26 @@ func fixOne(path string, src []byte) (int, error) {
 		return 0, err
 	}
 	return len(fixed), nil
+}
+
+// resolveLintConfig loads the config that should govern this lint
+// invocation. Precedence: --no-config -> zero Config; --config PATH ->
+// LoadConfig(PATH); otherwise discover by walking up from the user-
+// supplied path. The returned cfgPath is non-empty only when a file
+// was actually loaded, so the caller can echo "loaded config from X"
+// to stderr without false positives.
+func resolveLintConfig(walkFrom, configPath string, noConfig bool) (linter.Config, string, error) {
+	if noConfig {
+		return linter.Config{}, "", nil
+	}
+	if configPath != "" {
+		cfg, err := linter.LoadConfig(configPath)
+		if err != nil {
+			return linter.Config{}, "", err
+		}
+		return cfg, configPath, nil
+	}
+	return linter.DiscoverConfig(walkFrom)
 }
 
 // symbolsCmd builds a symbol table for one file or every .py under a
