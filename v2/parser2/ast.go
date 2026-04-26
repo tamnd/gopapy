@@ -300,6 +300,57 @@ type YieldFrom struct {
 func (*YieldFrom) exprNode() {}
 func (n *YieldFrom) pos() Pos { return n.P }
 
+// JoinedStr is an f-string. Values is a list of plain string
+// Constants and FormattedValue interpolations interleaved in source
+// order.
+type JoinedStr struct {
+	P      Pos
+	Values []Expr
+}
+
+func (*JoinedStr) exprNode()  {}
+func (n *JoinedStr) pos() Pos { return n.P }
+
+// FormattedValue is one `{...}` interpolation inside a JoinedStr.
+// Conversion is -1 (none), 114 ('r'), 115 ('s'), or 97 ('a') —
+// matching CPython's ast.dump integer codes. FormatSpec is nil or
+// another JoinedStr.
+type FormattedValue struct {
+	P          Pos
+	Value      Expr
+	Conversion int
+	FormatSpec Expr
+}
+
+func (*FormattedValue) exprNode()  {}
+func (n *FormattedValue) pos() Pos { return n.P }
+
+// TemplateStr is a PEP 750 t-string literal. Strings and
+// Interpolations interleave: Strings has length N+1 where N is
+// len(Interpolations).
+type TemplateStr struct {
+	P              Pos
+	Strings        []*Constant
+	Interpolations []*Interpolation
+}
+
+func (*TemplateStr) exprNode()  {}
+func (n *TemplateStr) pos() Pos { return n.P }
+
+// Interpolation is one `{...}` inside a TemplateStr. Str preserves
+// the source text of the expression because PEP 750's Template
+// keeps the original for repr.
+type Interpolation struct {
+	P          Pos
+	Value      Expr
+	Str        string
+	Conversion int
+	FormatSpec Expr
+}
+
+func (*Interpolation) exprNode()  {}
+func (n *Interpolation) pos() Pos { return n.P }
+
 // IfExp is the conditional expression `body if test else orelse`.
 type IfExp struct {
 	P      Pos
@@ -1035,6 +1086,54 @@ func dump(b *strings.Builder, e Expr) {
 	case *YieldFrom:
 		b.WriteString("YieldFrom(value=")
 		dump(b, n.Value)
+		b.WriteString(")")
+	case *JoinedStr:
+		b.WriteString("JoinedStr(values=[")
+		for i, v := range n.Values {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			dump(b, v)
+		}
+		b.WriteString("])")
+	case *FormattedValue:
+		b.WriteString("FormattedValue(value=")
+		dump(b, n.Value)
+		if n.Conversion != -1 {
+			fmt.Fprintf(b, ", conversion=%d", n.Conversion)
+		}
+		if n.FormatSpec != nil {
+			b.WriteString(", format_spec=")
+			dump(b, n.FormatSpec)
+		}
+		b.WriteString(")")
+	case *TemplateStr:
+		b.WriteString("TemplateStr(strings=[")
+		for i, c := range n.Strings {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			dump(b, c)
+		}
+		b.WriteString("], interpolations=[")
+		for i, ip := range n.Interpolations {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			dump(b, ip)
+		}
+		b.WriteString("])")
+	case *Interpolation:
+		b.WriteString("Interpolation(value=")
+		dump(b, n.Value)
+		fmt.Fprintf(b, ", str=%q", n.Str)
+		if n.Conversion != -1 {
+			fmt.Fprintf(b, ", conversion=%d", n.Conversion)
+		}
+		if n.FormatSpec != nil {
+			b.WriteString(", format_spec=")
+			dump(b, n.FormatSpec)
+		}
 		b.WriteString(")")
 	default:
 		fmt.Fprintf(b, "<unknown:%T>", e)

@@ -157,6 +157,11 @@ def main():
         with open("f") as f, open("g") as g:
             pass
         break
+
+def fstring_demo(name, count):
+    log(f"hi {name!r}, count={count:>5}")
+    log(f"raw: {{ {name} }} done")
+    return t"name={name} count={count}"
 `
 
 func BenchmarkParseFileV1Compare(b *testing.B) {

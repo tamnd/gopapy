@@ -793,36 +793,8 @@ func (p *parser) parseAtom() (Expr, error) {
 			return nil, err
 		}
 		return parseFloatLiteral(tok)
-	case tkString:
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		// Adjacent string literals concatenate.
-		buf := tok.val
-		bytesPrefix := strings.HasPrefix(buf, "b:")
-		if bytesPrefix {
-			buf = buf[2:]
-		}
-		for p.cur.kind == tkString {
-			next := p.cur.val
-			isNextBytes := strings.HasPrefix(next, "b:")
-			if isNextBytes {
-				next = next[2:]
-			}
-			if isNextBytes != bytesPrefix {
-				return nil, fmt.Errorf("%d:%d: cannot mix bytes and str literals",
-					p.cur.pos.Line, p.cur.pos.Col)
-			}
-			buf += next
-			if err := p.advance(); err != nil {
-				return nil, err
-			}
-		}
-		kind := "str"
-		if bytesPrefix {
-			kind = "bytes"
-		}
-		return &Constant{P: tok.pos, Kind: kind, Value: buf}, nil
+	case tkString, tkFString:
+		return p.parseStringAtom()
 	case tkEllipsis:
 		if err := p.advance(); err != nil {
 			return nil, err
@@ -859,6 +831,242 @@ func (p *parser) parseAtom() (Expr, error) {
 	}
 	return nil, fmt.Errorf("%d:%d: unexpected token %s",
 		tok.pos.Line, tok.pos.Col, tok.kind)
+}
+
+// parseStringAtom collects one or more adjacent string-like tokens
+// (plain string, f-string, t-string) and produces a single
+// Constant, JoinedStr, or TemplateStr depending on what's there.
+// Mixing bytes with any other kind, or t-string with anything other
+// than another t-string, is rejected (matches CPython).
+func (p *parser) parseStringAtom() (Expr, error) {
+	startPos := p.cur.pos
+	var plainParts []string
+	var joined []Expr
+	bytesPrefix := false
+	hasFOrPlain := false
+	hasT := false
+	var tParts []*Constant
+	var tInterp []*Interpolation
+	tStartConst := func() *Constant {
+		// Append the buffered plain text as a Constant before an
+		// interpolation, even if empty (PEP 750 needs Strings to
+		// alternate one-for-one).
+		c := &Constant{P: startPos, Kind: "str", Value: strings.Join(plainParts, "")}
+		plainParts = plainParts[:0]
+		return c
+	}
+	for p.cur.kind == tkString || p.cur.kind == tkFString {
+		tok := p.cur
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if tok.kind == tkString {
+			val := tok.val
+			isBytes := strings.HasPrefix(val, "b:")
+			if isBytes {
+				val = val[2:]
+			}
+			if hasT {
+				return nil, fmt.Errorf("%d:%d: cannot mix t-string with other strings",
+					tok.pos.Line, tok.pos.Col)
+			}
+			if isBytes {
+				if hasFOrPlain && !bytesPrefix {
+					return nil, fmt.Errorf("%d:%d: cannot mix bytes and str literals",
+						tok.pos.Line, tok.pos.Col)
+				}
+				bytesPrefix = true
+			} else {
+				if bytesPrefix {
+					return nil, fmt.Errorf("%d:%d: cannot mix bytes and str literals",
+						tok.pos.Line, tok.pos.Col)
+				}
+			}
+			hasFOrPlain = true
+			plainParts = append(plainParts, val)
+			continue
+		}
+		// tkFString
+		payload := tok.fpayload
+		if payload == nil {
+			return nil, fmt.Errorf("%d:%d: empty f-string payload", tok.pos.Line, tok.pos.Col)
+		}
+		if bytesPrefix {
+			return nil, fmt.Errorf("%d:%d: cannot mix bytes and f/t-string literals",
+				tok.pos.Line, tok.pos.Col)
+		}
+		if payload.template {
+			if hasFOrPlain {
+				return nil, fmt.Errorf("%d:%d: cannot mix t-string with other strings",
+					tok.pos.Line, tok.pos.Col)
+			}
+			hasT = true
+			// Convert this f-string payload into TemplateStr parts.
+			// Strings has length len(interps)+1 — start with an empty
+			// constant if the first segment is an interpolation.
+			pendingText := ""
+			pendingPos := tok.pos
+			needConstant := true
+			for _, seg := range payload.segments {
+				if !seg.isInterp {
+					if needConstant {
+						pendingPos = seg.pos
+					}
+					pendingText += seg.text
+					needConstant = false
+					continue
+				}
+				tParts = append(tParts, &Constant{P: pendingPos, Kind: "str", Value: pendingText})
+				pendingText = ""
+				needConstant = true
+				ip, err := p.buildInterpolation(seg)
+				if err != nil {
+					return nil, err
+				}
+				tInterp = append(tInterp, ip)
+			}
+			tParts = append(tParts, &Constant{P: pendingPos, Kind: "str", Value: pendingText})
+			continue
+		}
+		if hasT {
+			return nil, fmt.Errorf("%d:%d: cannot mix t-string with f-string", tok.pos.Line, tok.pos.Col)
+		}
+		hasFOrPlain = true
+		// f-string: lower segments into JoinedStr values, mixing in
+		// any buffered plain text first.
+		if len(joined) == 0 && len(plainParts) > 0 {
+			joined = append(joined, &Constant{P: startPos, Kind: "str", Value: strings.Join(plainParts, "")})
+			plainParts = plainParts[:0]
+		} else if len(plainParts) > 0 {
+			joined = append(joined, &Constant{P: tok.pos, Kind: "str", Value: strings.Join(plainParts, "")})
+			plainParts = plainParts[:0]
+		}
+		for _, seg := range payload.segments {
+			if !seg.isInterp {
+				if seg.text == "" {
+					continue
+				}
+				joined = append(joined, &Constant{P: seg.pos, Kind: "str", Value: seg.text})
+				continue
+			}
+			fv, err := p.buildFormattedValue(seg)
+			if err != nil {
+				return nil, err
+			}
+			joined = append(joined, fv)
+		}
+	}
+	if hasT {
+		// Any trailing buffered text is already in tParts thanks to
+		// the per-segment flush.
+		_ = tStartConst
+		return &TemplateStr{P: startPos, Strings: tParts, Interpolations: tInterp}, nil
+	}
+	if len(joined) > 0 {
+		// Any remaining plain text (from a trailing plain-string
+		// literal, e.g. `f"a" "b"`) becomes a final Constant.
+		if len(plainParts) > 0 {
+			joined = append(joined, &Constant{P: startPos, Kind: "str", Value: strings.Join(plainParts, "")})
+			plainParts = plainParts[:0]
+		}
+		return &JoinedStr{P: startPos, Values: joined}, nil
+	}
+	kind := "str"
+	if bytesPrefix {
+		kind = "bytes"
+	}
+	return &Constant{P: startPos, Kind: kind, Value: strings.Join(plainParts, "")}, nil
+}
+
+// buildFormattedValue parses a single f-string interpolation segment
+// into a FormattedValue node, recursively building the format spec
+// if present.
+func (p *parser) buildFormattedValue(seg fstringSegment) (*FormattedValue, error) {
+	val, err := parseInterpExpr(seg.exprSrc, seg.pos)
+	if err != nil {
+		return nil, err
+	}
+	var spec Expr
+	if seg.spec != nil {
+		s, err := p.buildSpecJoined(seg.spec, seg.pos)
+		if err != nil {
+			return nil, err
+		}
+		spec = s
+	}
+	return &FormattedValue{
+		P:          seg.pos,
+		Value:      val,
+		Conversion: seg.convert,
+		FormatSpec: spec,
+	}, nil
+}
+
+// buildInterpolation is the t-string analogue of buildFormattedValue.
+func (p *parser) buildInterpolation(seg fstringSegment) (*Interpolation, error) {
+	val, err := parseInterpExpr(seg.exprSrc, seg.pos)
+	if err != nil {
+		return nil, err
+	}
+	var spec Expr
+	if seg.spec != nil {
+		s, err := p.buildSpecJoined(seg.spec, seg.pos)
+		if err != nil {
+			return nil, err
+		}
+		spec = s
+	}
+	return &Interpolation{
+		P:          seg.pos,
+		Value:      val,
+		Str:        seg.exprSrc,
+		Conversion: seg.convert,
+		FormatSpec: spec,
+	}, nil
+}
+
+// buildSpecJoined turns a parsed format-spec payload into a
+// JoinedStr node, recursively. Empty specs become a JoinedStr with
+// no values, matching CPython's representation.
+func (p *parser) buildSpecJoined(payload *fstringPayload, at Pos) (*JoinedStr, error) {
+	var values []Expr
+	for _, seg := range payload.segments {
+		if !seg.isInterp {
+			if seg.text == "" {
+				continue
+			}
+			values = append(values, &Constant{P: seg.pos, Kind: "str", Value: seg.text})
+			continue
+		}
+		fv, err := p.buildFormattedValue(seg)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, fv)
+	}
+	return &JoinedStr{P: at, Values: values}, nil
+}
+
+// parseInterpExpr parses the expression source captured from an
+// f-string interpolation. It runs an expression-mode sub-parser, so
+// the main scanner state stays untouched.
+func parseInterpExpr(src string, at Pos) (Expr, error) {
+	if src == "" {
+		return nil, fmt.Errorf("%d:%d: empty expression in f-string", at.Line, at.Col)
+	}
+	sub, err := newParser(src)
+	if err != nil {
+		return nil, err
+	}
+	e, err := sub.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if sub.cur.kind != tkEOF {
+		return nil, fmt.Errorf("%d:%d: trailing tokens in f-string expression %q",
+			at.Line, at.Col, src)
+	}
+	return e, nil
 }
 
 func parseIntLiteral(tok token) (Expr, error) {
