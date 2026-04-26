@@ -9,6 +9,55 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-04-26
+
+Comment-to-AST attachment in the `cst` layer. Comments survived
+lexing — `cst.File.Tokens()` already exposed every `COMMENT` and
+`TYPE_COMMENT` — but they sat in a flat list with no link back to the
+statement they belong to. Every formatter, codemod, or
+comment-preserving rewriter that wanted "the comment that explains
+this assignment" had to re-implement the same line-arithmetic. v0.1.9
+lifts that work into the cst layer.
+
+### Added
+
+- `cst.File.AttachComments() *cst.Trivia` walks the token stream once
+  and returns a side table mapping each AST node to the comments that
+  attach to it. The CST source bytes and the AST itself are not
+  mutated.
+- New `cst.Trivia` (`ByNode map[ast.Node][]Comment` + `File []Comment`
+  for orphans), `cst.Comment` (Pos / Text / Position), and
+  `cst.Position` (Leading, Trailing) types.
+- Attachment rules:
+  - Trailing: a comment that follows a non-comment token on the same
+    line attaches to the innermost statement that ends on that line
+    (so `def f(): return 1  # ret` puts the comment on the `Return`,
+    not the `FunctionDef`).
+  - Leading: a comment alone on its line attaches to the next
+    statement that begins on a later line. Consecutive leading
+    comments all attach to the same following statement, in source
+    order.
+  - End of file: comments that match neither rule (no following
+    statement) land in `Trivia.File`.
+- `TYPE_COMMENT` (`# type: int`) follows the same rules as `COMMENT`.
+- `cst/trivia_test.go` covers all of the above plus the "fresh map
+  per call" contract and the empty-module edge case.
+
+### Verified
+
+- Stdlib parse + symbols + diag rates stay 100% on CPython 3.14.
+- `go test ./...` green across every package.
+
+### Deferred
+
+- A comment-preserving Unparse pass is the consumer of trivia, not
+  its producer; lands when the consumer needs it.
+- Mutable trivia (insert / remove a comment) — current attachment is
+  read-only.
+- Attachment to expressions inside a parenthesised continuation
+  (`x = (\n  1  # one\n  + 2)`). CPython's tokenize is the only thing
+  that gets this fully right; v0.1.9 stays at the statement level.
+
 ## [0.1.8] - 2026-04-26
 
 A typed-actor visitor pattern over the AST. `ast.Walk(n, fn)` already
@@ -988,7 +1037,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/tamnd/gopapy/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/tamnd/gopapy/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/tamnd/gopapy/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/tamnd/gopapy/compare/v0.1.5...v0.1.6
