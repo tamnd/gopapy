@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +24,7 @@ import (
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.19"
+const version = "0.1.20"
 
 func main() {
 	if err := runWithStdin(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
@@ -508,6 +510,9 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	configPath := ""
 	outputPath := ""
 	stdinFilename := ""
+	jobs := 0       // 0 = default to GOMAXPROCS in linter.LintFiles
+	cachePath := "" // "" = cache disabled
+	noCache := false
 	var path string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -558,6 +563,39 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			stdinFilename = args[i]
 		case strings.HasPrefix(a, "--stdin-filename="):
 			stdinFilename = strings.TrimPrefix(a, "--stdin-filename=")
+		case a == "--jobs":
+			if i+1 >= len(args) {
+				return fmt.Errorf("lint: --jobs requires a value")
+			}
+			i++
+			n, jerr := parseJobs(args[i])
+			if jerr != nil {
+				return jerr
+			}
+			jobs = n
+		case strings.HasPrefix(a, "--jobs="):
+			n, jerr := parseJobs(strings.TrimPrefix(a, "--jobs="))
+			if jerr != nil {
+				return jerr
+			}
+			jobs = n
+		case a == "--cache":
+			// Bare --cache takes the next arg as the path unless it
+			// looks like another flag, in which case fall back to the
+			// default cache location.
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				cachePath = args[i]
+			} else {
+				cachePath = linter.DefaultCachePath()
+				if cachePath == "" {
+					return fmt.Errorf("lint: --cache requires a path (UserCacheDir unavailable)")
+				}
+			}
+		case strings.HasPrefix(a, "--cache="):
+			cachePath = strings.TrimPrefix(a, "--cache=")
+		case a == "--no-cache":
+			noCache = true
 		default:
 			if path != "" {
 				return fmt.Errorf("lint: unexpected argument %q", a)
@@ -567,6 +605,9 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if path == "" {
 		return fmt.Errorf("lint: missing PATH argument")
+	}
+	if noCache {
+		cachePath = ""
 	}
 
 	if path == "-" {
@@ -644,25 +685,47 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 
 	if info.IsDir() {
-		const gcEvery = 16
-		walkErr := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return err
-			}
-			if !strings.HasSuffix(p, ".py") {
-				return nil
-			}
-			if isIntentionalBadFixture(p) {
-				return nil
-			}
-			process(p)
-			if fileCount%gcEvery == 0 {
-				runtime.GC()
-			}
-			return nil
-		})
+		paths, walkErr := collectPyPaths(path)
 		if walkErr != nil {
 			return walkErr
+		}
+		if fix {
+			// --fix mutates files; keep the serial loop so file-count
+			// stats and the in-place rewrite stay simple. The cache
+			// would be invalidated by every successful fix anyway.
+			const gcEvery = 16
+			for i, p := range paths {
+				process(p)
+				if (i+1)%gcEvery == 0 {
+					runtime.GC()
+				}
+			}
+		} else {
+			cache, cerr := openLintCache(cachePath, stderr)
+			if cerr != nil {
+				return cerr
+			}
+			results := linter.LintFiles(paths, cfg, linter.LintOptions{
+				Jobs:  jobs,
+				Cache: cache,
+			})
+			for _, r := range results {
+				fileCount++
+				if r.Err != nil {
+					parseFailed++
+					fmt.Fprintf(stderr, "FAIL %s: %v\n", r.Path, r.Err)
+					continue
+				}
+				for _, d := range r.Diagnostics {
+					diagnostics = append(diagnostics, d)
+					_ = emit(d)
+				}
+			}
+			if cache != nil {
+				if serr := cache.Save(); serr != nil {
+					fmt.Fprintf(stderr, "warning: cache save: %v\n", serr)
+				}
+			}
 		}
 		fmt.Fprintf(stderr, "%d files, %d parse-failed, %d diagnostics",
 			fileCount, parseFailed, len(diagnostics))
@@ -828,6 +891,62 @@ func openOutput(path string, stdout io.Writer) (io.Writer, func(), error) {
 // supplied path. The returned cfgPath is non-empty only when a file
 // was actually loaded, so the caller can echo "loaded config from X"
 // to stderr without false positives.
+// parseJobs converts a CLI --jobs value into the int LintOptions
+// expects. Zero is rejected (no semantic meaning); negative values
+// are rejected too.
+func parseJobs(s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("lint: --jobs %q: %v", s, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("lint: --jobs must be >= 1, got %d", n)
+	}
+	return n, nil
+}
+
+// collectPyPaths walks dir and returns every .py path in lexical
+// order, skipping intentional bad-syntax fixtures. Sorted so
+// LintFiles emits output in the same order single-threaded
+// filepath.WalkDir does.
+func collectPyPaths(dir string) ([]string, error) {
+	var paths []string
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() {
+			return werr
+		}
+		if !strings.HasSuffix(p, ".py") {
+			return nil
+		}
+		if isIntentionalBadFixture(p) {
+			return nil
+		}
+		paths = append(paths, p)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// openLintCache resolves cachePath into a *linter.Cache, returning
+// nil when caching is disabled (empty path). A corrupt cache file
+// produces a warning on stderr and an empty cache; the lint run
+// continues either way.
+func openLintCache(cachePath string, stderr io.Writer) (*linter.Cache, error) {
+	if cachePath == "" {
+		return nil, nil
+	}
+	warn := func(msg string) { fmt.Fprintln(stderr, "warning:", msg) }
+	c, err := linter.OpenCache(cachePath, warn)
+	if err != nil {
+		return nil, fmt.Errorf("lint: open cache %s: %v", cachePath, err)
+	}
+	return c, nil
+}
+
 func resolveLintConfig(walkFrom, configPath string, noConfig bool) (linter.Config, string, error) {
 	if noConfig {
 		return linter.Config{}, "", nil
@@ -991,6 +1110,11 @@ Commands:
                 in stdin mode --fix writes the rewritten source to the
                 output sink and the diagnostics to stderr.
                 --config PATH / --no-config control pyproject.toml discovery.
+                --jobs N runs the file pool with N workers (default GOMAXPROCS).
+                --cache [PATH] enables an opt-in result cache keyed on
+                (path, mtime, size, config-hash). Default location is
+                $XDG_CACHE_HOME/gopapy/lint.cache.
+                --no-cache disables caching for this run.
   bench DIR     Parse every .py under DIR and print parse/emit throughput.
   version       Print the gopapy version.
   help          Show this message.
