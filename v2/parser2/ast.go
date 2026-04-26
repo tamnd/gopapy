@@ -620,6 +620,7 @@ func (s *AsyncWith) pos() Pos { return s.P }
 type FunctionDef struct {
 	P             Pos
 	Name          string
+	TypeParams    []TypeParam
 	Args          *Arguments
 	Body          []Stmt
 	DecoratorList []Expr
@@ -633,6 +634,7 @@ func (s *FunctionDef) pos() Pos { return s.P }
 type AsyncFunctionDef struct {
 	P             Pos
 	Name          string
+	TypeParams    []TypeParam
 	Args          *Arguments
 	Body          []Stmt
 	DecoratorList []Expr
@@ -646,6 +648,7 @@ func (s *AsyncFunctionDef) pos() Pos { return s.P }
 type ClassDef struct {
 	P             Pos
 	Name          string
+	TypeParams    []TypeParam
 	Bases         []Expr
 	Keywords      []*Keyword
 	Body          []Stmt
@@ -654,6 +657,54 @@ type ClassDef struct {
 
 func (*ClassDef) stmtNode() {}
 func (s *ClassDef) pos() Pos { return s.P }
+
+// TypeAlias is the PEP 695 `type Name[Params] = Value` statement.
+type TypeAlias struct {
+	P          Pos
+	Name       *Name
+	TypeParams []TypeParam
+	Value      Expr
+}
+
+func (*TypeAlias) stmtNode() {}
+func (s *TypeAlias) pos() Pos { return s.P }
+
+// TypeParam is the PEP 695 type-parameter tag interface.
+type TypeParam interface {
+	typeParamNode()
+	pos() Pos
+}
+
+// TypeVar is `T`, `T: bound`, `T = default`, or `T: bound = default`.
+type TypeVar struct {
+	P            Pos
+	Name         string
+	Bound        Expr
+	DefaultValue Expr
+}
+
+func (*TypeVar) typeParamNode() {}
+func (n *TypeVar) pos() Pos     { return n.P }
+
+// TypeVarTuple is `*Ts` (with optional default).
+type TypeVarTuple struct {
+	P            Pos
+	Name         string
+	DefaultValue Expr
+}
+
+func (*TypeVarTuple) typeParamNode() {}
+func (n *TypeVarTuple) pos() Pos     { return n.P }
+
+// ParamSpec is `**P` (with optional default).
+type ParamSpec struct {
+	P            Pos
+	Name         string
+	DefaultValue Expr
+}
+
+func (*ParamSpec) typeParamNode() {}
+func (n *ParamSpec) pos() Pos     { return n.P }
 
 // Match is the PEP 634 `match SUBJECT: case ...` statement.
 type Match struct {
@@ -973,6 +1024,7 @@ func dumpStmt(b *strings.Builder, s Stmt) {
 		} else {
 			b.WriteString("nil")
 		}
+		dumpTypeParams(b, n.TypeParams)
 		b.WriteString(")")
 	case *AsyncFunctionDef:
 		fmt.Fprintf(b, "AsyncFunctionDef(name=%q, args=", n.Name)
@@ -987,6 +1039,7 @@ func dumpStmt(b *strings.Builder, s Stmt) {
 		} else {
 			b.WriteString("nil")
 		}
+		dumpTypeParams(b, n.TypeParams)
 		b.WriteString(")")
 	case *ClassDef:
 		fmt.Fprintf(b, "ClassDef(name=%q, bases=[", n.Name)
@@ -1004,7 +1057,16 @@ func dumpStmt(b *strings.Builder, s Stmt) {
 		dumpStmtList(b, n.Body)
 		b.WriteString(", decorators=[")
 		dumpList(b, n.DecoratorList)
-		b.WriteString("])")
+		b.WriteString("]")
+		dumpTypeParams(b, n.TypeParams)
+		b.WriteString(")")
+	case *TypeAlias:
+		b.WriteString("TypeAlias(name=")
+		dump(b, n.Name)
+		dumpTypeParams(b, n.TypeParams)
+		b.WriteString(", value=")
+		dump(b, n.Value)
+		b.WriteString(")")
 	case *Match:
 		b.WriteString("Match(subject=")
 		dump(b, n.Subject)
@@ -1137,6 +1199,56 @@ func dumpStmtList(b *strings.Builder, ss []Stmt) {
 		dumpStmt(b, s)
 	}
 	b.WriteString("]")
+}
+
+// dumpTypeParams renders a `, type_params=[...]` suffix when the
+// slice is non-empty, and writes nothing otherwise — keeping legacy
+// FunctionDef/ClassDef dumps unchanged when no PEP 695 clause is
+// present.
+func dumpTypeParams(b *strings.Builder, ps []TypeParam) {
+	if len(ps) == 0 {
+		return
+	}
+	b.WriteString(", type_params=[")
+	for i, p := range ps {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		dumpTypeParam(b, p)
+	}
+	b.WriteString("]")
+}
+
+func dumpTypeParam(b *strings.Builder, p TypeParam) {
+	switch n := p.(type) {
+	case *TypeVar:
+		fmt.Fprintf(b, "TypeVar(name=%q", n.Name)
+		if n.Bound != nil {
+			b.WriteString(", bound=")
+			dump(b, n.Bound)
+		}
+		if n.DefaultValue != nil {
+			b.WriteString(", default_value=")
+			dump(b, n.DefaultValue)
+		}
+		b.WriteString(")")
+	case *TypeVarTuple:
+		fmt.Fprintf(b, "TypeVarTuple(name=%q", n.Name)
+		if n.DefaultValue != nil {
+			b.WriteString(", default_value=")
+			dump(b, n.DefaultValue)
+		}
+		b.WriteString(")")
+	case *ParamSpec:
+		fmt.Fprintf(b, "ParamSpec(name=%q", n.Name)
+		if n.DefaultValue != nil {
+			b.WriteString(", default_value=")
+			dump(b, n.DefaultValue)
+		}
+		b.WriteString(")")
+	default:
+		fmt.Fprintf(b, "<unknown type_param %T>", p)
+	}
 }
 
 func dumpAlias(b *strings.Builder, a *Alias) {

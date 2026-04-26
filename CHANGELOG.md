@@ -9,6 +9,59 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.33] - 2026-04-26
+
+PEP 695 type parameters land in parser2: the `type X = ...`
+statement and the `[T, U: bound, *Ts, **P, T = default]` clause on
+function and class headers, with PEP 696 defaults. After this
+release the v2 parser handles 81 of the 85 v1 grammar fixtures;
+the remaining four are explicitly deferred (PEP 646 starred
+subscripts and annotations, PEP 758 except groups, the unicode-tag
+identifier corner). v1 is unchanged.
+
+### Added
+
+- `v2/parser2` — `ParseFile` accepts the full PEP 695 type
+  parameter clause:
+  - `type Vector = list[float]` and `type Alias[T] = int`
+    statements, with `type` treated as a soft keyword (`type = 1`,
+    `type(x)`, `type.x` remain plain name uses).
+  - `[T]`, `[T, U]` on function and class headers.
+  - bound: `[T: int]`, `[T: (int, str)]`.
+  - PEP 696 default: `[T = int]`, also on `*Ts` and `**P`.
+  - `*Ts` (`TypeVarTuple`) and `**P` (`ParamSpec`) parameter
+    forms.
+  - All shapes combine: `def f[T: int, *Ts, **P](x): ...`.
+- AST: `TypeAlias`, plus a `TypeParam` interface backed by
+  `TypeVar`, `TypeVarTuple`, and `ParamSpec`. `FunctionDef`,
+  `AsyncFunctionDef`, and `ClassDef` gain a `TypeParams` slice
+  (nil when no clause is present).
+- DumpModule renders the new nodes in the parens-explicit format;
+  the `type_params=[...]` suffix is omitted when empty so legacy
+  test cases stay unchanged.
+
+### Performance
+
+End-to-end module parse, darwin/arm64 (Apple M4), shared
+`fileBenchSrc` (now 122 lines including a small generic function,
+type alias, and generic class). Numbers from `BenchmarkParseFile`
+(v2) and `BenchmarkParseFileV1Compare` (v1):
+
+- v1 ParseFile: 2.45 ms/op, 0.94 MB/s
+- v2 ParseFile: 32.0 us/op, 71.7 MB/s
+- v2 is ~77x faster, ~76x higher throughput than v1 on the file
+  bench. Expression bench (`BenchmarkParseExpression`):
+  20.3 us/op v2 vs 3.59 ms/op v1 — ~177x faster.
+
+### Notes
+
+- The CLI still routes through v1. Switching `cmd/gopapy` to
+  parser2 is reserved for v0.2.0 once symbols/lint/LSP can consume
+  v2's AST.
+- Remaining gaps (deferred): PEP 646 `*Ts` in subscript /
+  annotation positions (065, 071), PEP 758 parenthesised except
+  groups (070), the unicode-tag identifier corner (085).
+
 ## [0.1.32] - 2026-04-26
 
 PEP 634 `match` / `case` lands in parser2. With this release the v2
@@ -2008,6 +2061,7 @@ generator expressions, `async`/`await` outside trivial expressions,
 literals, octal/binary/unicode-name string escapes.
 
 [Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.31...HEAD
+[0.1.33]: https://github.com/tamnd/gopapy/compare/v0.1.32...v0.1.33
 [0.1.32]: https://github.com/tamnd/gopapy/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/tamnd/gopapy/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/tamnd/gopapy/compare/v0.1.29...v0.1.30
