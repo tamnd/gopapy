@@ -9,6 +9,46 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-04-26
+
+`gopapy lint --format sarif` writes a SARIF 2.1.0 log document.
+GitHub code scanning, Azure DevOps Defender, and most enterprise
+CI dashboards consume SARIF natively, so a `gopapy lint` step in
+a workflow can now feed historical-tracking views without a glue
+script. The format also has a stable schema (2.1.0 has been
+current since 2020), which keeps the contract from drifting.
+
+Unlike text/json/github (NDJSON, one diagnostic per line), SARIF
+is a single JSON object: `results[]` lives inside `runs[0]` inside
+the top-level document. The CLI handles this by collecting all
+diagnostics for the run and writing once at the end.
+
+### Added
+
+- **`--format sarif`** writes the run as a SARIF 2.1.0 log to
+  the configured sink (stdout by default, `--output PATH` writes
+  to a file). Severities map: SeverityError → `"error"`,
+  SeverityWarning → `"warning"`, SeverityHint → `"note"`. File
+  paths are forward-slashed via `filepath.ToSlash` (no-op on
+  Unix, normalises Windows paths for the URI form).
+- `linter.FormatSARIF` constant + `linter.WriteSARIFLog(w, diags,
+  tool)` whole-batch writer + `linter.ToolInfo{Name, Version,
+  InformationURI}` struct. The library doesn't bake in the tool
+  identity — the CLI passes "gopapy" + the build version, but
+  downstream Go programs can supply their own.
+
+### Notes
+
+- `WriteDiagnostic(w, d, FormatSARIF)` returns an error rather
+  than emitting a partial document. Use `WriteSARIFLog` instead.
+- `tool.driver.rules[]` is intentionally omitted. SARIF allows
+  results to reference rule IDs without a corresponding entry,
+  and skipping the table keeps the output stable as new codes
+  ship.
+- This was the originally-planned v0.1.23 slot in roadmap v7;
+  it shifted because v0.1.23 took on W605 + source-byte plumbing.
+  LSP minimum-viable moves to v0.1.25.
+
 ## [0.1.23] - 2026-04-26
 
 W605 (`invalid-escape-sequence`) lands. The check needs raw source
@@ -1574,7 +1614,8 @@ generator expressions, `async`/`await` outside trivial expressions,
 `with` statement, decorators, positional-only marker, star-unpacking in
 literals, octal/binary/unicode-name string escapes.
 
-[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.23...HEAD
+[Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.24...HEAD
+[0.1.24]: https://github.com/tamnd/gopapy/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/tamnd/gopapy/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/tamnd/gopapy/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/tamnd/gopapy/compare/v0.1.20...v0.1.21

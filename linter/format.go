@@ -28,6 +28,12 @@ const (
 	// `gopapy lint` step in a workflow surfaces diagnostics as PR
 	// annotations without any glue script.
 	FormatGithub Format = "github"
+	// FormatSARIF emits a SARIF 2.1.0 log document. Unlike the other
+	// formats, SARIF is one whole JSON object — `results[]` lives
+	// inside `runs[0]` — so the per-diagnostic WriteDiagnostic path
+	// returns an error for it. Use WriteSARIFLog to emit a full run
+	// at once, after every diagnostic for the run is collected.
+	FormatSARIF Format = "sarif"
 )
 
 // ParseFormat converts the CLI string to a Format. Unknown values
@@ -35,16 +41,20 @@ const (
 // what to type next instead of "unknown format".
 func ParseFormat(s string) (Format, error) {
 	switch Format(s) {
-	case FormatText, FormatJSON, FormatGithub:
+	case FormatText, FormatJSON, FormatGithub, FormatSARIF:
 		return Format(s), nil
 	}
-	return "", fmt.Errorf("unknown format %q (want one of: text, json, github)", s)
+	return "", fmt.Errorf("unknown format %q (want one of: text, json, github, sarif)", s)
 }
 
 // WriteDiagnostic writes one diagnostic in the requested format,
 // including the trailing newline. The caller streams diagnostics one
 // at a time; no formatter buffers a full list, so a 50k warning run
 // stays bounded in memory.
+//
+// FormatSARIF is rejected here: SARIF wraps results inside a single
+// JSON document, so emitting one at a time would produce malformed
+// output. Use WriteSARIFLog with the collected slice instead.
 func WriteDiagnostic(w io.Writer, d diag.Diagnostic, f Format) error {
 	switch f {
 	case FormatText, "":
@@ -54,6 +64,8 @@ func WriteDiagnostic(w io.Writer, d diag.Diagnostic, f Format) error {
 		return writeJSON(w, d)
 	case FormatGithub:
 		return writeGithub(w, d)
+	case FormatSARIF:
+		return fmt.Errorf("sarif is a whole-document format; use WriteSARIFLog")
 	}
 	return fmt.Errorf("unknown format %q", f)
 }
