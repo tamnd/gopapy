@@ -9,6 +9,35 @@ changes.
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-04-26
+
+Comment-preserving unparse. v0.1.11 made codemods possible; this
+version makes them shippable. The AST doesn't carry `#` comments,
+so any tool that round-tripped a file through `ast.Unparse` lost
+every comment. v0.1.12 layers the v0.1.9 `Trivia` table onto the
+new printer hook surface so leading comments stay above their host
+statement, trailing comments stay on the same line, and orphan
+end-of-file comments stay at module scope.
+
+Files without comments produce the same byte sequence as plain
+`ast.Unparse`, so the comment-preserving path is a strict overlay.
+
+### Added
+
+- `cst.File.Unparse() string` renders the file with comments woven
+  back in via `AttachComments`. Internally drives the new
+  `ast.UnparseHooks` interface (`LeadingFor`, `TrailingFor`,
+  `FileTrailing`).
+- `ast.UnparseWith(n Node, h UnparseHooks) string` — the lower-
+  level hook entrypoint. `ast.Unparse(n)` is now a thin wrapper
+  with a nil hook set.
+- `gopapy unparse --comments` emits via `cst.Unparse`. Combined
+  with `--check` it round-trips parse + cst-unparse + reparse +
+  dump-diff with comment preservation against the local stdlib.
+- CI step `gopapy unparse --check --comments stdlib` runs against
+  the CPython 3.14 stdlib (1841 files clean, 1 allow-listed for
+  the same parser bug as the no-comments path).
+
 ## [0.1.11] - 2026-04-26
 
 The inverse of `parser.Parse`: take an AST, get back source. Until
@@ -1125,6 +1154,7 @@ generator expressions, `async`/`await` outside trivial expressions,
 literals, octal/binary/unicode-name string escapes.
 
 [Unreleased]: https://github.com/tamnd/gopapy/compare/v0.1.10...HEAD
+[0.1.12]: https://github.com/tamnd/gopapy/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/tamnd/gopapy/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/tamnd/gopapy/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/tamnd/gopapy/compare/v0.1.8...v0.1.9
