@@ -20,11 +20,20 @@ import (
 	"github.com/tamnd/gopapy/v1/cst"
 	"github.com/tamnd/gopapy/v1/diag"
 	"github.com/tamnd/gopapy/v1/linter"
+	"github.com/tamnd/gopapy/v1/lsp"
 	"github.com/tamnd/gopapy/v1/parser"
 	"github.com/tamnd/gopapy/v1/symbols"
 )
 
-const version = "0.1.24"
+const version = "0.1.25"
+
+func init() {
+	// Mirror the CLI version into the LSP server so the initialize
+	// response carries the same string `gopapy version` prints. Done
+	// here rather than in lsp.Serve so the lsp package keeps zero
+	// dependencies on the CLI.
+	lsp.ServerVersion = version
+}
 
 func main() {
 	if err := runWithStdin(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
@@ -83,6 +92,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 		return diagCmd(args[1:], stdout, stderr)
 	case "lint":
 		return lintCmd(args[1:], stdin, stdout, stderr)
+	case "lsp":
+		return lspCmd(args[1:], stdin, stdout, stderr)
 	case "bench":
 		if len(args) < 2 {
 			return fmt.Errorf("bench: missing DIR argument")
@@ -756,6 +767,19 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// lspCmd runs the language-server loop on stdio. The editor manages
+// the lifecycle: starts the process when a Python buffer opens in a
+// configured workspace, sends shutdown+exit on close. No flags — the
+// transport is fixed at stdio with LSP framing, and configuration
+// discovery uses the same pyproject.toml walk the rest of the CLI
+// does.
+func lspCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if len(args) > 0 {
+		return fmt.Errorf("lsp: takes no arguments, got %q", args[0])
+	}
+	return lsp.Serve(stdin, stdout)
+}
+
 // sarifTool builds the SARIF tool descriptor from the current build's
 // version constant. Centralised so stdin-mode and dir-mode write the
 // same `tool.driver` block.
@@ -1151,6 +1175,9 @@ Commands:
                 (path, mtime, size, config-hash). Default location is
                 $XDG_CACHE_HOME/gopapy/lint.cache.
                 --no-cache disables caching for this run.
+  lsp           Run the language-server loop on stdio. Editor-only;
+                publishes diagnostics on textDocument/didOpen and
+                textDocument/didChange (full-content sync).
   bench DIR     Parse every .py under DIR and print parse/emit throughput.
   version       Print the gopapy version.
   help          Show this message.
