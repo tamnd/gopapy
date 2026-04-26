@@ -1,0 +1,6 @@
+imports.py:2:0: warning[F401]: 'os' imported but unused
+imports.py:4:0: warning[F401]: 'OrderedDict' imported but unused
+locals.py:5:4: warning[F841]: local variable 'x' assigned but never used
+redef.py:8:0: warning[F811]: redefinition of unused 'helper'
+redef.py:16:4: warning[F811]: redefinition of unused 'm'
+redef.py:29:4: warning[F811]: redefinition of unused 'x'
