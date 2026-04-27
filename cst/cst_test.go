@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/lex"
+	"github.com/tamnd/gopapy/lex"
 )
 
 func TestParseRoundTrip(t *testing.T) {

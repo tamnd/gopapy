@@ -3,7 +3,7 @@ package cst
 import (
 	"strings"
 
-	"github.com/tamnd/gopapy/v1/ast"
+	"github.com/tamnd/gopapy/ast"
 )
 
 // Unparse renders the file back to Python source, weaving the

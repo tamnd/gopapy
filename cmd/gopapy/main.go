@@ -16,19 +16,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/cst"
-	v1diag "github.com/tamnd/gopapy/v1/diag"
-	"github.com/tamnd/gopapy/v1/linter"
-	"github.com/tamnd/gopapy/v1/lsp"
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/cst"
+	v1diag "github.com/tamnd/gopapy/diag"
+	"github.com/tamnd/gopapy/linter"
+	"github.com/tamnd/gopapy/lsp"
+	"github.com/tamnd/gopapy/parser"
 
 	v2diag "github.com/tamnd/gopapy/v2/diag"
 	"github.com/tamnd/gopapy/v2/parser2"
 	"github.com/tamnd/gopapy/v2/symbols2"
 )
 
-const version = "0.2.3"
+const version = "0.2.5"
 
 func init() {
 	// Mirror the CLI version into the LSP server so the initialize

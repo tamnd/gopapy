@@ -3,7 +3,7 @@ package ast
 import (
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/parser"
 )
 
 // TestEndPos_NonZeroSpans asserts that the End* fields populate to a real

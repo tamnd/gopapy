@@ -3,7 +3,7 @@ package ast
 import (
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/parser"
 )
 
 func dumpString(t *testing.T, src string) string {

@@ -3,9 +3,9 @@ package linter
 import (
 	"sort"
 
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/diag"
-	"github.com/tamnd/gopapy/v1/symbols"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/diag"
+	"github.com/tamnd/gopapy/symbols"
 )
 
 // checkF821 fires when a name is referenced (Load context) but no

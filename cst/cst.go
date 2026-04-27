@@ -15,9 +15,9 @@ package cst
 import (
 	"bytes"
 
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/lex"
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/lex"
+	"github.com/tamnd/gopapy/parser"
 )
 
 // File is a parsed Python source file together with the original

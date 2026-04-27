@@ -1,8 +1,8 @@
 package cst
 
 import (
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/lex"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/lex"
 )
 
 // Position labels how a Comment relates to its host AST node.

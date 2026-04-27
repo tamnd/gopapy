@@ -9,6 +9,39 @@ changes.
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-04-27
+
+### Changed
+
+- **Module path normalised to `github.com/tamnd/gopapy`** (was
+  `github.com/tamnd/gopapy/v1`). Per the Go modules reference, only
+  major versions ≥ 2 require the `/vN` suffix; while gopapy is on the
+  v0.2.x line the bare path is correct. The `v2/` subdirectory is
+  retained as part of the root module so existing
+  `github.com/tamnd/gopapy/v2/parser2` import paths still resolve;
+  package renames follow in v0.2.6.
+- **`go.work` and `v2/go.mod` removed.** The codebase is now a single
+  module with no workspace overlay.
+- **Premature `v2.0.0` and `v2/v2.0.0` tags deleted.** They were
+  pushed early so internal tools could pin to the new parser; gopapy
+  is still in v0.x and minting a v2 tag prematurely would have made
+  any future v2.0.0 release inherit the early snapshot's behaviour
+  contract. The `proxy.golang.org` cache for those refs is immutable;
+  the only known consumer (`gocopy`) flips to
+  `require github.com/tamnd/gopapy v0.2.5` in `gocopy v0.0.17`.
+- CLI version bumped to `0.2.5`.
+
+### Migration
+
+For consumers on `github.com/tamnd/gopapy/v1/...`:
+```diff
+-import "github.com/tamnd/gopapy/v1/parser"
++import "github.com/tamnd/gopapy/parser"
+```
+For consumers on `github.com/tamnd/gopapy/v2/parser2`: the import path
+is unchanged in v0.2.5; rename to `github.com/tamnd/gopapy/parser` lands
+in v0.2.6.
+
 ## [0.2.4] - 2026-04-26
 
 ### Added

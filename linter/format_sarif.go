@@ -5,7 +5,7 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/diag"
 )
 
 // ToolInfo identifies the producer of a SARIF run. The linter package

@@ -1,7 +1,7 @@
-module github.com/tamnd/gopapy/v1
+module github.com/tamnd/gopapy
 
 go 1.26
 
 require github.com/alecthomas/participle/v2 v2.1.4
 
-require github.com/BurntSushi/toml v1.6.0 // indirect
+require github.com/BurntSushi/toml v1.6.0

@@ -7,7 +7,7 @@ import (
 
 	plexer "github.com/alecthomas/participle/v2/lexer"
 
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/parser"
 )
 
 // FromFile converts a participle parse tree into the canonical Python AST.

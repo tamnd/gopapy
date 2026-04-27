@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/diag"
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/diag"
+	"github.com/tamnd/gopapy/parser"
 )
 
 // build is the test helper: parse src to an AST module and run Build.

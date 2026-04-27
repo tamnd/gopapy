@@ -3,7 +3,7 @@ package linter
 import (
 	"strings"
 
-	"github.com/tamnd/gopapy/v1/cst"
+	"github.com/tamnd/gopapy/cst"
 )
 
 // noqaIndex maps a 1-based source line to the suppression scope set

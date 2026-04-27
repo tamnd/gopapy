@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/parser"
 )
 
 // FuzzEmit asserts that FromFile and Unparse do not panic on any

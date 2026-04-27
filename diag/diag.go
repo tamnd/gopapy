@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/tamnd/gopapy/v1/ast"
+	"github.com/tamnd/gopapy/ast"
 )
 
 // Severity orders diagnostics from most to least urgent. SeverityError
