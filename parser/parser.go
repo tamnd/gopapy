@@ -1103,9 +1103,19 @@ func parseInterpExpr(src string, at Pos) (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	e, err := sub.parseExpr()
+	// parseTestlistOrStarExpr handles comma-separated tuples like
+	// {a,b,c} and {name,} (single-element tuple) inside f-strings.
+	e, err := sub.parseTestlistOrStarExpr()
 	if err != nil {
 		return nil, err
+	}
+	// After the expression there may be a NEWLINE token (from a comment
+	// inside the braces: `{expr  # note\n}`). Consume it before the
+	// EOF check so the comment case doesn't appear as trailing tokens.
+	if sub.cur.kind == tkNewline {
+		if err := sub.advance(); err != nil {
+			return nil, err
+		}
 	}
 	if sub.cur.kind != tkEOF {
 		return nil, fmt.Errorf("%d:%d: trailing tokens in f-string expression %q",

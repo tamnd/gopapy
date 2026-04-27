@@ -231,11 +231,92 @@ type fstringSegment struct {
 	selfDocText string          // PEP 701: raw source including '=' when self-doc
 }
 
+// stripLineComments removes `# ...` line comments from s, preserving the
+// newline that follows each comment. Used to clean selfDocText for the AST
+// constant, matching CPython's behaviour of omitting comment text from the
+// self-documenting f-string display string.
+func stripLineComments(s string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == '#' {
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+		} else if c == '"' || c == '\'' {
+			q := c
+			b.WriteByte(c)
+			i++
+			for i < len(s) && s[i] != q {
+				if s[i] == '\\' {
+					b.WriteByte(s[i])
+					i++
+				}
+				if i < len(s) {
+					b.WriteByte(s[i])
+					i++
+				}
+			}
+			if i < len(s) {
+				b.WriteByte(s[i])
+				i++
+			}
+		} else {
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
+}
+
+// lastUnquotedHash returns the index of the last '#' in s that is not inside
+// a single- or double-quoted string literal, or -1 if none found. Used to
+// strip trailing line comments before self-doc '=' detection.
+func lastUnquotedHash(s string) int {
+	result := -1
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == '#' {
+			result = i
+			i++
+		} else if c == '"' || c == '\'' {
+			q := c
+			i++
+			for i < len(s) && s[i] != q {
+				if s[i] == '\\' {
+					i++
+				}
+				i++
+			}
+			if i < len(s) {
+				i++
+			}
+		} else {
+			i++
+		}
+	}
+	return result
+}
+
 // parseSelfDoc detects a PEP 701 self-documenting '=' at the end of raw.
 // Returns (exprPart, selfDocText, true) when found; (TrimSpace(raw), "", false)
 // otherwise. selfDocText is the full raw content including trailing whitespace.
 func parseSelfDoc(raw string) (exprPart, selfDocText string, ok bool) {
 	stripped := strings.TrimRight(raw, " \t\r\n\f\v")
+	// PEP 701: strip a trailing line comment so that f"{expr = # note\n}"
+	// is recognised as self-doc. Only the comment on the LAST line counts —
+	// a '#' earlier in the expression may be inside a string or another
+	// comment that precedes the actual expression.
+	if nl := strings.LastIndexByte(stripped, '\n'); nl >= 0 {
+		lastLine := stripped[nl+1:]
+		if idx := lastUnquotedHash(lastLine); idx >= 0 {
+			stripped = strings.TrimRight(stripped[:nl+1+idx], " \t\r\n\f\v")
+		}
+	} else if idx := lastUnquotedHash(stripped); idx >= 0 {
+		stripped = strings.TrimRight(stripped[:idx], " \t\r\n\f\v")
+	}
 	if len(stripped) == 0 || stripped[len(stripped)-1] != '=' {
 		return strings.TrimSpace(raw), "", false
 	}
@@ -251,7 +332,7 @@ func parseSelfDoc(raw string) (exprPart, selfDocText string, ok bool) {
 		prev == '@' || prev == ':' {
 		return strings.TrimSpace(raw), "", false
 	}
-	return strings.TrimSpace(before), raw, true
+	return strings.TrimSpace(before), stripLineComments(raw), true
 }
 
 // scanner is a single-pass tokenizer with peek-ahead for multi-char
@@ -285,6 +366,65 @@ type scanner struct {
 
 func newScanner(src string) *scanner {
 	return &scanner{src: src, line: 1, col: 0}
+}
+
+// parenFollowedByColon does a read-only byte scan. It is called
+// AFTER peekTok() has already consumed the '(' from the scanner
+// (so s.off sits one byte past '('). Starting at depth=1, it scans
+// forward to find the matching ')' then checks whether ':' follows
+// (possibly after spaces). Used by looksLikeMatchStmt to distinguish
+// `match (expr):` (match statement) from `match(expr)` (function call).
+func (s *scanner) parenFollowedByColon() bool {
+	i := s.off // already past the opening '('
+	src := s.src
+	depth := 1
+	for i < len(src) && depth > 0 {
+		c := src[i]
+		switch c {
+		case '(', '[', '{':
+			depth++
+			i++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 {
+				i++ // past ')'
+				// Skip spaces, tabs, line-continuation, and newlines that
+				// may appear in multi-line with-subjects.
+				for i < len(src) {
+					ch := src[i]
+					if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+						i++
+					} else if ch == '\\' && i+1 < len(src) && src[i+1] == '\n' {
+						i += 2
+					} else {
+						break
+					}
+				}
+				return i < len(src) && src[i] == ':'
+			}
+			i++
+		case '"', '\'':
+			// Skip string literals to avoid counting brackets inside them.
+			q := c
+			i++
+			for i < len(src) && src[i] != q {
+				if src[i] == '\\' {
+					i++
+				}
+				i++
+			}
+			if i < len(src) {
+				i++ // closing quote
+			}
+		case '#':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return false
 }
 
 // newStmtScanner returns a scanner primed for statement-level tokens:
@@ -336,7 +476,7 @@ func (s *scanner) skipSpace() {
 		if s.stmtMode && s.bracketDepth == 0 && c == '\n' {
 			break
 		}
-		if c == ' ' || c == '\t' || c == '\r' {
+		if c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v' {
 			s.advance(1)
 			continue
 		}
@@ -401,6 +541,12 @@ func (s *scanner) nextInternal() (token, error) {
 					s.advance(1)
 					continue
 				}
+				// Form feed and vertical tab reset indent to 0 (CPython rule).
+				if c == '\f' || c == '\v' {
+					indent = 0
+					s.advance(1)
+					continue
+				}
 				break
 			}
 			// Blank line or comment-only line: not a logical line, just
@@ -410,6 +556,14 @@ func (s *scanner) nextInternal() (token, error) {
 			}
 			if s.src[s.off] == '\n' {
 				s.advance(1)
+				continue
+			}
+			// A lone \f or \v on an otherwise-blank line acts as a page
+			// separator; treat the entire line as blank.
+			if s.src[s.off] == '\f' || s.src[s.off] == '\v' {
+				for s.off < len(s.src) && s.src[s.off] != '\n' {
+					s.advance(1)
+				}
 				continue
 			}
 			if s.src[s.off] == '#' {
@@ -847,19 +1001,23 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 			}
 			return token{kind: tkString, val: val, pos: start}, nil
 		}
-		if raw && !triple && c == '\\' && s.off+1 < len(s.src) {
-			// CPython raw-string rule (non-triple): a backslash plus
-			// the following character is consumed as a literal two-byte
-			// unit. Both bytes stay in the value and the second byte
-			// never terminates the string, which is what makes `r'\''`
-			// valid (two chars `\'`) and `r"\\"` end at the second
-			// backslash pair, not the trailing quote.
+		if raw && c == '\\' && s.off+1 < len(s.src) {
+			// CPython raw-string rule: in any raw string (single or
+			// triple-quoted), a backslash plus the following character
+			// is consumed as a literal two-byte unit. Both bytes stay
+			// in the value, and the second byte cannot be the start of
+			// a terminator sequence.
 			//
-			// Triple-quoted raw strings do NOT use this rule — `"""`
-			// always terminates and a leading backslash is just a
-			// literal byte (e.g. `r"""abc\"""` is valid and equals
-			// `abc\`). The triple-quote check at the top of the loop
-			// already handles that case.
+			// For single-quoted: this prevents `r'\''` from terminating
+			// at the `'` after the backslash (result: `\'`, 2 chars).
+			//
+			// For triple-quoted: the triple-quote terminator check runs
+			// at the TOP of the loop, before this branch. So if we are
+			// here with c=='\\', we know the current position is NOT
+			// the start of `"""`. Consuming `\X` as a pair means X is
+			// skipped as a potential first char of `"""`, so
+			// `r"""\""" abc"""` correctly yields `\""" abc` (CPython
+			// verified).
 			b.WriteByte('\\')
 			b.WriteByte(s.src[s.off+1])
 			s.advance(2)
@@ -1075,30 +1233,71 @@ func (s *scanner) scanFTBody(start Pos, quote byte, raw, triple, inSpec bool) ([
 			}
 			return nil, fmt.Errorf("%d:%d: single '}' is not allowed", s.line, s.col)
 		}
+		// Raw f-string backslash rule: consume `\X` as a 2-byte literal
+		// unit for any X that is NOT `{` or `}`. This prevents the
+		// following char from acting as a string terminator or escape
+		// sequence. `\{` and `\}` are NOT absorbed — `{` still opens
+		// an interpolation and `}` still closes a format spec.
+		if raw && c == '\\' && s.off+1 < len(s.src) {
+			next := s.src[s.off+1]
+			if next != '{' && next != '}' {
+				b.WriteByte('\\')
+				b.WriteByte(next)
+				s.advance(2)
+				continue
+			}
+		}
 		if !raw && c == '\\' && s.off+1 < len(s.src) {
 			esc := s.src[s.off+1]
 			switch esc {
 			case 'n':
 				b.WriteByte('\n')
+				s.advance(2)
 			case 't':
 				b.WriteByte('\t')
+				s.advance(2)
 			case 'r':
 				b.WriteByte('\r')
+				s.advance(2)
 			case '\\':
 				b.WriteByte('\\')
+				s.advance(2)
 			case '\'':
 				b.WriteByte('\'')
+				s.advance(2)
 			case '"':
 				b.WriteByte('"')
+				s.advance(2)
 			case '0':
 				b.WriteByte(0)
+				s.advance(2)
 			case '\n':
 				// line continuation
+				s.advance(2)
+			case 'N':
+				// \N{name} — Unicode name escape. Consume through the
+				// closing '}' so the '{' is not mistaken for an
+				// f-string interpolation opener.
+				s.advance(2) // consume \N
+				b.WriteByte('\\')
+				b.WriteByte('N')
+				if s.off < len(s.src) && s.src[s.off] == '{' {
+					b.WriteByte('{')
+					s.advance(1)
+					for s.off < len(s.src) && s.src[s.off] != '}' {
+						b.WriteByte(s.src[s.off])
+						s.advance(1)
+					}
+					if s.off < len(s.src) {
+						b.WriteByte('}')
+						s.advance(1)
+					}
+				}
 			default:
 				b.WriteByte('\\')
 				b.WriteByte(esc)
+				s.advance(2)
 			}
-			s.advance(2)
 			continue
 		}
 		b.WriteByte(c)
@@ -1164,6 +1363,11 @@ func (s *scanner) scanFTInterp(interpPos Pos, outerQuote byte, outerRaw, outerTr
 				return fstringSegment{}, fmt.Errorf("%d:%d: invalid conversion '%c'", s.line, s.col, convCh)
 			}
 			s.advance(1)
+			// Skip whitespace between conversion char and `:` or `}`.
+			// CPython allows e.g. f"{3!s  }" (trailing spaces after conv).
+			for s.off < len(s.src) && (s.src[s.off] == ' ' || s.src[s.off] == '\t') {
+				s.advance(1)
+			}
 			seg := fstringSegment{
 				isInterp:    true,
 				exprSrc:     exprPart,
@@ -1212,8 +1416,15 @@ func (s *scanner) scanFTInterp(interpPos Pos, outerQuote byte, outerRaw, outerTr
 				return fstringSegment{}, err
 			}
 		case c == '#':
-			return fstringSegment{}, fmt.Errorf("%d:%d: comments not allowed in f-string expression",
-				s.line, s.col)
+			// PEP 701 (Python 3.12+): comments are allowed inside
+			// f-string expression braces. Skip from '#' to end of line
+			// (not including the '\n'); the newline is still consumed by
+			// the default branch on the next iteration, and the comment
+			// text ends up in rawExpr where the sub-parser's skipSpace
+			// discards it automatically.
+			for s.off < len(s.src) && s.src[s.off] != '\n' {
+				s.advance(1)
+			}
 		default:
 			s.advance(1)
 		}

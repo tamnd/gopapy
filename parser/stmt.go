@@ -129,13 +129,20 @@ func (p *parser) looksLikeMatchStmt() bool {
 	case tkInt, tkFloat, tkString, tkFString, tkLBrack, tkLBrace,
 		tkMinus, tkPlus, tkTilde, tkStar, tkEllipsis:
 		return true
+	case tkLParen:
+		// `match (expr):` — parenthesised subject. Need to distinguish
+		// from `match(expr)` (a function call with no colon after).
+		// Do a cheap byte scan: skip past the matching ')' and check
+		// whether ':' follows (possibly preceded by spaces).
+		return p.sc.parenFollowedByColon()
 	case tkName:
 		// `match NAME ...` - any name (including `case`, which would
 		// be the next case keyword if the body were empty, but the
 		// grammar requires at least one case so we still commit).
 		return !isReservedKeyword(nxt.val) || nxt.val == "not" ||
 			nxt.val == "lambda" || nxt.val == "await" || nxt.val == "yield" ||
-			nxt.val == "None" || nxt.val == "True" || nxt.val == "False"
+			nxt.val == "None" || nxt.val == "True" || nxt.val == "False" ||
+			isSoftKeyword(nxt.val)
 	}
 	return false
 }
@@ -1019,10 +1026,12 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 	}
 	parens := false
 	if p.cur.kind == tkLParen {
-		// PEP 617 parenthesised with-items. Be lenient: if the parens
-		// turn out to wrap a single tuple expression rather than items
-		// we'll fall back. For v0.1.30 we accept the common case where
-		// all items are listed inside one paren.
+		// PEP 617 parenthesised with-items. We advance past '(' and
+		// parse normally. After consuming the matching ')', we check
+		// whether postfix operators follow — in that case the '(' was
+		// used for line-continuation around a single expression (e.g.
+		// `with (p / 'a').open() as f:` or `with (a if c else b) as f:`),
+		// not as a PEP 617 item list.
 		parens = true
 		if err := p.advance(); err != nil {
 			return nil, err
@@ -1050,6 +1059,63 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 		if _, err := p.expect(tkRParen); err != nil {
 			return nil, err
 		}
+		// If only one item has no 'as' target yet and a postfix operator
+		// follows, the '(…)' was a grouping paren around a single context
+		// manager expression. Continue parsing the trailer (attribute
+		// access, subscript, call) onto that expression, then check for
+		// an 'as' target.
+		if len(items) == 1 && items[0].OptionalVars == nil {
+			ctx := items[0].ContextExpr
+			for p.cur.kind == tkDot || p.cur.kind == tkLBrack || p.cur.kind == tkLParen {
+				switch p.cur.kind {
+				case tkDot:
+					dpos := p.cur.pos
+					if err := p.advance(); err != nil {
+						return nil, err
+					}
+					if p.cur.kind != tkName {
+						return nil, fmt.Errorf("%d:%d: expected name after '.'",
+							p.cur.pos.Line, p.cur.pos.Col)
+					}
+					attr := p.cur.val
+					if err := p.advance(); err != nil {
+						return nil, err
+					}
+					ctx = &Attribute{P: dpos, Value: ctx, Attr: attr}
+				case tkLParen:
+					args, kwargs, callPos, err := p.parseCallArgs()
+					if err != nil {
+						return nil, err
+					}
+					ctx = &Call{P: callPos, Func: ctx, Args: args, Keywords: kwargs}
+				case tkLBrack:
+					spos := p.cur.pos
+					if err := p.advance(); err != nil {
+						return nil, err
+					}
+					slice, err := p.parseSubscriptBody()
+					if err != nil {
+						return nil, err
+					}
+					if _, err := p.expect(tkRBrack); err != nil {
+						return nil, err
+					}
+					ctx = &Subscript{P: spos, Value: ctx, Slice: slice}
+				}
+			}
+			items[0].ContextExpr = ctx
+			// Re-check for an 'as' target after the postfix tail.
+			if p.isKeyword("as") {
+				if err := p.advance(); err != nil {
+					return nil, err
+				}
+				vars, err := p.parseTrailer()
+				if err != nil {
+					return nil, err
+				}
+				items[0].OptionalVars = vars
+			}
+		}
 	}
 	body, err := p.parseBlock()
 	if err != nil {
@@ -1072,10 +1138,11 @@ func (p *parser) parseWithItem() (*WithItem, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		// Single target only: a name, tuple-in-parens, or list. Using
-		// parseTargetList here would eat the top-level commas that
-		// separate with-items.
-		vars, err = p.parseTargetAtom()
+		// Parse the as-target using parseTrailer so that call+subscript
+		// chains are accepted: `with f() as g()[0][1]:` is valid Python.
+		// We do NOT use parseTargetList because the top-level commas
+		// must stay available for separating with-items.
+		vars, err = p.parseTrailer()
 		if err != nil {
 			return nil, err
 		}

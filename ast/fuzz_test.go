@@ -69,6 +69,9 @@ func TestRoundTripFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
+			if strings.HasPrefix(strings.TrimSpace(string(src)), "# parser: new") {
+				t.Skip("new-parser-only fixture; legacy parser skipped")
+			}
 			first, err := parser.ParseFile(name, src)
 			if err != nil {
 				t.Fatalf("first parse: %v", err)

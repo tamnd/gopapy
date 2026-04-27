@@ -28,7 +28,7 @@ import (
 	"github.com/tamnd/gopapy/symbols"
 )
 
-const version = "0.2.11"
+const version = "0.2.12"
 
 func init() {
 	// Mirror the CLI version into the LSP server so the initialize
@@ -70,19 +70,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 		_, err := parseFile2(args[1])
 		return err
 	case "dump":
-		if len(args) < 2 {
-			return fmt.Errorf("dump: missing FILE argument")
-		}
-		src, err := os.ReadFile(args[1])
-		if err != nil {
-			return err
-		}
-		m, err := parser.ParseFile(args[1], string(src))
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(stdout, parser.ASTDump(m))
-		return nil
+		return dumpCmd(args[1:], stdout)
 	case "unparse":
 		return unparseCmd(args[1:], stdout, stderr)
 	case "check":
@@ -117,6 +105,45 @@ func parseFile2(path string) (*parser.Module, error) {
 		return nil, err
 	}
 	return parser.ParseFile(path, string(src))
+}
+
+// dumpCmd implements `gopapy dump [--py 3.X] FILE`.
+// The --py flag records the target Python version for future version-aware
+// dump output (Round 1.5.4); the flag is accepted now so callers can already
+// pass it and the version table is exercised.
+func dumpCmd(args []string, stdout io.Writer) error {
+	pyVer := parser.LatestMinor
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--py", "--python-version":
+			if i+1 >= len(args) {
+				return fmt.Errorf("dump: %s requires a version argument (e.g. 3.12)", args[i])
+			}
+			minor, err := parser.ParseVersion(args[i+1])
+			if err != nil {
+				return fmt.Errorf("dump: %w", err)
+			}
+			pyVer = minor
+			i++
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	if len(rest) == 0 {
+		return fmt.Errorf("dump: missing FILE argument")
+	}
+	_ = parser.FeaturesFor(pyVer) // reserved for Round 1.5.4 version-aware dump
+	src, err := os.ReadFile(rest[0])
+	if err != nil {
+		return err
+	}
+	m, err := parser.ParseFile(rest[0], string(src))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, parser.ASTDump(m))
+	return nil
 }
 
 // checkDir walks DIR and reports parse outcomes for every .py file. The

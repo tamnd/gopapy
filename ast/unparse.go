@@ -805,7 +805,14 @@ func (p *printer) expr(e ExprNode, prec int) {
 			p.write("(")
 		}
 		p.write("await ")
-		p.expr(v.Value, pAwait)
+		// `await await x` is a syntax error; the inner await needs parens.
+		if _, inner := v.Value.(*Await); inner {
+			p.write("(")
+			p.expr(v.Value, 0)
+			p.write(")")
+		} else {
+			p.expr(v.Value, pAwait)
+		}
 		if paren {
 			p.write(")")
 		}

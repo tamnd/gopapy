@@ -3,6 +3,7 @@ package cst
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tamnd/gopapy/ast"
@@ -100,6 +101,9 @@ func TestUnparse_RoundTripGrammarFixtures(t *testing.T) {
 		if err != nil {
 			t.Errorf("read %s: %v", path, err)
 			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(src)), "# parser: new") {
+			continue // new-parser-only fixture; legacy parser skipped
 		}
 		f, err := Parse(path, src)
 		if err != nil {
