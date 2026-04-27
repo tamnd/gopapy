@@ -120,7 +120,7 @@ func (p *parser) parseExpr() (Expr, error) {
 		return p.parseYieldExpr()
 	}
 	// walrus at top level: NAME ':=' expr
-	if p.cur.kind == tkName && !isReservedKeyword(p.cur.val) {
+	if p.cur.kind == tkName && (!isReservedKeyword(p.cur.val) || isSoftKeyword(p.cur.val)) {
 		nxt, err := p.peekTok()
 		if err != nil {
 			return nil, err

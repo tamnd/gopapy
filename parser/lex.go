@@ -847,6 +847,24 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 			}
 			return token{kind: tkString, val: val, pos: start}, nil
 		}
+		if raw && !triple && c == '\\' && s.off+1 < len(s.src) {
+			// CPython raw-string rule (non-triple): a backslash plus
+			// the following character is consumed as a literal two-byte
+			// unit. Both bytes stay in the value and the second byte
+			// never terminates the string, which is what makes `r'\''`
+			// valid (two chars `\'`) and `r"\\"` end at the second
+			// backslash pair, not the trailing quote.
+			//
+			// Triple-quoted raw strings do NOT use this rule — `"""`
+			// always terminates and a leading backslash is just a
+			// literal byte (e.g. `r"""abc\"""` is valid and equals
+			// `abc\`). The triple-quote check at the top of the loop
+			// already handles that case.
+			b.WriteByte('\\')
+			b.WriteByte(s.src[s.off+1])
+			s.advance(2)
+			continue
+		}
 		if !raw && c == '\\' && s.off+1 < len(s.src) {
 			esc := s.src[s.off+1]
 			switch esc {
