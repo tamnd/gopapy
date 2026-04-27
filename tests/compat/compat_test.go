@@ -160,7 +160,7 @@ func runOracleTest(t *testing.T, pyMinor int) {
 			fail++
 			continue
 		}
-		want := strings.TrimRight(string(wantOut), "\n")
+		want := strings.TrimRight(string(wantOut), "\r\n")
 
 		// Get gopapy dump output.
 		gopapyArgs := []string{"dump", "--py", fmt.Sprintf("3.%d", pyMinor), fix}
@@ -171,7 +171,7 @@ func runOracleTest(t *testing.T, pyMinor int) {
 			fail++
 			continue
 		}
-		got := strings.TrimRight(string(gotOut), "\n")
+		got := strings.TrimRight(string(gotOut), "\r\n")
 
 		if got != want {
 			t.Errorf("mismatch for %s:\nwant: %s\n got: %s\ndiff:\n%s",
