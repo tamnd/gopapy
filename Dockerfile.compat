@@ -1,0 +1,16 @@
+FROM golang:1.26-bookworm
+
+# Install uv for fast, pinned Python version management.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Install the Python versions we test against. uv downloads standalone
+# CPython builds so no system packages are needed.
+RUN uv python install 3.9 3.10 3.11 3.12 3.13
+
+WORKDIR /src
+COPY . .
+
+# Build gopapy once; all test scripts use bin/gopapy.
+RUN go build -o bin/gopapy ./cmd/gopapy
+
+CMD ["/bin/bash", "scripts/compat_test.sh"]

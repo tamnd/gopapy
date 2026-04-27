@@ -1,3 +1,4 @@
+# Python 3.14+: template strings (PEP 750)
 a = t"hello"
 b = t""
 c = t"hello {name}"
