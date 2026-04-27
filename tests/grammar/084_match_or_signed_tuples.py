@@ -1,3 +1,4 @@
+# Python 3.10+: match/case statement — or signed tuples (PEP 634)
 # Match or-pattern with deep paren-tuples and signed-number literals;
 # requires sufficient parser lookahead to discriminate.
 match x:

@@ -1,3 +1,4 @@
+# Python 3.10+: match/case statement — softkw subject (PEP 634)
 def f(match, case, type):
     match match:
         case 1:
