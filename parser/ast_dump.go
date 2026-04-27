@@ -10,20 +10,39 @@ import (
 	"unicode"
 )
 
+// dumper holds the output buffer and version-specific flags for ASTDump.
+type dumper struct {
+	b         strings.Builder
+	pyMinor   int
+	showEmpty bool // pyMinor <= 12: print empty/None optional fields
+	py38      bool // pyMinor <= 8: 3.8-specific fields
+}
+
+func newDumper(pyMinor int) *dumper {
+	return &dumper{
+		pyMinor:   pyMinor,
+		showEmpty: pyMinor <= 12,
+		py38:      pyMinor <= 8,
+	}
+}
+
 // ASTDump returns a single-line CPython ast.dump-style rendering of m.
-// The output is byte-identical to Python's ast.dump(ast.parse(src)) for
-// all well-formed modules.
-func ASTDump(m *Module) string {
-	var b strings.Builder
-	b.WriteString("Module(body=[")
+// pyMinor selects the Python 3.x minor version (8–14) for version-aware output.
+func ASTDump(m *Module, pyMinor int) string {
+	d := newDumper(pyMinor)
+	d.b.WriteString("Module(body=[")
 	for i, s := range m.Body {
 		if i > 0 {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		adStmt(&b, s)
+		d.adStmt(s)
 	}
-	b.WriteString("])")
-	return b.String()
+	d.b.WriteByte(']')
+	if d.showEmpty {
+		d.b.WriteString(", type_ignores=[]")
+	}
+	d.b.WriteByte(')')
+	return d.b.String()
 }
 
 // pyRepr returns a Python repr-style quoted string (single-quote preferred).
@@ -156,33 +175,34 @@ func pyFloat(f float64) string {
 }
 
 // adConstValue writes the Python repr of a Constant node's value.
-func adConstValue(b *strings.Builder, kind string, v any) {
+// It is a method because it needs d.py38 for the kind=None field.
+func (d *dumper) adConstValue(kind string, v any) {
 	switch kind {
 	case "None":
-		b.WriteString("None")
+		d.b.WriteString("None")
 	case "True":
-		b.WriteString("True")
+		d.b.WriteString("True")
 	case "False":
-		b.WriteString("False")
+		d.b.WriteString("False")
 	case "Ellipsis":
-		b.WriteString("Ellipsis")
+		d.b.WriteString("Ellipsis")
 	case "str", "u":
 		if s, ok := v.(string); ok {
-			b.WriteString(pyRepr(s))
+			d.b.WriteString(pyRepr(s))
 		}
 	case "bytes":
 		switch bv := v.(type) {
 		case []byte:
-			b.WriteString(pyBytesRepr(bv))
+			d.b.WriteString(pyBytesRepr(bv))
 		case string:
-			b.WriteString(pyBytesRepr([]byte(bv)))
+			d.b.WriteString(pyBytesRepr([]byte(bv)))
 		}
 	case "float":
 		switch fv := v.(type) {
 		case float64:
-			b.WriteString(pyFloat(fv))
+			d.b.WriteString(pyFloat(fv))
 		case float32:
-			b.WriteString(pyFloat(float64(fv)))
+			d.b.WriteString(pyFloat(float64(fv)))
 		}
 	case "complex":
 		// Parser2 stores complex literals as a string like "1j" or "2.5j".
@@ -192,630 +212,700 @@ func adConstValue(b *strings.Builder, kind string, v any) {
 			// ErrRange means overflow (+Inf) or underflow (0.0) — both valid.
 			if err == nil || errors.Is(err, strconv.ErrRange) {
 				if math.IsInf(f, 1) {
-					b.WriteString("inf")
+					d.b.WriteString("inf")
 				} else if math.IsInf(f, -1) {
-					b.WriteString("-inf")
+					d.b.WriteString("-inf")
 				} else {
-					b.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
+					d.b.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
 				}
 			} else {
-				b.WriteString(s)
+				d.b.WriteString(s)
 			}
-			b.WriteByte('j')
+			d.b.WriteByte('j')
 		} else if c, ok := v.(complex128); ok {
 			im := imag(c)
-			b.WriteString(strconv.FormatFloat(im, 'g', -1, 64))
-			b.WriteByte('j')
+			d.b.WriteString(strconv.FormatFloat(im, 'g', -1, 64))
+			d.b.WriteByte('j')
 		}
 	default:
 		// *big.Int prints as decimal via its String() method, which matches
 		// CPython's repr() for large integer constants.
 		if bi, ok := v.(*big.Int); ok {
-			b.WriteString(bi.String())
+			d.b.WriteString(bi.String())
 		} else {
-			fmt.Fprintf(b, "%v", v)
+			fmt.Fprintf(&d.b, "%v", v)
 		}
 	}
 }
 
 // adOp writes an operator name with parentheses, e.g. "Add()".
-func adOp(b *strings.Builder, op string) {
-	b.WriteString(op)
-	b.WriteString("()")
+func (d *dumper) adOp(op string) {
+	d.b.WriteString(op)
+	d.b.WriteString("()")
 }
 
 // adCtx writes ", ctx=Load()" etc.
-func adCtx(b *strings.Builder, ctx string) {
-	b.WriteString(", ctx=")
-	b.WriteString(ctx)
-	b.WriteString("()")
+func (d *dumper) adCtx(ctx string) {
+	d.b.WriteString(", ctx=")
+	d.b.WriteString(ctx)
+	d.b.WriteString("()")
 }
 
-func adStmtList(b *strings.Builder, ss []Stmt) {
-	b.WriteByte('[')
+func (d *dumper) adStmtList(ss []Stmt) {
+	d.b.WriteByte('[')
 	for i, s := range ss {
 		if i > 0 {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		adStmt(b, s)
+		d.adStmt(s)
 	}
-	b.WriteByte(']')
+	d.b.WriteByte(']')
 }
 
-func adExprList(b *strings.Builder, es []Expr, ctx string) {
+func (d *dumper) adExprList(es []Expr, ctx string) {
 	for i, e := range es {
 		if i > 0 {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		adExpr(b, e, ctx)
+		d.adExpr(e, ctx)
 	}
 }
 
-func adStmt(b *strings.Builder, s Stmt) {
+func (d *dumper) adStmt(s Stmt) {
 	if s == nil {
-		b.WriteString("None")
+		d.b.WriteString("None")
 		return
 	}
 	switch n := s.(type) {
 	case *ExprStmt:
-		b.WriteString("Expr(value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("Expr(value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteByte(')')
 
 	case *Assign:
-		b.WriteString("Assign(targets=[")
+		d.b.WriteString("Assign(targets=[")
 		for i, t := range n.Targets {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adExpr(b, t, "Store")
+			d.adExpr(t, "Store")
 		}
-		b.WriteString("], value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("], value=")
+		d.adExpr(n.Value, "Load")
+		if d.py38 {
+			d.b.WriteString(", type_comment=None")
+		}
+		d.b.WriteByte(')')
 
 	case *AugAssign:
-		b.WriteString("AugAssign(target=")
-		adExpr(b, n.Target, "Store")
-		b.WriteString(", op=")
-		adOp(b, n.Op)
-		b.WriteString(", value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("AugAssign(target=")
+		d.adExpr(n.Target, "Store")
+		d.b.WriteString(", op=")
+		d.adOp(n.Op)
+		d.b.WriteString(", value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteByte(')')
 
 	case *AnnAssign:
-		b.WriteString("AnnAssign(target=")
-		adExpr(b, n.Target, "Store")
-		b.WriteString(", annotation=")
-		adExpr(b, n.Annotation, "Load")
+		d.b.WriteString("AnnAssign(target=")
+		d.adExpr(n.Target, "Store")
+		d.b.WriteString(", annotation=")
+		d.adExpr(n.Annotation, "Load")
 		if n.Value != nil {
-			b.WriteString(", value=")
-			adExpr(b, n.Value, "Load")
+			d.b.WriteString(", value=")
+			d.adExpr(n.Value, "Load")
+		} else if d.py38 {
+			d.b.WriteString(", value=None")
 		}
 		if n.Simple {
-			b.WriteString(", simple=1)")
+			d.b.WriteString(", simple=1)")
 		} else {
-			b.WriteString(", simple=0)")
+			d.b.WriteString(", simple=0)")
 		}
 
 	case *Return:
 		if n.Value != nil {
-			b.WriteString("Return(value=")
-			adExpr(b, n.Value, "Load")
-			b.WriteByte(')')
+			d.b.WriteString("Return(value=")
+			d.adExpr(n.Value, "Load")
+			d.b.WriteByte(')')
+		} else if d.py38 {
+			d.b.WriteString("Return(value=None)")
 		} else {
-			b.WriteString("Return()")
+			d.b.WriteString("Return()")
 		}
 
 	case *Delete:
-		b.WriteString("Delete(targets=[")
+		d.b.WriteString("Delete(targets=[")
 		for i, t := range n.Targets {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adExpr(b, t, "Del")
+			d.adExpr(t, "Del")
 		}
-		b.WriteString("])")
+		d.b.WriteString("])")
 
 	case *Pass:
-		b.WriteString("Pass()")
+		d.b.WriteString("Pass()")
 	case *Break:
-		b.WriteString("Break()")
+		d.b.WriteString("Break()")
 	case *Continue:
-		b.WriteString("Continue()")
+		d.b.WriteString("Continue()")
 
 	case *Raise:
 		if n.Exc == nil {
-			b.WriteString("Raise()")
-		} else {
-			b.WriteString("Raise(exc=")
-			adExpr(b, n.Exc, "Load")
-			if n.Cause != nil {
-				b.WriteString(", cause=")
-				adExpr(b, n.Cause, "Load")
+			if d.py38 {
+				d.b.WriteString("Raise(exc=None, cause=None)")
+			} else {
+				d.b.WriteString("Raise()")
 			}
-			b.WriteByte(')')
+		} else {
+			d.b.WriteString("Raise(exc=")
+			d.adExpr(n.Exc, "Load")
+			if n.Cause != nil {
+				d.b.WriteString(", cause=")
+				d.adExpr(n.Cause, "Load")
+			} else if d.py38 {
+				d.b.WriteString(", cause=None")
+			}
+			d.b.WriteByte(')')
 		}
 
 	case *Assert:
-		b.WriteString("Assert(test=")
-		adExpr(b, n.Test, "Load")
+		d.b.WriteString("Assert(test=")
+		d.adExpr(n.Test, "Load")
 		if n.Msg != nil {
-			b.WriteString(", msg=")
-			adExpr(b, n.Msg, "Load")
+			d.b.WriteString(", msg=")
+			d.adExpr(n.Msg, "Load")
+		} else if d.py38 {
+			d.b.WriteString(", msg=None")
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *Global:
-		b.WriteString("Global(names=[")
+		d.b.WriteString("Global(names=[")
 		for i, name := range n.Names {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			b.WriteString(pyRepr(name))
+			d.b.WriteString(pyRepr(name))
 		}
-		b.WriteString("])")
+		d.b.WriteString("])")
 
 	case *Nonlocal:
-		b.WriteString("Nonlocal(names=[")
+		d.b.WriteString("Nonlocal(names=[")
 		for i, name := range n.Names {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			b.WriteString(pyRepr(name))
+			d.b.WriteString(pyRepr(name))
 		}
-		b.WriteString("])")
+		d.b.WriteString("])")
 
 	case *Import:
-		b.WriteString("Import(names=[")
+		d.b.WriteString("Import(names=[")
 		for i, a := range n.Names {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adAlias(b, a)
+			d.adAlias(a)
 		}
-		b.WriteString("])")
+		d.b.WriteString("])")
 
 	case *ImportFrom:
-		b.WriteString("ImportFrom(")
+		d.b.WriteString("ImportFrom(")
 		if n.Module != "" {
-			b.WriteString("module=")
-			b.WriteString(pyRepr(n.Module))
-			b.WriteString(", ")
+			d.b.WriteString("module=")
+			d.b.WriteString(pyRepr(n.Module))
+			d.b.WriteString(", ")
+		} else if d.py38 {
+			d.b.WriteString("module=None, ")
 		}
-		b.WriteString("names=[")
+		d.b.WriteString("names=[")
 		for i, a := range n.Names {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adAlias(b, a)
+			d.adAlias(a)
 		}
-		fmt.Fprintf(b, "], level=%d)", n.Level)
+		fmt.Fprintf(&d.b, "], level=%d)", n.Level)
 
 	case *If:
-		b.WriteString("If(test=")
-		adExpr(b, n.Test, "Load")
-		b.WriteString(", body=")
-		adStmtList(b, n.Body)
-		if len(n.Orelse) > 0 {
-			b.WriteString(", orelse=")
-			adStmtList(b, n.Orelse)
+		d.b.WriteString("If(test=")
+		d.adExpr(n.Test, "Load")
+		d.b.WriteString(", body=")
+		d.adStmtList(n.Body)
+		if len(n.Orelse) > 0 || d.showEmpty {
+			d.b.WriteString(", orelse=")
+			d.adStmtList(n.Orelse)
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *While:
-		b.WriteString("While(test=")
-		adExpr(b, n.Test, "Load")
-		b.WriteString(", body=")
-		adStmtList(b, n.Body)
-		if len(n.Orelse) > 0 {
-			b.WriteString(", orelse=")
-			adStmtList(b, n.Orelse)
+		d.b.WriteString("While(test=")
+		d.adExpr(n.Test, "Load")
+		d.b.WriteString(", body=")
+		d.adStmtList(n.Body)
+		if len(n.Orelse) > 0 || d.showEmpty {
+			d.b.WriteString(", orelse=")
+			d.adStmtList(n.Orelse)
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *For:
-		b.WriteString("For(target=")
-		adExpr(b, n.Target, "Store")
-		b.WriteString(", iter=")
-		adExpr(b, n.Iter, "Load")
-		b.WriteString(", body=")
-		adStmtList(b, n.Body)
-		if len(n.Orelse) > 0 {
-			b.WriteString(", orelse=")
-			adStmtList(b, n.Orelse)
+		d.b.WriteString("For(target=")
+		d.adExpr(n.Target, "Store")
+		d.b.WriteString(", iter=")
+		d.adExpr(n.Iter, "Load")
+		d.b.WriteString(", body=")
+		d.adStmtList(n.Body)
+		if len(n.Orelse) > 0 || d.showEmpty {
+			d.b.WriteString(", orelse=")
+			d.adStmtList(n.Orelse)
 		}
-		b.WriteByte(')')
+		if d.py38 {
+			d.b.WriteString(", type_comment=None")
+		}
+		d.b.WriteByte(')')
 
 	case *AsyncFor:
-		b.WriteString("AsyncFor(target=")
-		adExpr(b, n.Target, "Store")
-		b.WriteString(", iter=")
-		adExpr(b, n.Iter, "Load")
-		b.WriteString(", body=")
-		adStmtList(b, n.Body)
-		if len(n.Orelse) > 0 {
-			b.WriteString(", orelse=")
-			adStmtList(b, n.Orelse)
+		d.b.WriteString("AsyncFor(target=")
+		d.adExpr(n.Target, "Store")
+		d.b.WriteString(", iter=")
+		d.adExpr(n.Iter, "Load")
+		d.b.WriteString(", body=")
+		d.adStmtList(n.Body)
+		if len(n.Orelse) > 0 || d.showEmpty {
+			d.b.WriteString(", orelse=")
+			d.adStmtList(n.Orelse)
 		}
-		b.WriteByte(')')
+		if d.py38 {
+			d.b.WriteString(", type_comment=None")
+		}
+		d.b.WriteByte(')')
 
 	case *With:
-		b.WriteString("With(items=[")
-		adWithItems(b, n.Items)
-		b.WriteString("], body=")
-		adStmtList(b, n.Body)
-		b.WriteByte(')')
+		d.b.WriteString("With(items=[")
+		d.adWithItems(n.Items)
+		d.b.WriteString("], body=")
+		d.adStmtList(n.Body)
+		if d.py38 {
+			d.b.WriteString(", type_comment=None")
+		}
+		d.b.WriteByte(')')
 
 	case *AsyncWith:
-		b.WriteString("AsyncWith(items=[")
-		adWithItems(b, n.Items)
-		b.WriteString("], body=")
-		adStmtList(b, n.Body)
-		b.WriteByte(')')
+		d.b.WriteString("AsyncWith(items=[")
+		d.adWithItems(n.Items)
+		d.b.WriteString("], body=")
+		d.adStmtList(n.Body)
+		if d.py38 {
+			d.b.WriteString(", type_comment=None")
+		}
+		d.b.WriteByte(')')
 
 	case *Try:
-		b.WriteString("Try(body=")
-		adStmtList(b, n.Body)
-		b.WriteString(", handlers=[")
+		d.b.WriteString("Try(body=")
+		d.adStmtList(n.Body)
+		d.b.WriteString(", handlers=[")
 		for i, h := range n.Handlers {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adExceptHandler(b, h)
+			d.adExceptHandler(h)
 		}
-		b.WriteByte(']')
-		if len(n.Orelse) > 0 {
-			b.WriteString(", orelse=")
-			adStmtList(b, n.Orelse)
+		d.b.WriteByte(']')
+		if len(n.Orelse) > 0 || d.showEmpty {
+			d.b.WriteString(", orelse=")
+			d.adStmtList(n.Orelse)
 		}
-		if len(n.Finalbody) > 0 {
-			b.WriteString(", finalbody=")
-			adStmtList(b, n.Finalbody)
+		if len(n.Finalbody) > 0 || d.showEmpty {
+			d.b.WriteString(", finalbody=")
+			d.adStmtList(n.Finalbody)
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *TryStar:
-		b.WriteString("TryStar(body=")
-		adStmtList(b, n.Body)
-		b.WriteString(", handlers=[")
+		d.b.WriteString("TryStar(body=")
+		d.adStmtList(n.Body)
+		d.b.WriteString(", handlers=[")
 		for i, h := range n.Handlers {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adExceptHandler(b, h)
+			d.adExceptHandler(h)
 		}
-		b.WriteByte(']')
-		if len(n.Orelse) > 0 {
-			b.WriteString(", orelse=")
-			adStmtList(b, n.Orelse)
+		d.b.WriteByte(']')
+		if len(n.Orelse) > 0 || d.showEmpty {
+			d.b.WriteString(", orelse=")
+			d.adStmtList(n.Orelse)
 		}
-		if len(n.Finalbody) > 0 {
-			b.WriteString(", finalbody=")
-			adStmtList(b, n.Finalbody)
+		if len(n.Finalbody) > 0 || d.showEmpty {
+			d.b.WriteString(", finalbody=")
+			d.adStmtList(n.Finalbody)
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *FunctionDef:
-		b.WriteString("FunctionDef(name=")
-		b.WriteString(pyRepr(n.Name))
-		b.WriteString(", args=")
-		adArgs(b, n.Args)
-		b.WriteString(", body=")
-		adStmtList(b, n.Body)
-		if len(n.DecoratorList) > 0 {
-			b.WriteString(", decorator_list=[")
-			adExprList(b, n.DecoratorList, "Load")
-			b.WriteByte(']')
+		d.b.WriteString("FunctionDef(name=")
+		d.b.WriteString(pyRepr(n.Name))
+		d.b.WriteString(", args=")
+		d.adArgs(n.Args)
+		d.b.WriteString(", body=")
+		d.adStmtList(n.Body)
+		if len(n.DecoratorList) > 0 || d.showEmpty {
+			d.b.WriteString(", decorator_list=[")
+			d.adExprList(n.DecoratorList, "Load")
+			d.b.WriteByte(']')
 		}
 		if n.Returns != nil {
-			b.WriteString(", returns=")
-			adExpr(b, n.Returns, "Load")
+			d.b.WriteString(", returns=")
+			d.adExpr(n.Returns, "Load")
+		} else if d.py38 {
+			d.b.WriteString(", returns=None")
 		}
-		if len(n.TypeParams) > 0 {
-			b.WriteString(", type_params=[")
-			adTypeParams(b, n.TypeParams)
-			b.WriteByte(']')
+		if d.pyMinor >= 12 && (len(n.TypeParams) > 0 || d.showEmpty) {
+			d.b.WriteString(", type_params=[")
+			d.adTypeParams(n.TypeParams)
+			d.b.WriteByte(']')
 		}
-		b.WriteByte(')')
+		if d.py38 {
+			d.b.WriteString(", type_comment=None")
+		}
+		d.b.WriteByte(')')
 
 	case *AsyncFunctionDef:
-		b.WriteString("AsyncFunctionDef(name=")
-		b.WriteString(pyRepr(n.Name))
-		b.WriteString(", args=")
-		adArgs(b, n.Args)
-		b.WriteString(", body=")
-		adStmtList(b, n.Body)
-		if len(n.DecoratorList) > 0 {
-			b.WriteString(", decorator_list=[")
-			adExprList(b, n.DecoratorList, "Load")
-			b.WriteByte(']')
+		d.b.WriteString("AsyncFunctionDef(name=")
+		d.b.WriteString(pyRepr(n.Name))
+		d.b.WriteString(", args=")
+		d.adArgs(n.Args)
+		d.b.WriteString(", body=")
+		d.adStmtList(n.Body)
+		if len(n.DecoratorList) > 0 || d.showEmpty {
+			d.b.WriteString(", decorator_list=[")
+			d.adExprList(n.DecoratorList, "Load")
+			d.b.WriteByte(']')
 		}
 		if n.Returns != nil {
-			b.WriteString(", returns=")
-			adExpr(b, n.Returns, "Load")
+			d.b.WriteString(", returns=")
+			d.adExpr(n.Returns, "Load")
+		} else if d.py38 {
+			d.b.WriteString(", returns=None")
 		}
-		if len(n.TypeParams) > 0 {
-			b.WriteString(", type_params=[")
-			adTypeParams(b, n.TypeParams)
-			b.WriteByte(']')
+		if d.pyMinor >= 12 && (len(n.TypeParams) > 0 || d.showEmpty) {
+			d.b.WriteString(", type_params=[")
+			d.adTypeParams(n.TypeParams)
+			d.b.WriteByte(']')
 		}
-		b.WriteByte(')')
+		if d.py38 {
+			d.b.WriteString(", type_comment=None")
+		}
+		d.b.WriteByte(')')
 
 	case *ClassDef:
-		b.WriteString("ClassDef(name=")
-		b.WriteString(pyRepr(n.Name))
-		if len(n.Bases) > 0 {
-			b.WriteString(", bases=[")
-			adExprList(b, n.Bases, "Load")
-			b.WriteByte(']')
+		d.b.WriteString("ClassDef(name=")
+		d.b.WriteString(pyRepr(n.Name))
+		if len(n.Bases) > 0 || d.showEmpty {
+			d.b.WriteString(", bases=[")
+			d.adExprList(n.Bases, "Load")
+			d.b.WriteByte(']')
 		}
-		if len(n.Keywords) > 0 {
-			b.WriteString(", keywords=[")
+		if len(n.Keywords) > 0 || d.showEmpty {
+			d.b.WriteString(", keywords=[")
 			for i, kw := range n.Keywords {
 				if i > 0 {
-					b.WriteString(", ")
+					d.b.WriteString(", ")
 				}
-				adKeyword(b, kw)
+				d.adKeyword(kw)
 			}
-			b.WriteByte(']')
+			d.b.WriteByte(']')
 		}
-		b.WriteString(", body=")
-		adStmtList(b, n.Body)
-		if len(n.DecoratorList) > 0 {
-			b.WriteString(", decorator_list=[")
-			adExprList(b, n.DecoratorList, "Load")
-			b.WriteByte(']')
+		d.b.WriteString(", body=")
+		d.adStmtList(n.Body)
+		if len(n.DecoratorList) > 0 || d.showEmpty {
+			d.b.WriteString(", decorator_list=[")
+			d.adExprList(n.DecoratorList, "Load")
+			d.b.WriteByte(']')
 		}
-		if len(n.TypeParams) > 0 {
-			b.WriteString(", type_params=[")
-			adTypeParams(b, n.TypeParams)
-			b.WriteByte(']')
+		if d.pyMinor >= 12 && (len(n.TypeParams) > 0 || d.showEmpty) {
+			d.b.WriteString(", type_params=[")
+			d.adTypeParams(n.TypeParams)
+			d.b.WriteByte(']')
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *TypeAlias:
-		b.WriteString("TypeAlias(name=")
-		adExpr(b, n.Name, "Store")
-		if len(n.TypeParams) > 0 {
-			b.WriteString(", type_params=[")
-			adTypeParams(b, n.TypeParams)
-			b.WriteByte(']')
+		d.b.WriteString("TypeAlias(name=")
+		d.adExpr(n.Name, "Store")
+		// TypeAlias is 3.12+; always show type_params (empty or not) when showEmpty
+		if len(n.TypeParams) > 0 || d.showEmpty {
+			d.b.WriteString(", type_params=[")
+			d.adTypeParams(n.TypeParams)
+			d.b.WriteByte(']')
 		}
-		b.WriteString(", value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteByte(')')
+		d.b.WriteString(", value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteByte(')')
 
 	case *Match:
-		b.WriteString("Match(subject=")
-		adExpr(b, n.Subject, "Load")
-		b.WriteString(", cases=[")
+		d.b.WriteString("Match(subject=")
+		d.adExpr(n.Subject, "Load")
+		d.b.WriteString(", cases=[")
 		for i, c := range n.Cases {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adMatchCase(b, c)
+			d.adMatchCase(c)
 		}
-		b.WriteString("])")
+		d.b.WriteString("])")
 
 	default:
-		fmt.Fprintf(b, "<unknown stmt %T>", s)
+		fmt.Fprintf(&d.b, "<unknown stmt %T>", s)
 	}
 }
 
-func adExpr(b *strings.Builder, e Expr, ctx string) {
+func (d *dumper) adExpr(e Expr, ctx string) {
 	if e == nil {
-		b.WriteString("None")
+		d.b.WriteString("None")
 		return
 	}
 	switch n := e.(type) {
 	case *Constant:
-		b.WriteString("Constant(value=")
-		adConstValue(b, n.Kind, n.Value)
+		d.b.WriteString("Constant(value=")
+		d.adConstValue(n.Kind, n.Value)
 		if n.Kind == "u" {
-			b.WriteString(", kind='u'")
+			d.b.WriteString(", kind='u'")
+		} else if d.py38 {
+			// In 3.8, kind=None is printed for all non-u-string constants
+			d.b.WriteString(", kind=None")
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *Name:
-		b.WriteString("Name(id=")
-		b.WriteString(pyRepr(n.Id))
-		adCtx(b, ctx)
-		b.WriteByte(')')
+		d.b.WriteString("Name(id=")
+		d.b.WriteString(pyRepr(n.Id))
+		d.adCtx(ctx)
+		d.b.WriteByte(')')
 
 	case *Attribute:
-		b.WriteString("Attribute(value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteString(", attr=")
-		b.WriteString(pyRepr(n.Attr))
-		adCtx(b, ctx)
-		b.WriteByte(')')
+		d.b.WriteString("Attribute(value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteString(", attr=")
+		d.b.WriteString(pyRepr(n.Attr))
+		d.adCtx(ctx)
+		d.b.WriteByte(')')
 
 	case *Subscript:
-		b.WriteString("Subscript(value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteString(", slice=")
-		adExpr(b, n.Slice, "Load")
-		adCtx(b, ctx)
-		b.WriteByte(')')
+		d.b.WriteString("Subscript(value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteString(", slice=")
+		if d.py38 {
+			_, isSlice := n.Slice.(*Slice)
+			if !isSlice {
+				d.b.WriteString("Index(value=")
+				d.adExpr(n.Slice, "Load")
+				d.b.WriteByte(')')
+			} else {
+				d.adExpr(n.Slice, "Load")
+			}
+		} else {
+			d.adExpr(n.Slice, "Load")
+		}
+		d.adCtx(ctx)
+		d.b.WriteByte(')')
 
 	case *Starred:
-		b.WriteString("Starred(value=")
-		adExpr(b, n.Value, ctx)
-		adCtx(b, ctx)
-		b.WriteByte(')')
+		d.b.WriteString("Starred(value=")
+		d.adExpr(n.Value, ctx)
+		d.adCtx(ctx)
+		d.b.WriteByte(')')
 
 	case *List:
-		b.WriteString("List(")
+		d.b.WriteString("List(")
 		if len(n.Elts) > 0 {
-			b.WriteString("elts=[")
-			adExprList(b, n.Elts, ctx)
-			b.WriteString("], ctx=")
-			b.WriteString(ctx)
-			b.WriteString("())")
+			d.b.WriteString("elts=[")
+			d.adExprList(n.Elts, ctx)
+			d.b.WriteString("], ctx=")
+			d.b.WriteString(ctx)
+			d.b.WriteString("())")
+		} else if d.showEmpty {
+			d.b.WriteString("elts=[], ctx=")
+			d.b.WriteString(ctx)
+			d.b.WriteString("())")
 		} else {
-			b.WriteString("ctx=")
-			b.WriteString(ctx)
-			b.WriteString("())")
+			d.b.WriteString("ctx=")
+			d.b.WriteString(ctx)
+			d.b.WriteString("())")
 		}
 
 	case *Tuple:
-		b.WriteString("Tuple(")
+		d.b.WriteString("Tuple(")
 		if len(n.Elts) > 0 {
-			b.WriteString("elts=[")
-			adExprList(b, n.Elts, ctx)
-			b.WriteString("], ctx=")
-			b.WriteString(ctx)
-			b.WriteString("())")
+			d.b.WriteString("elts=[")
+			d.adExprList(n.Elts, ctx)
+			d.b.WriteString("], ctx=")
+			d.b.WriteString(ctx)
+			d.b.WriteString("())")
+		} else if d.showEmpty {
+			d.b.WriteString("elts=[], ctx=")
+			d.b.WriteString(ctx)
+			d.b.WriteString("())")
 		} else {
-			b.WriteString("ctx=")
-			b.WriteString(ctx)
-			b.WriteString("())")
+			d.b.WriteString("ctx=")
+			d.b.WriteString(ctx)
+			d.b.WriteString("())")
 		}
 
 	case *Set:
-		b.WriteString("Set(elts=[")
-		adExprList(b, n.Elts, "Load")
-		b.WriteString("])")
+		d.b.WriteString("Set(elts=[")
+		d.adExprList(n.Elts, "Load")
+		d.b.WriteString("])")
 
 	case *Dict:
-		b.WriteString("Dict(keys=[")
+		d.b.WriteString("Dict(keys=[")
 		for i, k := range n.Keys {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
 			if k == nil {
-				b.WriteString("None")
+				d.b.WriteString("None")
 			} else {
-				adExpr(b, k, "Load")
+				d.adExpr(k, "Load")
 			}
 		}
-		b.WriteString("], values=[")
-		adExprList(b, n.Values, "Load")
-		b.WriteString("])")
+		d.b.WriteString("], values=[")
+		d.adExprList(n.Values, "Load")
+		d.b.WriteString("])")
 
 	case *BinOp:
-		b.WriteString("BinOp(left=")
-		adExpr(b, n.Left, "Load")
-		b.WriteString(", op=")
-		adOp(b, n.Op)
-		b.WriteString(", right=")
-		adExpr(b, n.Right, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("BinOp(left=")
+		d.adExpr(n.Left, "Load")
+		d.b.WriteString(", op=")
+		d.adOp(n.Op)
+		d.b.WriteString(", right=")
+		d.adExpr(n.Right, "Load")
+		d.b.WriteByte(')')
 
 	case *UnaryOp:
-		b.WriteString("UnaryOp(op=")
-		adOp(b, n.Op)
-		b.WriteString(", operand=")
-		adExpr(b, n.Operand, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("UnaryOp(op=")
+		d.adOp(n.Op)
+		d.b.WriteString(", operand=")
+		d.adExpr(n.Operand, "Load")
+		d.b.WriteByte(')')
 
 	case *BoolOp:
-		b.WriteString("BoolOp(op=")
-		adOp(b, n.Op)
-		b.WriteString(", values=[")
-		adExprList(b, n.Values, "Load")
-		b.WriteString("])")
+		d.b.WriteString("BoolOp(op=")
+		d.adOp(n.Op)
+		d.b.WriteString(", values=[")
+		d.adExprList(n.Values, "Load")
+		d.b.WriteString("])")
 
 	case *Compare:
-		b.WriteString("Compare(left=")
-		adExpr(b, n.Left, "Load")
-		b.WriteString(", ops=[")
+		d.b.WriteString("Compare(left=")
+		d.adExpr(n.Left, "Load")
+		d.b.WriteString(", ops=[")
 		for i, op := range n.Ops {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adOp(b, op)
+			d.adOp(op)
 		}
-		b.WriteString("], comparators=[")
-		adExprList(b, n.Comparators, "Load")
-		b.WriteString("])")
+		d.b.WriteString("], comparators=[")
+		d.adExprList(n.Comparators, "Load")
+		d.b.WriteString("])")
 
 	case *Call:
-		b.WriteString("Call(func=")
-		adExpr(b, n.Func, "Load")
-		if len(n.Args) > 0 {
-			b.WriteString(", args=[")
-			adExprList(b, n.Args, "Load")
-			b.WriteByte(']')
+		d.b.WriteString("Call(func=")
+		d.adExpr(n.Func, "Load")
+		if len(n.Args) > 0 || d.showEmpty {
+			d.b.WriteString(", args=[")
+			d.adExprList(n.Args, "Load")
+			d.b.WriteByte(']')
 		}
-		if len(n.Keywords) > 0 {
-			b.WriteString(", keywords=[")
+		if len(n.Keywords) > 0 || d.showEmpty {
+			d.b.WriteString(", keywords=[")
 			for i, kw := range n.Keywords {
 				if i > 0 {
-					b.WriteString(", ")
+					d.b.WriteString(", ")
 				}
-				adKeyword(b, kw)
+				d.adKeyword(kw)
 			}
-			b.WriteByte(']')
+			d.b.WriteByte(']')
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *IfExp:
-		b.WriteString("IfExp(test=")
-		adExpr(b, n.Test, "Load")
-		b.WriteString(", body=")
-		adExpr(b, n.Body, "Load")
-		b.WriteString(", orelse=")
-		adExpr(b, n.OrElse, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("IfExp(test=")
+		d.adExpr(n.Test, "Load")
+		d.b.WriteString(", body=")
+		d.adExpr(n.Body, "Load")
+		d.b.WriteString(", orelse=")
+		d.adExpr(n.OrElse, "Load")
+		d.b.WriteByte(')')
 
 	case *Lambda:
-		b.WriteString("Lambda(args=")
-		adArgs(b, n.Args)
-		b.WriteString(", body=")
-		adExpr(b, n.Body, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("Lambda(args=")
+		d.adArgs(n.Args)
+		d.b.WriteString(", body=")
+		d.adExpr(n.Body, "Load")
+		d.b.WriteByte(')')
 
 	case *NamedExpr:
-		b.WriteString("NamedExpr(target=")
-		adExpr(b, n.Target, "Store")
-		b.WriteString(", value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("NamedExpr(target=")
+		d.adExpr(n.Target, "Store")
+		d.b.WriteString(", value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteByte(')')
 
 	case *Await:
-		b.WriteString("Await(value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("Await(value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteByte(')')
 
 	case *Yield:
 		if n.Value != nil {
-			b.WriteString("Yield(value=")
-			adExpr(b, n.Value, "Load")
-			b.WriteByte(')')
+			d.b.WriteString("Yield(value=")
+			d.adExpr(n.Value, "Load")
+			d.b.WriteByte(')')
+		} else if d.py38 {
+			d.b.WriteString("Yield(value=None)")
 		} else {
-			b.WriteString("Yield()")
+			d.b.WriteString("Yield()")
 		}
 
 	case *YieldFrom:
-		b.WriteString("YieldFrom(value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("YieldFrom(value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteByte(')')
 
 	case *JoinedStr:
 		if len(n.Values) == 0 {
-			b.WriteString("JoinedStr()")
+			if d.showEmpty {
+				d.b.WriteString("JoinedStr(values=[])")
+			} else {
+				d.b.WriteString("JoinedStr()")
+			}
 		} else {
-			b.WriteString("JoinedStr(values=[")
+			d.b.WriteString("JoinedStr(values=[")
 			for i, v := range n.Values {
 				if i > 0 {
-					b.WriteString(", ")
+					d.b.WriteString(", ")
 				}
-				adExpr(b, v, "Load")
+				d.adExpr(v, "Load")
 			}
-			b.WriteString("])")
+			d.b.WriteString("])")
 		}
 
 	case *FormattedValue:
-		b.WriteString("FormattedValue(value=")
-		adExpr(b, n.Value, "Load")
-		fmt.Fprintf(b, ", conversion=%d", n.Conversion)
+		d.b.WriteString("FormattedValue(value=")
+		d.adExpr(n.Value, "Load")
+		fmt.Fprintf(&d.b, ", conversion=%d", n.Conversion)
 		if n.FormatSpec != nil {
-			b.WriteString(", format_spec=")
-			adExpr(b, n.FormatSpec, "Load")
+			d.b.WriteString(", format_spec=")
+			d.adExpr(n.FormatSpec, "Load")
+		} else if d.py38 {
+			d.b.WriteString(", format_spec=None")
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *TemplateStr:
 		// CPython 3.14 emits a flat values=[...] list, interleaving
@@ -836,488 +926,549 @@ func adExpr(b *strings.Builder, e Expr, ctx string) {
 			}
 		}
 		if len(flat) == 0 {
-			b.WriteString("TemplateStr()")
+			d.b.WriteString("TemplateStr()")
 		} else {
-			b.WriteString("TemplateStr(values=[")
+			d.b.WriteString("TemplateStr(values=[")
 			for i, it := range flat {
 				if i > 0 {
-					b.WriteString(", ")
+					d.b.WriteString(", ")
 				}
 				if it.str != nil {
-					adExpr(b, it.str, "Load")
+					d.adExpr(it.str, "Load")
 				} else {
-					adExpr(b, it.interp, "Load")
+					d.adExpr(it.interp, "Load")
 				}
 			}
-			b.WriteString("])")
+			d.b.WriteString("])")
 		}
 
 	case *Interpolation:
-		b.WriteString("Interpolation(value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteString(", str=")
-		b.WriteString(pyRepr(n.Str))
-		fmt.Fprintf(b, ", conversion=%d", n.Conversion)
+		d.b.WriteString("Interpolation(value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteString(", str=")
+		d.b.WriteString(pyRepr(n.Str))
+		fmt.Fprintf(&d.b, ", conversion=%d", n.Conversion)
 		if n.FormatSpec != nil {
-			b.WriteString(", format_spec=")
-			adExpr(b, n.FormatSpec, "Load")
+			d.b.WriteString(", format_spec=")
+			d.adExpr(n.FormatSpec, "Load")
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *Slice:
-		first := true
-		buf := &strings.Builder{}
-		if n.Lower != nil {
-			buf.WriteString("lower=")
-			adExpr(buf, n.Lower, "Load")
-			first = false
-		}
-		if n.Upper != nil {
-			if !first {
-				buf.WriteString(", ")
+		if d.py38 {
+			// In 3.8, always print all three fields, even when nil
+			d.b.WriteString("Slice(lower=")
+			if n.Lower != nil {
+				d.adExpr(n.Lower, "Load")
+			} else {
+				d.b.WriteString("None")
 			}
-			buf.WriteString("upper=")
-			adExpr(buf, n.Upper, "Load")
-			first = false
-		}
-		if n.Step != nil {
-			if !first {
-				buf.WriteString(", ")
+			d.b.WriteString(", upper=")
+			if n.Upper != nil {
+				d.adExpr(n.Upper, "Load")
+			} else {
+				d.b.WriteString("None")
 			}
-			buf.WriteString("step=")
-			adExpr(buf, n.Step, "Load")
+			d.b.WriteString(", step=")
+			if n.Step != nil {
+				d.adExpr(n.Step, "Load")
+			} else {
+				d.b.WriteString("None")
+			}
+			d.b.WriteByte(')')
+		} else {
+			first := true
+			buf := &strings.Builder{}
+			if n.Lower != nil {
+				buf.WriteString("lower=")
+				tmpD := &dumper{pyMinor: d.pyMinor, showEmpty: d.showEmpty, py38: d.py38}
+				tmpD.adExpr(n.Lower, "Load")
+				buf.WriteString(tmpD.b.String())
+				first = false
+			}
+			if n.Upper != nil {
+				if !first {
+					buf.WriteString(", ")
+				}
+				buf.WriteString("upper=")
+				tmpD := &dumper{pyMinor: d.pyMinor, showEmpty: d.showEmpty, py38: d.py38}
+				tmpD.adExpr(n.Upper, "Load")
+				buf.WriteString(tmpD.b.String())
+				first = false
+			}
+			if n.Step != nil {
+				if !first {
+					buf.WriteString(", ")
+				}
+				buf.WriteString("step=")
+				tmpD := &dumper{pyMinor: d.pyMinor, showEmpty: d.showEmpty, py38: d.py38}
+				tmpD.adExpr(n.Step, "Load")
+				buf.WriteString(tmpD.b.String())
+			}
+			d.b.WriteString("Slice(")
+			d.b.WriteString(buf.String())
+			d.b.WriteByte(')')
 		}
-		b.WriteString("Slice(")
-		b.WriteString(buf.String())
-		b.WriteByte(')')
 
 	case *ListComp:
-		b.WriteString("ListComp(elt=")
-		adExpr(b, n.Elt, "Load")
-		b.WriteString(", generators=[")
-		adComps(b, n.Gens)
-		b.WriteString("])")
+		d.b.WriteString("ListComp(elt=")
+		d.adExpr(n.Elt, "Load")
+		d.b.WriteString(", generators=[")
+		d.adComps(n.Gens)
+		d.b.WriteString("])")
 
 	case *SetComp:
-		b.WriteString("SetComp(elt=")
-		adExpr(b, n.Elt, "Load")
-		b.WriteString(", generators=[")
-		adComps(b, n.Gens)
-		b.WriteString("])")
+		d.b.WriteString("SetComp(elt=")
+		d.adExpr(n.Elt, "Load")
+		d.b.WriteString(", generators=[")
+		d.adComps(n.Gens)
+		d.b.WriteString("])")
 
 	case *DictComp:
-		b.WriteString("DictComp(key=")
-		adExpr(b, n.Key, "Load")
-		b.WriteString(", value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteString(", generators=[")
-		adComps(b, n.Gens)
-		b.WriteString("])")
+		d.b.WriteString("DictComp(key=")
+		d.adExpr(n.Key, "Load")
+		d.b.WriteString(", value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteString(", generators=[")
+		d.adComps(n.Gens)
+		d.b.WriteString("])")
 
 	case *GeneratorExp:
-		b.WriteString("GeneratorExp(elt=")
-		adExpr(b, n.Elt, "Load")
-		b.WriteString(", generators=[")
-		adComps(b, n.Gens)
-		b.WriteString("])")
+		d.b.WriteString("GeneratorExp(elt=")
+		d.adExpr(n.Elt, "Load")
+		d.b.WriteString(", generators=[")
+		d.adComps(n.Gens)
+		d.b.WriteString("])")
 
 	default:
-		fmt.Fprintf(b, "<unknown expr %T>", e)
+		fmt.Fprintf(&d.b, "<unknown expr %T>", e)
 	}
 }
 
 // adArgs writes an arguments(...) node.
-// Fields are omitted when empty/None, matching CPython 3.14 behavior.
-func adArgs(b *strings.Builder, a *Arguments) {
+func (d *dumper) adArgs(a *Arguments) {
 	if a == nil {
-		b.WriteString("arguments()")
+		d.b.WriteString("arguments()")
 		return
 	}
-	b.WriteString("arguments(")
+	d.b.WriteString("arguments(")
 	sep := false
-	if len(a.PosOnly) > 0 {
-		b.WriteString("posonlyargs=[")
+	if len(a.PosOnly) > 0 || d.showEmpty {
+		d.b.WriteString("posonlyargs=[")
 		for i, p := range a.PosOnly {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adArg(b, p)
+			d.adArg(p)
 		}
-		b.WriteByte(']')
+		d.b.WriteByte(']')
 		sep = true
 	}
-	if len(a.Args) > 0 {
+	if len(a.Args) > 0 || d.showEmpty {
 		if sep {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		b.WriteString("args=[")
+		d.b.WriteString("args=[")
 		for i, p := range a.Args {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adArg(b, p)
+			d.adArg(p)
 		}
-		b.WriteByte(']')
+		d.b.WriteByte(']')
 		sep = true
 	}
 	if a.Vararg != nil {
 		if sep {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		b.WriteString("vararg=")
-		adArg(b, a.Vararg)
+		d.b.WriteString("vararg=")
+		d.adArg(a.Vararg)
+		sep = true
+	} else if d.py38 {
+		// Only 3.8 prints vararg=None
+		if sep {
+			d.b.WriteString(", ")
+		}
+		d.b.WriteString("vararg=None")
 		sep = true
 	}
-	if len(a.KwOnly) > 0 {
+	if len(a.KwOnly) > 0 || d.showEmpty {
 		if sep {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		b.WriteString("kwonlyargs=[")
+		d.b.WriteString("kwonlyargs=[")
 		for i, p := range a.KwOnly {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adArg(b, p)
+			d.adArg(p)
 		}
-		b.WriteByte(']')
+		d.b.WriteByte(']')
 		sep = true
 	}
-	if len(a.KwOnlyDef) > 0 {
+	if len(a.KwOnlyDef) > 0 || d.showEmpty {
 		if sep {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		b.WriteString("kw_defaults=[")
-		for i, d := range a.KwOnlyDef {
+		d.b.WriteString("kw_defaults=[")
+		for i, def := range a.KwOnlyDef {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			if d == nil {
-				b.WriteString("None")
+			if def == nil {
+				d.b.WriteString("None")
 			} else {
-				adExpr(b, d, "Load")
+				d.adExpr(def, "Load")
 			}
 		}
-		b.WriteByte(']')
+		d.b.WriteByte(']')
 		sep = true
 	}
 	if a.Kwarg != nil {
 		if sep {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		b.WriteString("kwarg=")
-		adArg(b, a.Kwarg)
+		d.b.WriteString("kwarg=")
+		d.adArg(a.Kwarg)
+		sep = true
+	} else if d.py38 {
+		// Only 3.8 prints kwarg=None
+		if sep {
+			d.b.WriteString(", ")
+		}
+		d.b.WriteString("kwarg=None")
 		sep = true
 	}
-	if len(a.Defaults) > 0 {
+	if len(a.Defaults) > 0 || d.showEmpty {
 		if sep {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		b.WriteString("defaults=[")
-		adExprList(b, a.Defaults, "Load")
-		b.WriteByte(']')
+		d.b.WriteString("defaults=[")
+		d.adExprList(a.Defaults, "Load")
+		d.b.WriteByte(']')
 	}
-	b.WriteByte(')')
+	d.b.WriteByte(')')
 }
 
 // adArg writes a single arg(...) node.
-func adArg(b *strings.Builder, a *Arg) {
-	b.WriteString("arg(arg=")
-	b.WriteString(pyRepr(a.Name))
+func (d *dumper) adArg(a *Arg) {
+	d.b.WriteString("arg(arg=")
+	d.b.WriteString(pyRepr(a.Name))
 	if a.Annotation != nil {
-		b.WriteString(", annotation=")
-		adExpr(b, a.Annotation, "Load")
+		d.b.WriteString(", annotation=")
+		d.adExpr(a.Annotation, "Load")
+	} else if d.py38 {
+		d.b.WriteString(", annotation=None")
 	}
-	b.WriteByte(')')
+	if d.py38 {
+		d.b.WriteString(", type_comment=None")
+	}
+	d.b.WriteByte(')')
 }
 
 // adComps writes the generators list contents (without outer brackets).
-func adComps(b *strings.Builder, gens []*Comprehension) {
+func (d *dumper) adComps(gens []*Comprehension) {
 	for i, g := range gens {
 		if i > 0 {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		b.WriteString("comprehension(target=")
-		adExpr(b, g.Target, "Store")
-		b.WriteString(", iter=")
-		adExpr(b, g.Iter, "Load")
-		if len(g.Ifs) > 0 {
-			b.WriteString(", ifs=[")
-			adExprList(b, g.Ifs, "Load")
-			b.WriteByte(']')
+		d.b.WriteString("comprehension(target=")
+		d.adExpr(g.Target, "Store")
+		d.b.WriteString(", iter=")
+		d.adExpr(g.Iter, "Load")
+		if len(g.Ifs) > 0 || d.showEmpty {
+			d.b.WriteString(", ifs=[")
+			d.adExprList(g.Ifs, "Load")
+			d.b.WriteByte(']')
 		}
 		if g.IsAsync {
-			b.WriteString(", is_async=1)")
+			d.b.WriteString(", is_async=1)")
 		} else {
-			b.WriteString(", is_async=0)")
+			d.b.WriteString(", is_async=0)")
 		}
 	}
 }
 
 // adWithItems writes the withitem list contents (without outer brackets).
-func adWithItems(b *strings.Builder, items []*WithItem) {
+func (d *dumper) adWithItems(items []*WithItem) {
 	for i, it := range items {
 		if i > 0 {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		b.WriteString("withitem(context_expr=")
-		adExpr(b, it.ContextExpr, "Load")
+		d.b.WriteString("withitem(context_expr=")
+		d.adExpr(it.ContextExpr, "Load")
 		if it.OptionalVars != nil {
-			b.WriteString(", optional_vars=")
-			adExpr(b, it.OptionalVars, "Store")
+			d.b.WriteString(", optional_vars=")
+			d.adExpr(it.OptionalVars, "Store")
+		} else if d.py38 {
+			d.b.WriteString(", optional_vars=None")
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 	}
 }
 
 // adExceptHandler writes an ExceptHandler(...) node.
-func adExceptHandler(b *strings.Builder, h *ExceptHandler) {
-	b.WriteString("ExceptHandler(")
+func (d *dumper) adExceptHandler(h *ExceptHandler) {
+	d.b.WriteString("ExceptHandler(")
 	sep := false
 	if h.Type != nil {
-		b.WriteString("type=")
-		adExpr(b, h.Type, "Load")
+		d.b.WriteString("type=")
+		d.adExpr(h.Type, "Load")
 		sep = true
 	}
 	if h.Name != "" {
 		if sep {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
-		b.WriteString("name=")
-		b.WriteString(pyRepr(h.Name))
+		d.b.WriteString("name=")
+		d.b.WriteString(pyRepr(h.Name))
 		sep = true
 	}
 	if sep {
-		b.WriteString(", ")
+		d.b.WriteString(", ")
 	}
-	b.WriteString("body=")
-	adStmtList(b, h.Body)
-	b.WriteByte(')')
+	d.b.WriteString("body=")
+	d.adStmtList(h.Body)
+	d.b.WriteByte(')')
 }
 
 // adAlias writes an alias(...) node.
-func adAlias(b *strings.Builder, a *Alias) {
-	b.WriteString("alias(name=")
-	b.WriteString(pyRepr(a.Name))
+func (d *dumper) adAlias(a *Alias) {
+	d.b.WriteString("alias(name=")
+	d.b.WriteString(pyRepr(a.Name))
 	if a.Asname != "" {
-		b.WriteString(", asname=")
-		b.WriteString(pyRepr(a.Asname))
+		d.b.WriteString(", asname=")
+		d.b.WriteString(pyRepr(a.Asname))
+	} else if d.py38 {
+		d.b.WriteString(", asname=None")
 	}
-	b.WriteByte(')')
+	d.b.WriteByte(')')
 }
 
 // adKeyword writes a keyword(...) node.
-func adKeyword(b *strings.Builder, kw *Keyword) {
-	b.WriteString("keyword(")
+func (d *dumper) adKeyword(kw *Keyword) {
+	d.b.WriteString("keyword(")
 	if kw.Arg != "" {
-		b.WriteString("arg=")
-		b.WriteString(pyRepr(kw.Arg))
-		b.WriteString(", ")
+		d.b.WriteString("arg=")
+		d.b.WriteString(pyRepr(kw.Arg))
+		d.b.WriteString(", ")
+	} else if d.py38 {
+		d.b.WriteString("arg=None, ")
 	}
-	b.WriteString("value=")
-	adExpr(b, kw.Value, "Load")
-	b.WriteByte(')')
+	d.b.WriteString("value=")
+	d.adExpr(kw.Value, "Load")
+	d.b.WriteByte(')')
 }
 
 // adMatchCase writes a match_case(...) node.
-func adMatchCase(b *strings.Builder, c *MatchCase) {
-	b.WriteString("match_case(pattern=")
-	adPattern(b, c.Pattern)
+func (d *dumper) adMatchCase(c *MatchCase) {
+	d.b.WriteString("match_case(pattern=")
+	d.adPattern(c.Pattern)
 	if c.Guard != nil {
-		b.WriteString(", guard=")
-		adExpr(b, c.Guard, "Load")
+		d.b.WriteString(", guard=")
+		d.adExpr(c.Guard, "Load")
 	}
-	b.WriteString(", body=")
-	adStmtList(b, c.Body)
-	b.WriteByte(')')
+	d.b.WriteString(", body=")
+	d.adStmtList(c.Body)
+	d.b.WriteByte(')')
 }
 
-func adPattern(b *strings.Builder, p Pattern) {
+func (d *dumper) adPattern(p Pattern) {
 	if p == nil {
-		b.WriteString("None")
+		d.b.WriteString("None")
 		return
 	}
 	switch n := p.(type) {
 	case *MatchValue:
-		b.WriteString("MatchValue(value=")
-		adExpr(b, n.Value, "Load")
-		b.WriteByte(')')
+		d.b.WriteString("MatchValue(value=")
+		d.adExpr(n.Value, "Load")
+		d.b.WriteByte(')')
 
 	case *MatchSingleton:
-		b.WriteString("MatchSingleton(value=")
+		d.b.WriteString("MatchSingleton(value=")
 		switch v := n.Value.(type) {
 		case nil:
-			b.WriteString("None")
+			d.b.WriteString("None")
 		case bool:
 			if v {
-				b.WriteString("True")
+				d.b.WriteString("True")
 			} else {
-				b.WriteString("False")
+				d.b.WriteString("False")
 			}
 		default:
-			fmt.Fprintf(b, "%v", n.Value)
+			fmt.Fprintf(&d.b, "%v", n.Value)
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *MatchSequence:
 		if len(n.Patterns) == 0 {
-			b.WriteString("MatchSequence()")
+			if d.showEmpty {
+				d.b.WriteString("MatchSequence(patterns=[])")
+			} else {
+				d.b.WriteString("MatchSequence()")
+			}
 		} else {
-			b.WriteString("MatchSequence(patterns=[")
+			d.b.WriteString("MatchSequence(patterns=[")
 			for i, q := range n.Patterns {
 				if i > 0 {
-					b.WriteString(", ")
+					d.b.WriteString(", ")
 				}
-				adPattern(b, q)
+				d.adPattern(q)
 			}
-			b.WriteString("])")
+			d.b.WriteString("])")
 		}
 
 	case *MatchMapping:
 		if len(n.Keys) == 0 && n.Rest == "" {
-			b.WriteString("MatchMapping()")
+			if d.showEmpty {
+				d.b.WriteString("MatchMapping(keys=[], patterns=[])")
+			} else {
+				d.b.WriteString("MatchMapping()")
+			}
 		} else {
-			b.WriteString("MatchMapping(")
+			d.b.WriteString("MatchMapping(")
 			if len(n.Keys) > 0 {
-				b.WriteString("keys=[")
+				d.b.WriteString("keys=[")
 				for i, k := range n.Keys {
 					if i > 0 {
-						b.WriteString(", ")
+						d.b.WriteString(", ")
 					}
-					adExpr(b, k, "Load")
+					d.adExpr(k, "Load")
 				}
-				b.WriteString("], patterns=[")
+				d.b.WriteString("], patterns=[")
 				for i, q := range n.Patterns {
 					if i > 0 {
-						b.WriteString(", ")
+						d.b.WriteString(", ")
 					}
-					adPattern(b, q)
+					d.adPattern(q)
 				}
-				b.WriteByte(']')
+				d.b.WriteByte(']')
 			}
 			if n.Rest != "" {
 				if len(n.Keys) > 0 {
-					b.WriteString(", ")
+					d.b.WriteString(", ")
 				}
-				b.WriteString("rest=")
-				b.WriteString(pyRepr(n.Rest))
+				d.b.WriteString("rest=")
+				d.b.WriteString(pyRepr(n.Rest))
 			}
-			b.WriteByte(')')
+			d.b.WriteByte(')')
 		}
 
 	case *MatchClass:
-		b.WriteString("MatchClass(cls=")
-		adExpr(b, n.Cls, "Load")
-		if len(n.Patterns) > 0 {
-			b.WriteString(", patterns=[")
+		d.b.WriteString("MatchClass(cls=")
+		d.adExpr(n.Cls, "Load")
+		if len(n.Patterns) > 0 || d.showEmpty {
+			d.b.WriteString(", patterns=[")
 			for i, q := range n.Patterns {
 				if i > 0 {
-					b.WriteString(", ")
+					d.b.WriteString(", ")
 				}
-				adPattern(b, q)
+				d.adPattern(q)
 			}
-			b.WriteByte(']')
+			d.b.WriteByte(']')
 		}
-		if len(n.KwdAttrs) > 0 {
-			b.WriteString(", kwd_attrs=[")
+		if len(n.KwdAttrs) > 0 || d.showEmpty {
+			d.b.WriteString(", kwd_attrs=[")
 			for i, a := range n.KwdAttrs {
 				if i > 0 {
-					b.WriteString(", ")
+					d.b.WriteString(", ")
 				}
-				b.WriteString(pyRepr(a))
+				d.b.WriteString(pyRepr(a))
 			}
-			b.WriteString("], kwd_patterns=[")
+			d.b.WriteString("], kwd_patterns=[")
 			for i, q := range n.KwdPatterns {
 				if i > 0 {
-					b.WriteString(", ")
+					d.b.WriteString(", ")
 				}
-				adPattern(b, q)
+				d.adPattern(q)
 			}
-			b.WriteByte(']')
+			d.b.WriteByte(']')
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *MatchStar:
 		if n.Name == "" {
-			b.WriteString("MatchStar()")
+			d.b.WriteString("MatchStar()")
 		} else {
-			b.WriteString("MatchStar(name=")
-			b.WriteString(pyRepr(n.Name))
-			b.WriteByte(')')
+			d.b.WriteString("MatchStar(name=")
+			d.b.WriteString(pyRepr(n.Name))
+			d.b.WriteByte(')')
 		}
 
 	case *MatchAs:
 		if n.Pattern == nil && n.Name == "" {
-			b.WriteString("MatchAs()")
+			d.b.WriteString("MatchAs()")
 			return
 		}
-		b.WriteString("MatchAs(")
+		d.b.WriteString("MatchAs(")
 		sep := false
 		if n.Pattern != nil {
-			b.WriteString("pattern=")
-			adPattern(b, n.Pattern)
+			d.b.WriteString("pattern=")
+			d.adPattern(n.Pattern)
 			sep = true
 		}
 		if n.Name != "" {
 			if sep {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			b.WriteString("name=")
-			b.WriteString(pyRepr(n.Name))
+			d.b.WriteString("name=")
+			d.b.WriteString(pyRepr(n.Name))
 		}
-		b.WriteByte(')')
+		d.b.WriteByte(')')
 
 	case *MatchOr:
-		b.WriteString("MatchOr(patterns=[")
+		d.b.WriteString("MatchOr(patterns=[")
 		for i, q := range n.Patterns {
 			if i > 0 {
-				b.WriteString(", ")
+				d.b.WriteString(", ")
 			}
-			adPattern(b, q)
+			d.adPattern(q)
 		}
-		b.WriteString("])")
+		d.b.WriteString("])")
 
 	default:
-		fmt.Fprintf(b, "<unknown pattern %T>", p)
+		fmt.Fprintf(&d.b, "<unknown pattern %T>", p)
 	}
 }
 
 // adTypeParams writes type param nodes (PEP 695).
-func adTypeParams(b *strings.Builder, ps []TypeParam) {
+func (d *dumper) adTypeParams(ps []TypeParam) {
 	for i, p := range ps {
 		if i > 0 {
-			b.WriteString(", ")
+			d.b.WriteString(", ")
 		}
 		switch n := p.(type) {
 		case *TypeVar:
-			b.WriteString("TypeVar(name=")
-			b.WriteString(pyRepr(n.Name))
+			d.b.WriteString("TypeVar(name=")
+			d.b.WriteString(pyRepr(n.Name))
 			if n.Bound != nil {
-				b.WriteString(", bound=")
-				adExpr(b, n.Bound, "Load")
+				d.b.WriteString(", bound=")
+				d.adExpr(n.Bound, "Load")
 			}
 			if n.DefaultValue != nil {
-				b.WriteString(", default_value=")
-				adExpr(b, n.DefaultValue, "Load")
+				d.b.WriteString(", default_value=")
+				d.adExpr(n.DefaultValue, "Load")
 			}
-			b.WriteByte(')')
+			d.b.WriteByte(')')
 		case *TypeVarTuple:
-			b.WriteString("TypeVarTuple(name=")
-			b.WriteString(pyRepr(n.Name))
+			d.b.WriteString("TypeVarTuple(name=")
+			d.b.WriteString(pyRepr(n.Name))
 			if n.DefaultValue != nil {
-				b.WriteString(", default_value=")
-				adExpr(b, n.DefaultValue, "Load")
+				d.b.WriteString(", default_value=")
+				d.adExpr(n.DefaultValue, "Load")
 			}
-			b.WriteByte(')')
+			d.b.WriteByte(')')
 		case *ParamSpec:
-			b.WriteString("ParamSpec(name=")
-			b.WriteString(pyRepr(n.Name))
+			d.b.WriteString("ParamSpec(name=")
+			d.b.WriteString(pyRepr(n.Name))
 			if n.DefaultValue != nil {
-				b.WriteString(", default_value=")
-				adExpr(b, n.DefaultValue, "Load")
+				d.b.WriteString(", default_value=")
+				d.adExpr(n.DefaultValue, "Load")
 			}
-			b.WriteByte(')')
+			d.b.WriteByte(')')
 		default:
-			fmt.Fprintf(b, "<unknown type_param %T>", p)
+			fmt.Fprintf(&d.b, "<unknown type_param %T>", p)
 		}
 	}
 }
