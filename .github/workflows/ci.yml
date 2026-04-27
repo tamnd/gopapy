@@ -122,6 +122,49 @@ jobs:
           tail -1 /tmp/lint.summary
         continue-on-error: true
 
+  stdlib-compat:
+    name: cpython ${{ matrix.python-version }} stdlib compat
+    runs-on: ubuntu-latest
+    needs: test
+    # Phase 1.5 baseline — informational until each version reaches zero
+    # failures and is individually flipped to a hard gate (v0.3.5).
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: false
+
+      - name: Print tool versions
+        run: |
+          go version
+          python3 --version
+
+      - name: build gopapy
+        run: go build -o bin/gopapy ./cmd/gopapy
+
+      - name: gopapy check stdlib (${{ matrix.python-version }})
+        run: |
+          PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
+          echo "stdlib: $PYDIR"
+          bin/gopapy check "$PYDIR" || true
+
+      - name: gopapy unparse --check stdlib (${{ matrix.python-version }})
+        run: |
+          PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
+          bin/gopapy unparse --check "$PYDIR" || true
+
   fuzz:
     name: fuzz pass
     runs-on: ubuntu-latest
