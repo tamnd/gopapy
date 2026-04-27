@@ -922,15 +922,15 @@ func (p *parser) parseTryStmt() (Stmt, error) {
 		return nil, err
 	}
 	var handlers []*ExceptHandler
+	isTryStar := false
 	for p.isKeyword("except") {
 		hpos := p.cur.pos
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		// PEP 654 `except*` is treated like `except` for v0.1.30; the
-		// extra grouping semantics belong to the runtime, not the
-		// parse.
+		// PEP 654 `except*` — track for TryStar node production.
 		if p.cur.kind == tkStar {
+			isTryStar = true
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
@@ -1005,6 +1005,9 @@ func (p *parser) parseTryStmt() (Stmt, error) {
 	if len(handlers) == 0 && len(finalbody) == 0 {
 		return nil, fmt.Errorf("%d:%d: try statement requires except or finally",
 			pos.Line, pos.Col)
+	}
+	if isTryStar {
+		return &TryStar{P: pos, Body: body, Handlers: handlers, Orelse: orelse, Finalbody: finalbody}, nil
 	}
 	return &Try{P: pos, Body: body, Handlers: handlers, Orelse: orelse, Finalbody: finalbody}, nil
 }

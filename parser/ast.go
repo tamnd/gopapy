@@ -589,6 +589,18 @@ type Try struct {
 func (*Try) stmtNode() {}
 func (s *Try) pos() Pos { return s.P }
 
+// TryStar is the PEP 654 try/except*/else/finally compound statement.
+type TryStar struct {
+	P         Pos
+	Body      []Stmt
+	Handlers  []*ExceptHandler
+	Orelse    []Stmt
+	Finalbody []Stmt
+}
+
+func (*TryStar) stmtNode() {}
+func (s *TryStar) pos() Pos { return s.P }
+
 // WithItem is one `expr as target` clause inside a with statement.
 type WithItem struct {
 	P             Pos
@@ -978,6 +990,29 @@ func dumpStmt(b *strings.Builder, s Stmt) {
 		b.WriteString(")")
 	case *Try:
 		b.WriteString("Try(body=")
+		dumpStmtList(b, n.Body)
+		b.WriteString(", handlers=[")
+		for i, h := range n.Handlers {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("ExceptHandler(type=")
+			if h.Type != nil {
+				dump(b, h.Type)
+			} else {
+				b.WriteString("nil")
+			}
+			fmt.Fprintf(b, ", name=%q, body=", h.Name)
+			dumpStmtList(b, h.Body)
+			b.WriteString(")")
+		}
+		b.WriteString("], orelse=")
+		dumpStmtList(b, n.Orelse)
+		b.WriteString(", finalbody=")
+		dumpStmtList(b, n.Finalbody)
+		b.WriteString(")")
+	case *TryStar:
+		b.WriteString("TryStar(body=")
 		dumpStmtList(b, n.Body)
 		b.WriteString(", handlers=[")
 		for i, h := range n.Handlers {
