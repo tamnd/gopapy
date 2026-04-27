@@ -28,7 +28,7 @@ import (
 	"github.com/tamnd/gopapy/symbols"
 )
 
-const version = "0.2.6"
+const version = "0.2.7"
 
 func init() {
 	// Mirror the CLI version into the LSP server so the initialize
@@ -77,11 +77,11 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 		if err != nil {
 			return err
 		}
-		f, err := legacyparser.ParseFile(args[1], src)
+		m, err := parser.ParseFile(args[1], string(src))
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, ast.Dump(ast.FromFile(f)))
+		fmt.Fprintln(stdout, parser.ASTDump(m))
 		return nil
 	case "unparse":
 		return unparseCmd(args[1:], stdout, stderr)
@@ -141,15 +141,13 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, readErr)
 			return nil
 		}
-		if _, perr := legacyparser.ParseFile(path, src); perr != nil {
+		if _, perr := parser.ParseFile(path, string(src)); perr != nil {
 			failed++
 			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, perr)
 		} else {
 			passed++
 		}
-		// Free per-file parse trees promptly. participle holds a lot of
-		// transient state per file; without periodic GC the resident set
-		// climbs into multi-GB territory on a 1800-file corpus.
+		// Free per-file parse trees promptly on large corpora.
 		if (passed+failed)%gcEvery == 0 {
 			runtime.GC()
 		}

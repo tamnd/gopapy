@@ -19,7 +19,9 @@
 package parser
 
 import (
+	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 )
@@ -609,6 +611,10 @@ func (p *parser) parseSubscriptBody() (Expr, error) {
 		return nil, err
 	}
 	if p.cur.kind != tkComma {
+		// PEP 646: a single *Ts subscript is wrapped in an implicit Tuple.
+		if _, ok := first.(*Starred); ok {
+			return &Tuple{P: first.pos(), Elts: []Expr{first}}, nil
+		}
 		return first, nil
 	}
 	pos := first.pos()
@@ -854,6 +860,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 	var plainParts []string
 	var joined []Expr
 	bytesPrefix := false
+	uPrefixSeen := false
 	hasFOrPlain := false
 	hasT := false
 	var tParts []*Constant
@@ -874,8 +881,12 @@ func (p *parser) parseStringAtom() (Expr, error) {
 		if tok.kind == tkString {
 			val := tok.val
 			isBytes := strings.HasPrefix(val, "b:")
+			isUnicode := strings.HasPrefix(val, "u:")
 			if isBytes {
 				val = val[2:]
+			} else if isUnicode {
+				val = val[2:]
+				uPrefixSeen = true
 			}
 			if hasT {
 				return nil, fmt.Errorf("%d:%d: cannot mix t-string with other strings",
@@ -964,6 +975,23 @@ func (p *parser) parseStringAtom() (Expr, error) {
 			if err != nil {
 				return nil, err
 			}
+			// PEP 701: self-documenting expression f"{x=}".
+			// Inject (or merge) the source text as a Constant before fv.
+			if seg.selfDocText != "" {
+				if len(joined) > 0 {
+					if c, ok := joined[len(joined)-1].(*Constant); ok && c.Kind == "str" {
+						c.Value = c.Value.(string) + seg.selfDocText
+					} else {
+						joined = append(joined, &Constant{P: seg.pos, Kind: "str", Value: seg.selfDocText})
+					}
+				} else {
+					joined = append(joined, &Constant{P: seg.pos, Kind: "str", Value: seg.selfDocText})
+				}
+				// Default conversion for '=' is repr unless explicit or format spec present.
+				if seg.convert == -1 && seg.spec == nil {
+					fv.Conversion = 114
+				}
+			}
 			joined = append(joined, fv)
 		}
 	}
@@ -982,9 +1010,15 @@ func (p *parser) parseStringAtom() (Expr, error) {
 		}
 		return &JoinedStr{P: startPos, Values: joined}, nil
 	}
+	// Empty f-string (no segments) becomes JoinedStr() to match CPython.
+	if hasFOrPlain && !bytesPrefix && len(plainParts) == 0 {
+		return &JoinedStr{P: startPos, Values: nil}, nil
+	}
 	kind := "str"
 	if bytesPrefix {
 		kind = "bytes"
+	} else if uPrefixSeen {
+		kind = "u"
 	}
 	return &Constant{P: startPos, Kind: kind, Value: strings.Join(plainParts, "")}, nil
 }
@@ -1082,33 +1116,43 @@ func parseInterpExpr(src string, at Pos) (Expr, error) {
 
 func parseIntLiteral(tok token) (Expr, error) {
 	val := strings.ReplaceAll(tok.val, "_", "")
-	var v int64
-	var err error
+	var base int
+	var digits string
 	switch {
 	case strings.HasPrefix(val, "0x") || strings.HasPrefix(val, "0X"):
-		v, err = strconv.ParseInt(val[2:], 16, 64)
+		base, digits = 16, val[2:]
 	case strings.HasPrefix(val, "0o") || strings.HasPrefix(val, "0O"):
-		v, err = strconv.ParseInt(val[2:], 8, 64)
+		base, digits = 8, val[2:]
 	case strings.HasPrefix(val, "0b") || strings.HasPrefix(val, "0B"):
-		v, err = strconv.ParseInt(val[2:], 2, 64)
+		base, digits = 2, val[2:]
 	default:
-		v, err = strconv.ParseInt(val, 10, 64)
+		base, digits = 10, val
 	}
-	if err != nil {
-		return nil, fmt.Errorf("%d:%d: invalid int literal %q",
-			tok.pos.Line, tok.pos.Col, tok.val)
+	v64, err := strconv.ParseInt(digits, base, 64)
+	if err == nil {
+		return &Constant{P: tok.pos, Kind: "int", Value: v64}, nil
 	}
-	return &Constant{P: tok.pos, Kind: "int", Value: v}, nil
+	if errors.Is(err, strconv.ErrRange) {
+		bi := new(big.Int)
+		if _, ok := bi.SetString(digits, base); !ok {
+			return nil, fmt.Errorf("%d:%d: invalid int literal %q",
+				tok.pos.Line, tok.pos.Col, tok.val)
+		}
+		return &Constant{P: tok.pos, Kind: "int", Value: bi}, nil
+	}
+	return nil, fmt.Errorf("%d:%d: invalid int literal %q",
+		tok.pos.Line, tok.pos.Col, tok.val)
 }
 
 func parseFloatLiteral(tok token) (Expr, error) {
 	val := strings.ReplaceAll(tok.val, "_", "")
 	if strings.HasSuffix(val, "j") || strings.HasSuffix(val, "J") {
-		// Complex: keep as-is for the Constant value.
+		// Complex: keep as-is; adConstValue will parse the imaginary part.
 		return &Constant{P: tok.pos, Kind: "complex", Value: val}, nil
 	}
 	v, err := strconv.ParseFloat(val, 64)
-	if err != nil {
+	// ErrRange means overflow (+Inf) or underflow (0.0) — both valid Python values.
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
 		return nil, fmt.Errorf("%d:%d: invalid float literal %q",
 			tok.pos.Line, tok.pos.Col, tok.val)
 	}

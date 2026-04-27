@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -221,12 +222,36 @@ type fstringPayload struct {
 }
 
 type fstringSegment struct {
-	isInterp bool
-	text     string          // decoded text (for !isInterp)
-	exprSrc  string          // source of the expression (for isInterp)
-	convert  int             // -1, 'r', 's', or 'a'
-	spec     *fstringPayload // optional format spec, recursively parsed
-	pos      Pos             // position of the segment start
+	isInterp    bool
+	text        string          // decoded text (for !isInterp)
+	exprSrc     string          // source of the expression (for isInterp)
+	convert     int             // -1, 'r', 's', or 'a'
+	spec        *fstringPayload // optional format spec, recursively parsed
+	pos         Pos             // position of the segment start
+	selfDocText string          // PEP 701: raw source including '=' when self-doc
+}
+
+// parseSelfDoc detects a PEP 701 self-documenting '=' at the end of raw.
+// Returns (exprPart, selfDocText, true) when found; (TrimSpace(raw), "", false)
+// otherwise. selfDocText is the full raw content including trailing whitespace.
+func parseSelfDoc(raw string) (exprPart, selfDocText string, ok bool) {
+	stripped := strings.TrimRight(raw, " \t\r\n\f\v")
+	if len(stripped) == 0 || stripped[len(stripped)-1] != '=' {
+		return strings.TrimSpace(raw), "", false
+	}
+	before := stripped[:len(stripped)-1]
+	if len(before) == 0 {
+		return strings.TrimSpace(raw), "", false
+	}
+	prev := before[len(before)-1]
+	// Exclude compound-assignment operators that end with '='.
+	if prev == '=' || prev == '!' || prev == '<' || prev == '>' ||
+		prev == '+' || prev == '-' || prev == '*' || prev == '/' ||
+		prev == '%' || prev == '&' || prev == '|' || prev == '^' ||
+		prev == '@' || prev == ':' {
+		return strings.TrimSpace(raw), "", false
+	}
+	return strings.TrimSpace(before), raw, true
 }
 
 // scanner is a single-pass tokenizer with peek-ahead for multi-char
@@ -795,6 +820,7 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 	}
 	raw := strings.ContainsRune(low, 'r')
 	bytesPrefix := strings.ContainsRune(low, 'b')
+	uPrefix := strings.ContainsRune(prefix, 'u') && !bytesPrefix
 	var b strings.Builder
 	for s.off < len(s.src) {
 		c := s.src[s.off]
@@ -805,6 +831,9 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 				if bytesPrefix {
 					return token{kind: tkString, val: "b:" + val, pos: start}, nil
 				}
+				if uPrefix {
+					return token{kind: tkString, val: "u:" + val, pos: start}, nil
+				}
 				return token{kind: tkString, val: val, pos: start}, nil
 			}
 		} else if c == quote {
@@ -813,6 +842,9 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 			if bytesPrefix {
 				return token{kind: tkString, val: "b:" + val, pos: start}, nil
 			}
+			if uPrefix {
+				return token{kind: tkString, val: "u:" + val, pos: start}, nil
+			}
 			return token{kind: tkString, val: val, pos: start}, nil
 		}
 		if !raw && c == '\\' && s.off+1 < len(s.src) {
@@ -820,25 +852,113 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 			switch esc {
 			case 'n':
 				b.WriteByte('\n')
+				s.advance(2)
 			case 't':
 				b.WriteByte('\t')
+				s.advance(2)
 			case 'r':
 				b.WriteByte('\r')
+				s.advance(2)
 			case '\\':
 				b.WriteByte('\\')
+				s.advance(2)
 			case '\'':
 				b.WriteByte('\'')
+				s.advance(2)
 			case '"':
 				b.WriteByte('"')
-			case '0':
-				b.WriteByte(0)
+				s.advance(2)
+			case 'a':
+				b.WriteByte('\a')
+				s.advance(2)
+			case 'b':
+				b.WriteByte('\b')
+				s.advance(2)
+			case 'f':
+				b.WriteByte('\f')
+				s.advance(2)
+			case 'v':
+				b.WriteByte('\v')
+				s.advance(2)
 			case '\n':
 				// line continuation inside string: skip
+				s.advance(2)
+			case 'x':
+				// \xHH — exactly 2 hex digits
+				if s.off+3 < len(s.src) && isHexByte(s.src[s.off+2]) && isHexByte(s.src[s.off+3]) {
+					hi := unhexByte(s.src[s.off+2])
+					lo := unhexByte(s.src[s.off+3])
+					val := rune(hi<<4 | lo)
+					if bytesPrefix {
+						b.WriteByte(byte(val))
+					} else {
+						b.WriteRune(val)
+					}
+					s.advance(4)
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte(esc)
+					s.advance(2)
+				}
+			case '0', '1', '2', '3', '4', '5', '6', '7':
+				// Octal escape: 1 to 3 octal digits
+				octal := int(esc - '0')
+				consumed := 2
+				for i := 1; i < 3; i++ {
+					if s.off+consumed < len(s.src) {
+						d := s.src[s.off+consumed]
+						if d >= '0' && d <= '7' {
+							octal = octal*8 + int(d-'0')
+							consumed++
+							continue
+						}
+					}
+					break
+				}
+				if bytesPrefix {
+					b.WriteByte(byte(octal))
+				} else {
+					b.WriteRune(rune(octal))
+				}
+				s.advance(consumed)
+			case 'u':
+				// \uHHHH — 4 hex digits, strings only
+				if !bytesPrefix && s.off+5 < len(s.src) &&
+					isHexByte(s.src[s.off+2]) && isHexByte(s.src[s.off+3]) &&
+					isHexByte(s.src[s.off+4]) && isHexByte(s.src[s.off+5]) {
+					v, _ := strconv.ParseInt(string(s.src[s.off+2:s.off+6]), 16, 32)
+					b.WriteRune(rune(v))
+					s.advance(6)
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte(esc)
+					s.advance(2)
+				}
+			case 'U':
+				// \UHHHHHHHH — 8 hex digits, strings only
+				if !bytesPrefix && s.off+9 < len(s.src) &&
+					isHexByte(s.src[s.off+2]) && isHexByte(s.src[s.off+3]) &&
+					isHexByte(s.src[s.off+4]) && isHexByte(s.src[s.off+5]) &&
+					isHexByte(s.src[s.off+6]) && isHexByte(s.src[s.off+7]) &&
+					isHexByte(s.src[s.off+8]) && isHexByte(s.src[s.off+9]) {
+					v, _ := strconv.ParseInt(string(s.src[s.off+2:s.off+10]), 16, 32)
+					b.WriteRune(rune(v))
+					s.advance(10)
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte(esc)
+					s.advance(2)
+				}
+			case 'N':
+				// \N{name} — unicode name; leave as-is (rare in practice)
+				b.WriteByte('\\')
+				b.WriteByte(esc)
+				s.advance(2)
 			default:
 				b.WriteByte('\\')
 				b.WriteByte(esc)
+				s.advance(2)
 			}
-			s.advance(2)
 			continue
 		}
 		b.WriteByte(c)
@@ -1003,17 +1123,20 @@ func (s *scanner) scanFTInterp(interpPos Pos, outerQuote byte, outerRaw, outerTr
 				continue
 			}
 			// End of expression part.
-			exprSrc := s.src[exprStart:s.off]
+			rawExpr := s.src[exprStart:s.off]
 			s.advance(1) // consume }
+			exprPart, selfDoc, _ := parseSelfDoc(rawExpr)
 			return fstringSegment{
-				isInterp: true,
-				exprSrc:  strings.TrimSpace(exprSrc),
-				convert:  -1,
-				pos:      interpPos,
+				isInterp:    true,
+				exprSrc:     exprPart,
+				convert:     -1,
+				pos:         interpPos,
+				selfDocText: selfDoc,
 			}, nil
 		case c == '!' && depth == 0 && s.peekByte(1) != '=':
 			// Conversion suffix.
-			exprSrc := s.src[exprStart:s.off]
+			rawExpr := s.src[exprStart:s.off]
+			exprPart, selfDoc, _ := parseSelfDoc(rawExpr)
 			s.advance(1)
 			if s.off >= len(s.src) {
 				return fstringSegment{}, fmt.Errorf("%d:%d: expected conversion char", s.line, s.col)
@@ -1024,10 +1147,11 @@ func (s *scanner) scanFTInterp(interpPos Pos, outerQuote byte, outerRaw, outerTr
 			}
 			s.advance(1)
 			seg := fstringSegment{
-				isInterp: true,
-				exprSrc:  strings.TrimSpace(exprSrc),
-				convert:  int(convCh),
-				pos:      interpPos,
+				isInterp:    true,
+				exprSrc:     exprPart,
+				convert:     int(convCh),
+				pos:         interpPos,
+				selfDocText: selfDoc,
 			}
 			// Optional format spec follows.
 			if s.off < len(s.src) && s.src[s.off] == ':' {
@@ -1044,18 +1168,20 @@ func (s *scanner) scanFTInterp(interpPos Pos, outerQuote byte, outerRaw, outerTr
 			s.advance(1)
 			return seg, nil
 		case c == ':' && depth == 0:
-			exprSrc := s.src[exprStart:s.off]
+			rawExpr := s.src[exprStart:s.off]
+			exprPart, selfDoc, _ := parseSelfDoc(rawExpr)
 			s.advance(1)
 			specSegs, err := s.scanFTBody(interpPos, outerQuote, outerRaw, outerTriple, true)
 			if err != nil {
 				return fstringSegment{}, err
 			}
 			seg := fstringSegment{
-				isInterp: true,
-				exprSrc:  strings.TrimSpace(exprSrc),
-				convert:  -1,
-				pos:      interpPos,
-				spec:     &fstringPayload{segments: specSegs},
+				isInterp:    true,
+				exprSrc:     exprPart,
+				convert:     -1,
+				pos:         interpPos,
+				spec:        &fstringPayload{segments: specSegs},
+				selfDocText: selfDoc,
 			}
 			if s.off >= len(s.src) || s.src[s.off] != '}' {
 				return fstringSegment{}, fmt.Errorf("%d:%d: expected '}' to close interpolation", s.line, s.col)
@@ -1121,6 +1247,17 @@ func (s *scanner) skipNestedString() error {
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 func isHexDigit(c byte) bool {
 	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+func isHexByte(c byte) bool { return isHexDigit(c) }
+func unhexByte(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
+	}
 }
 func isIdentStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
 func isIdentPart(r rune) bool {
