@@ -14,6 +14,7 @@ changes.
 
 ## Releases
 
+- [0.3.5](changelog/0.3.5.md) — Python 3.12 oracle passing (showEmpty), 8 fixture markers
 - [0.3.4](changelog/0.3.4.md) — version-aware ASTDump, TestOracle_Py314 active
 - [0.3.3](changelog/0.3.3.md) — stdlib compat baseline, form feed fix, per-version oracle tests
 - [0.3.2](changelog/0.3.2.md)

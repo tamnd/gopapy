@@ -221,10 +221,11 @@ func TestOracle_Py313(t *testing.T) {
 	runOracleTest(t, 13)
 }
 
-// TestOracle_Py312 will verify `gopapy dump --py 3.12` once version-aware
-// dump is implemented (spec 1323). Currently skipped — see roadmap.
+// TestOracle_Py312 verifies that `gopapy dump --py 3.12` produces output
+// byte-identical to Python 3.12's ast.dump() for all compatible fixtures.
+// Python 3.12 always prints empty list/None fields (showEmpty behavior).
 func TestOracle_Py312(t *testing.T) {
-	t.Skip("version-aware dump for 3.12 not yet implemented (spec 1323); enable after v0.3.5")
+	runOracleTest(t, 12)
 }
 
 // TestOracle_Py311 is a placeholder. See TestOracle_Py312.
