@@ -362,10 +362,21 @@ type IfExp struct {
 func (*IfExp) exprNode()  {}
 func (n *IfExp) pos() Pos { return n.P }
 
+// TypeIgnore represents a `# type: ignore` comment on a source line.
+// The field exists for structural parity with CPython's ast.Module;
+// parsing of type-ignore comments is deferred to Phase 3.
+type TypeIgnore struct {
+	Lineno int
+	Tag    string
+}
+
 // Module is the top-level node returned by ParseFile / ParseString.
 // Body is the sequence of top-level statements.
+// TypeIgnores holds any `# type: ignore` entries (always empty until
+// Phase 3 adds type-comment extraction).
 type Module struct {
-	Body []Stmt
+	Body        []Stmt
+	TypeIgnores []TypeIgnore
 }
 
 // Stmt is the closed sum type for parser2 statement nodes.
