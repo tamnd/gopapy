@@ -1,3 +1,4 @@
+# Python 3.12+: def first[T](xs: list[T]) -> T:
 def first[T](xs: list[T]) -> T:
     return xs[0]
 
