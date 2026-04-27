@@ -14,8 +14,8 @@ import (
 	"sync"
 
 	"github.com/tamnd/gopapy/cst"
-	"github.com/tamnd/gopapy/diag"
-	"github.com/tamnd/gopapy/linter"
+	"github.com/tamnd/gopapy/legacy/diag"
+	"github.com/tamnd/gopapy/legacy/linter"
 )
 
 // ServerVersion is the version string the server reports back in the

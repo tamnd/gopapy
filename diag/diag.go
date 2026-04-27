@@ -1,24 +1,16 @@
-// Package diag defines the Diagnostic type that gopapy analyzers
-// (symbols today, the linter and any future type checker tomorrow)
-// share for reporting non-fatal semantic problems.
-//
-// The shape is deliberately compiler-conventional: one Diagnostic is
-// one filename:line:col span, a severity, a stable code, and a human
-// message. The String() method emits the common
-// `filename:line:col: severity[code]: message` form that editors
-// already parse for jump-to-source.
+// Package diag defines the Diagnostic type shared by v2 analyzers
+// (symbols2, linter2, and any future type checker). Uses parser.Pos
+// for source positions.
 package diag
 
 import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/parser"
 )
 
-// Severity orders diagnostics from most to least urgent. SeverityError
-// is the only level that should fail a CLI run; warnings and hints are
-// informational.
+// Severity orders diagnostics from most to least urgent.
 type Severity int
 
 const (
@@ -27,8 +19,6 @@ const (
 	SeverityHint
 )
 
-// String renders a Severity in the lowercase form used by String() and
-// the JSONL output.
 func (s Severity) String() string {
 	switch s {
 	case SeverityError:
@@ -41,23 +31,17 @@ func (s Severity) String() string {
 	return "unknown"
 }
 
-// Diagnostic is one analyzer finding. Pos is the start of the offending
-// span; End is the position just past it (both populated since v0.1.6
-// gave AST nodes real end positions). Code is a stable identifier of
-// the form `S001` so users can filter / suppress by code without the
-// message text shifting underneath them.
+// Diagnostic is one analyzer finding.
 type Diagnostic struct {
 	Filename string
-	Pos      ast.Pos
-	End      ast.Pos
+	Pos      parser.Pos
+	End      parser.Pos
 	Severity Severity
 	Code     string
 	Msg      string
 }
 
-// String formats d as `filename:line:col: severity[code]: message`. The
-// filename is omitted when empty so single-file callers that don't
-// bother setting it still get a readable line.
+// String formats d as `filename:line:col: severity[code]: message`.
 func (d Diagnostic) String() string {
 	prefix := ""
 	if d.Filename != "" {
@@ -68,24 +52,26 @@ func (d Diagnostic) String() string {
 		code = "[" + d.Code + "]"
 	}
 	return fmt.Sprintf("%s%d:%d: %s%s: %s",
-		prefix, d.Pos.Lineno, d.Pos.ColOffset, d.Severity, code, d.Msg)
+		prefix, d.Pos.Line, d.Pos.Col, d.Severity, code, d.Msg)
 }
 
-// MarshalJSON emits a stable wire shape for the --json CLI. Severity
-// renders as its lowercase name rather than the integer value so the
-// output is human-skimmable too.
+// MarshalJSON emits a stable wire shape compatible with v1 diag JSON output.
 func (d Diagnostic) MarshalJSON() ([]byte, error) {
+	type pos struct {
+		Lineno    int `json:"lineno"`
+		ColOffset int `json:"col_offset"`
+	}
 	return json.Marshal(struct {
-		Filename string  `json:"filename,omitempty"`
-		Pos      ast.Pos `json:"pos"`
-		End      ast.Pos `json:"end"`
-		Severity string  `json:"severity"`
-		Code     string  `json:"code,omitempty"`
-		Msg      string  `json:"msg"`
+		Filename string `json:"filename,omitempty"`
+		Pos      pos    `json:"pos"`
+		End      pos    `json:"end"`
+		Severity string `json:"severity"`
+		Code     string `json:"code,omitempty"`
+		Msg      string `json:"msg"`
 	}{
 		Filename: d.Filename,
-		Pos:      d.Pos,
-		End:      d.End,
+		Pos:      pos{Lineno: d.Pos.Line, ColOffset: d.Pos.Col},
+		End:      pos{Lineno: d.End.Line, ColOffset: d.End.Col},
 		Severity: d.Severity.String(),
 		Code:     d.Code,
 		Msg:      d.Msg,

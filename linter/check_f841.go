@@ -1,23 +1,12 @@
 package linter
 
 import (
-	"github.com/tamnd/gopapy/ast"
 	"github.com/tamnd/gopapy/diag"
+	"github.com/tamnd/gopapy/parser"
 	"github.com/tamnd/gopapy/symbols"
 )
 
-// checkF841 fires when a local in a function or lambda body is bound
-// by a plain assignment (Assign / AnnAssign with a value / NamedExpr
-// walrus) and never read.
-//
-// The symbol table can't tell us *how* a name got bound, so we
-// re-walk the AST looking only at the binding shapes the spec wants
-// us to flag. Loop targets, except handlers, with-as variables, and
-// pattern captures bind via different ast nodes and so don't appear
-// here at all — that's how they stay exempt without a special-case
-// list. Augmented assignment binds *and* reads the target so it's
-// already filtered by the FlagUsed check.
-func checkF841(sm *symbols.Module, mod *ast.Module) []diag.Diagnostic {
+func checkF841(sm *symbols.Module, mod *parser.Module) []diag.Diagnostic {
 	if sm == nil || sm.Root == nil || mod == nil {
 		return nil
 	}
@@ -30,10 +19,7 @@ type f841Checker struct {
 	out []diag.Diagnostic
 }
 
-// walkScope walks stmts under the given symbols.Scope. inFunc says
-// whether stmts live in a function or lambda body (the only place
-// F841 fires).
-func (c *f841Checker) walkScope(scope *symbols.Scope, stmts []ast.StmtNode, inFunc bool) {
+func (c *f841Checker) walkScope(scope *symbols.Scope, stmts []parser.Stmt, inFunc bool) {
 	childIdx := 0
 	nextChild := func(kind symbols.ScopeKind, name string) *symbols.Scope {
 		for childIdx < len(scope.Children) {
@@ -47,67 +33,56 @@ func (c *f841Checker) walkScope(scope *symbols.Scope, stmts []ast.StmtNode, inFu
 	}
 	for _, s := range stmts {
 		switch n := s.(type) {
-		case *ast.FunctionDef:
+		case *parser.FunctionDef:
 			if child := nextChild(symbols.ScopeFunction, n.Name); child != nil {
 				inner := &f841Checker{}
 				inner.walkScope(child, n.Body, true)
 				c.out = append(c.out, inner.out...)
 			}
-		case *ast.AsyncFunctionDef:
+		case *parser.AsyncFunctionDef:
 			if child := nextChild(symbols.ScopeFunction, n.Name); child != nil {
 				inner := &f841Checker{}
 				inner.walkScope(child, n.Body, true)
 				c.out = append(c.out, inner.out...)
 			}
-		case *ast.ClassDef:
+		case *parser.ClassDef:
 			if child := nextChild(symbols.ScopeClass, n.Name); child != nil {
 				inner := &f841Checker{}
 				inner.walkScope(child, n.Body, false)
 				c.out = append(c.out, inner.out...)
 			}
-		case *ast.Assign:
+		case *parser.Assign:
 			if inFunc && len(n.Targets) == 1 {
 				c.checkTarget(scope, n.Targets[0])
 			}
-		case *ast.AnnAssign:
+		case *parser.AnnAssign:
 			if inFunc && n.Value != nil {
 				c.checkTarget(scope, n.Target)
 			}
-		case *ast.If:
+		case *parser.If:
 			c.walkScope(scope, n.Body, inFunc)
 			c.walkScope(scope, n.Orelse, inFunc)
-		case *ast.While:
+		case *parser.While:
 			c.walkScope(scope, n.Body, inFunc)
 			c.walkScope(scope, n.Orelse, inFunc)
-		case *ast.For:
+		case *parser.For:
 			c.walkScope(scope, n.Body, inFunc)
 			c.walkScope(scope, n.Orelse, inFunc)
-		case *ast.AsyncFor:
+		case *parser.AsyncFor:
 			c.walkScope(scope, n.Body, inFunc)
 			c.walkScope(scope, n.Orelse, inFunc)
-		case *ast.With:
+		case *parser.With:
 			c.walkScope(scope, n.Body, inFunc)
-		case *ast.AsyncWith:
+		case *parser.AsyncWith:
 			c.walkScope(scope, n.Body, inFunc)
-		case *ast.Try:
+		case *parser.Try:
 			c.walkScope(scope, n.Body, inFunc)
 			for _, h := range n.Handlers {
-				if eh, ok := h.(*ast.ExceptHandler); ok {
-					c.walkScope(scope, eh.Body, inFunc)
-				}
+				c.walkScope(scope, h.Body, inFunc)
 			}
 			c.walkScope(scope, n.Orelse, inFunc)
 			c.walkScope(scope, n.Finalbody, inFunc)
-		case *ast.TryStar:
-			c.walkScope(scope, n.Body, inFunc)
-			for _, h := range n.Handlers {
-				if eh, ok := h.(*ast.ExceptHandler); ok {
-					c.walkScope(scope, eh.Body, inFunc)
-				}
-			}
-			c.walkScope(scope, n.Orelse, inFunc)
-			c.walkScope(scope, n.Finalbody, inFunc)
-		case *ast.Match:
+		case *parser.Match:
 			for _, mc := range n.Cases {
 				c.walkScope(scope, mc.Body, inFunc)
 			}
@@ -115,15 +90,11 @@ func (c *f841Checker) walkScope(scope *symbols.Scope, stmts []ast.StmtNode, inFu
 	}
 }
 
-// checkTarget fires F841 if target is a single Name whose binding in
-// scope is bound but never read and not classified as parameter,
-// import, global, or nonlocal.
-func (c *f841Checker) checkTarget(scope *symbols.Scope, target ast.ExprNode) {
-	name, ok := target.(*ast.Name)
+// checkTarget fires F841 if target is a single Name bound but never read.
+// In v2, target Names in assignment position are always stores; no Ctx check needed.
+func (c *f841Checker) checkTarget(scope *symbols.Scope, target parser.Expr) {
+	name, ok := target.(*parser.Name)
 	if !ok {
-		return
-	}
-	if _, isStore := name.Ctx.(*ast.Store); !isStore {
 		return
 	}
 	if name.Id == "" || name.Id == "_" {
@@ -141,8 +112,8 @@ func (c *f841Checker) checkTarget(scope *symbols.Scope, target ast.ExprNode) {
 		return
 	}
 	c.out = append(c.out, diag.Diagnostic{
-		Pos:      name.Pos,
-		End:      name.Pos,
+		Pos:      name.P,
+		End:      name.P,
 		Severity: diag.SeverityWarning,
 		Code:     CodeUnusedLocal,
 		Msg:      "local variable '" + name.Id + "' assigned but never used",

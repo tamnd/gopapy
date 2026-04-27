@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tamnd/gopapy/parser"
+	"github.com/tamnd/gopapy/legacy/parser"
 )
 
 // emitFString folds an implicitly-concatenated run of string literals

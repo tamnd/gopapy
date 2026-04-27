@@ -18,17 +18,17 @@ import (
 
 	"github.com/tamnd/gopapy/ast"
 	"github.com/tamnd/gopapy/cst"
-	v1diag "github.com/tamnd/gopapy/diag"
-	"github.com/tamnd/gopapy/linter"
+	legacydiag "github.com/tamnd/gopapy/legacy/diag"
+	legacylinter "github.com/tamnd/gopapy/legacy/linter"
+	legacyparser "github.com/tamnd/gopapy/legacy/parser"
 	"github.com/tamnd/gopapy/lsp"
-	"github.com/tamnd/gopapy/parser"
 
-	v2diag "github.com/tamnd/gopapy/v2/diag"
-	"github.com/tamnd/gopapy/v2/parser2"
-	"github.com/tamnd/gopapy/v2/symbols2"
+	"github.com/tamnd/gopapy/diag"
+	"github.com/tamnd/gopapy/parser"
+	"github.com/tamnd/gopapy/symbols"
 )
 
-const version = "0.2.5"
+const version = "0.2.6"
 
 func init() {
 	// Mirror the CLI version into the LSP server so the initialize
@@ -77,7 +77,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 		if err != nil {
 			return err
 		}
-		f, err := parser.ParseFile(args[1], src)
+		f, err := legacyparser.ParseFile(args[1], src)
 		if err != nil {
 			return err
 		}
@@ -111,12 +111,12 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 	}
 }
 
-func parseFile2(path string) (*parser2.Module, error) {
+func parseFile2(path string) (*parser.Module, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return parser2.ParseFile(path, string(src))
+	return parser.ParseFile(path, string(src))
 }
 
 // checkDir walks DIR and reports parse outcomes for every .py file. The
@@ -141,7 +141,7 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, readErr)
 			return nil
 		}
-		if _, perr := parser.ParseFile(path, src); perr != nil {
+		if _, perr := legacyparser.ParseFile(path, src); perr != nil {
 			failed++
 			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, perr)
 		} else {
@@ -203,10 +203,10 @@ func benchCmd(dir string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("bench: no .py files under %s", dir)
 	}
 	parseStart := time.Now()
-	parsed := make([]*parser.File, 0, len(files))
+	parsed := make([]*legacyparser.File, 0, len(files))
 	var parseFailed int
 	for i, f := range files {
-		pf, err := parser.ParseFile(f.path, f.src)
+		pf, err := legacyparser.ParseFile(f.path, f.src)
 		if err != nil {
 			parseFailed++
 			parsed = append(parsed, nil)
@@ -360,7 +360,7 @@ func unparseOne(path string, check, comments bool, stdout, stderr io.Writer) err
 		mod = cf.AST
 		out = cf.Unparse()
 	} else {
-		f, err := parser.ParseString(path, string(src))
+		f, err := legacyparser.ParseString(path, string(src))
 		if err != nil {
 			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", path, err)
 			return errParseFailed
@@ -379,7 +379,7 @@ func unparseOne(path string, check, comments bool, stdout, stderr io.Writer) err
 	if strings.Contains(d1, "<fstring-error:") || strings.Contains(d1, "<tstring-error:") {
 		return nil
 	}
-	f2, err := parser.ParseString(path, out)
+	f2, err := legacyparser.ParseString(path, out)
 	if err != nil {
 		fmt.Fprintf(stderr, "FAIL reparse %s: %v\n", path, err)
 		return fmt.Errorf("reparse failed")
@@ -424,14 +424,14 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 	}
 
 	var (
-		diagnostics []v2diag.Diagnostic
+		diagnostics []diag.Diagnostic
 		fileCount   int
 		parseFailed int
 		errorCount  int
 	)
 
-	emit := func(d v2diag.Diagnostic) error {
-		if d.Severity == v2diag.SeverityError {
+	emit := func(d diag.Diagnostic) error {
+		if d.Severity == diag.SeverityError {
 			errorCount++
 		}
 		if jsonOut {
@@ -454,7 +454,7 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", p, perr)
 			return
 		}
-		sm := symbols2.Build(mod2)
+		sm := symbols.Build(mod2)
 		for _, d := range sm.Diagnostics {
 			d.Filename = p
 			diagnostics = append(diagnostics, d)
@@ -537,13 +537,13 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 // editor pipes stdout back into the buffer and renders stderr as
 // underlines.
 func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	format := linter.FormatText
+	format := legacylinter.FormatText
 	fix := false
 	noConfig := false
 	configPath := ""
 	outputPath := ""
 	stdinFilename := ""
-	jobs := 0       // 0 = default to GOMAXPROCS in linter.LintFiles
+	jobs := 0       // 0 = default to GOMAXPROCS in legacylinter.LintFiles
 	cachePath := "" // "" = cache disabled
 	noCache := false
 	var path string
@@ -551,7 +551,7 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		a := args[i]
 		switch {
 		case a == "--json":
-			format = linter.FormatJSON
+			format = legacylinter.FormatJSON
 		case a == "--fix":
 			fix = true
 		case a == "--no-config":
@@ -569,13 +569,13 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 				return fmt.Errorf("lint: --format requires a value")
 			}
 			i++
-			f, ferr := linter.ParseFormat(args[i])
+			f, ferr := legacylinter.ParseFormat(args[i])
 			if ferr != nil {
 				return fmt.Errorf("lint: %v", ferr)
 			}
 			format = f
 		case strings.HasPrefix(a, "--format="):
-			f, ferr := linter.ParseFormat(strings.TrimPrefix(a, "--format="))
+			f, ferr := legacylinter.ParseFormat(strings.TrimPrefix(a, "--format="))
 			if ferr != nil {
 				return fmt.Errorf("lint: %v", ferr)
 			}
@@ -620,7 +620,7 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 				i++
 				cachePath = args[i]
 			} else {
-				cachePath = linter.DefaultCachePath()
+				cachePath = legacylinter.DefaultCachePath()
 				if cachePath == "" {
 					return fmt.Errorf("lint: --cache requires a path (UserCacheDir unavailable)")
 				}
@@ -668,20 +668,20 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	defer closeSink()
 
 	var (
-		diagnostics []v1diag.Diagnostic
+		diagnostics []legacydiag.Diagnostic
 		fileCount   int
 		parseFailed int
 		fixedFiles  int
 	)
 
-	emit := func(d v1diag.Diagnostic) error {
+	emit := func(d legacydiag.Diagnostic) error {
 		// SARIF is a whole-document format; the per-diagnostic write
 		// path can't emit it, so we collect into `diagnostics` above
 		// and flush once at the end.
-		if format == linter.FormatSARIF {
+		if format == legacylinter.FormatSARIF {
 			return nil
 		}
-		return linter.WriteDiagnostic(sink, d, format)
+		return legacylinter.WriteDiagnostic(sink, d, format)
 	}
 
 	process := func(p string) {
@@ -711,7 +711,7 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 				return
 			}
 		}
-		ds, lerr := linter.LintFileWithConfig(p, src, cfg)
+		ds, lerr := legacylinter.LintFileWithConfig(p, src, cfg)
 		if lerr != nil {
 			parseFailed++
 			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", p, lerr)
@@ -744,7 +744,7 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			if cerr != nil {
 				return cerr
 			}
-			results := linter.LintFiles(paths, cfg, linter.LintOptions{
+			results := legacylinter.LintFiles(paths, cfg, legacylinter.LintOptions{
 				Jobs:  jobs,
 				Cache: cache,
 			})
@@ -776,8 +776,8 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		process(path)
 	}
 
-	if format == linter.FormatSARIF {
-		if err := linter.WriteSARIFLog(sink, diagnostics, sarifTool()); err != nil {
+	if format == legacylinter.FormatSARIF {
+		if err := legacylinter.WriteSARIFLog(sink, diagnostics, sarifTool()); err != nil {
 			return fmt.Errorf("lint: write sarif: %v", err)
 		}
 	}
@@ -804,8 +804,8 @@ func lspCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 // sarifTool builds the SARIF tool descriptor from the current build's
 // version constant. Centralised so stdin-mode and dir-mode write the
 // same `tool.driver` block.
-func sarifTool() linter.ToolInfo {
-	return linter.ToolInfo{
+func sarifTool() legacylinter.ToolInfo {
+	return legacylinter.ToolInfo{
 		Name:           "gopapy",
 		Version:        version,
 		InformationURI: "https://github.com/tamnd/gopapy",
@@ -820,7 +820,7 @@ func sarifTool() linter.ToolInfo {
 // an editor can pipe one stream into the buffer and render the
 // other as squiggles.
 func lintStdin(stdin io.Reader, stdinFilename, configPath string, noConfig, fix bool,
-	format linter.Format, outputPath string, stdout, stderr io.Writer,
+	format legacylinter.Format, outputPath string, stdout, stderr io.Writer,
 ) error {
 	src, err := io.ReadAll(stdin)
 	if err != nil {
@@ -864,17 +864,17 @@ func lintStdin(stdin io.Reader, stdinFilename, configPath string, noConfig, fix 
 		}
 		// After applying the fix we lint the rewritten body so the
 		// diagnostics reflect what the buffer will actually contain.
-		ds, derr := linter.LintFileWithConfig(logical, []byte(out), cfg)
+		ds, derr := legacylinter.LintFileWithConfig(logical, []byte(out), cfg)
 		if derr != nil {
 			return fmt.Errorf("lint: re-lint stdin: %v", derr)
 		}
-		if format == linter.FormatSARIF {
-			if err := linter.WriteSARIFLog(stderr, ds, sarifTool()); err != nil {
+		if format == legacylinter.FormatSARIF {
+			if err := legacylinter.WriteSARIFLog(stderr, ds, sarifTool()); err != nil {
 				return fmt.Errorf("lint: write sarif: %v", err)
 			}
 		} else {
 			for _, d := range ds {
-				_ = linter.WriteDiagnostic(stderr, d, format)
+				_ = legacylinter.WriteDiagnostic(stderr, d, format)
 			}
 		}
 		fmt.Fprintf(stderr, "stdin: %d diagnostics, %d fixes applied\n",
@@ -882,18 +882,18 @@ func lintStdin(stdin io.Reader, stdinFilename, configPath string, noConfig, fix 
 		return nil
 	}
 
-	ds, derr := linter.LintFileWithConfig(logical, src, cfg)
+	ds, derr := legacylinter.LintFileWithConfig(logical, src, cfg)
 	if derr != nil {
 		return fmt.Errorf("lint: parse stdin: %v", derr)
 	}
-	if format == linter.FormatSARIF {
-		if err := linter.WriteSARIFLog(sink, ds, sarifTool()); err != nil {
+	if format == legacylinter.FormatSARIF {
+		if err := legacylinter.WriteSARIFLog(sink, ds, sarifTool()); err != nil {
 			return fmt.Errorf("lint: write sarif: %v", err)
 		}
 		return nil
 	}
 	for _, d := range ds {
-		_ = linter.WriteDiagnostic(sink, d, format)
+		_ = legacylinter.WriteDiagnostic(sink, d, format)
 	}
 	return nil
 }
@@ -901,12 +901,12 @@ func lintStdin(stdin io.Reader, stdinFilename, configPath string, noConfig, fix 
 // fixStdin parses src, applies safe fixes, and returns the rewritten
 // body plus the list of fixed diagnostics. Mirrors fixOne minus the
 // disk dance: there's no path to atomic-rename onto.
-func fixStdin(filename string, src []byte, cfg linter.Config) (string, []linter.FixedDiagnostic, error) {
+func fixStdin(filename string, src []byte, cfg legacylinter.Config) (string, []legacylinter.FixedDiagnostic, error) {
 	cf, err := cst.Parse(filename, src)
 	if err != nil {
 		return "", nil, err
 	}
-	_, fixed := linter.FixWithConfig(cf.AST, cfg, filename)
+	_, fixed := legacylinter.FixWithConfig(cf.AST, cfg, filename)
 	if len(fixed) == 0 {
 		return string(src), nil, nil
 	}
@@ -919,14 +919,14 @@ func fixStdin(filename string, src []byte, cfg linter.Config) (string, []linter.
 // and a rename so a crash mid-write can't truncate the source.
 //
 // Codes ignored by cfg (globally or per-file) are skipped inside
-// linter.FixWithConfig, so the on-disk file stays consistent with
+// legacylinter.FixWithConfig, so the on-disk file stays consistent with
 // the diagnostics the user is allowed to see.
-func fixOne(path string, src []byte, cfg linter.Config) (int, error) {
+func fixOne(path string, src []byte, cfg legacylinter.Config) (int, error) {
 	cf, err := cst.Parse(path, src)
 	if err != nil {
 		return 0, err
 	}
-	_, fixed := linter.FixWithConfig(cf.AST, cfg, path)
+	_, fixed := legacylinter.FixWithConfig(cf.AST, cfg, path)
 	if len(fixed) == 0 {
 		return 0, nil
 	}
@@ -1012,34 +1012,34 @@ func collectPyPaths(dir string) ([]string, error) {
 	return paths, nil
 }
 
-// openLintCache resolves cachePath into a *linter.Cache, returning
+// openLintCache resolves cachePath into a *legacylinter.Cache, returning
 // nil when caching is disabled (empty path). A corrupt cache file
 // produces a warning on stderr and an empty cache; the lint run
 // continues either way.
-func openLintCache(cachePath string, stderr io.Writer) (*linter.Cache, error) {
+func openLintCache(cachePath string, stderr io.Writer) (*legacylinter.Cache, error) {
 	if cachePath == "" {
 		return nil, nil
 	}
 	warn := func(msg string) { fmt.Fprintln(stderr, "warning:", msg) }
-	c, err := linter.OpenCache(cachePath, warn)
+	c, err := legacylinter.OpenCache(cachePath, warn)
 	if err != nil {
 		return nil, fmt.Errorf("lint: open cache %s: %v", cachePath, err)
 	}
 	return c, nil
 }
 
-func resolveLintConfig(walkFrom, configPath string, noConfig bool) (linter.Config, string, error) {
+func resolveLintConfig(walkFrom, configPath string, noConfig bool) (legacylinter.Config, string, error) {
 	if noConfig {
-		return linter.Config{}, "", nil
+		return legacylinter.Config{}, "", nil
 	}
 	if configPath != "" {
-		cfg, err := linter.LoadConfig(configPath)
+		cfg, err := legacylinter.LoadConfig(configPath)
 		if err != nil {
-			return linter.Config{}, "", err
+			return legacylinter.Config{}, "", err
 		}
 		return cfg, configPath, nil
 	}
-	return linter.DiscoverConfig(walkFrom)
+	return legacylinter.DiscoverConfig(walkFrom)
 }
 
 // symbolsCmd builds a symbol table for one file or every .py under a
@@ -1057,7 +1057,7 @@ func symbolsCmd(path string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		sm := symbols2.Build(mod2)
+		sm := symbols.Build(mod2)
 		printSymbolModule(stdout, path, sm)
 		return nil
 	}
@@ -1094,28 +1094,28 @@ func symbolsCmd(path string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "%d passed, %d parse-failed, %d panicked\n", passed, parseFailed, panicked)
 	if panicked > 0 {
-		return fmt.Errorf("%d files panicked in symbols2.Build", panicked)
+		return fmt.Errorf("%d files panicked in symbols.Build", panicked)
 	}
 	return nil
 }
 
-func buildSymbolsSafe2(mod *parser2.Module) (err error) {
+func buildSymbolsSafe2(mod *parser.Module) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	_ = symbols2.Build(mod)
+	_ = symbols.Build(mod)
 	return nil
 }
 
 // printSymbolModule writes a compact one-scope-per-line dump for a single
 // file invocation. The format prioritises being grep-friendly over being
 // pretty.
-func printSymbolModule(w io.Writer, path string, mod *symbols2.Module) {
+func printSymbolModule(w io.Writer, path string, mod *symbols.Module) {
 	fmt.Fprintf(w, "# %s\n", path)
-	var walk func(s *symbols2.Scope, depth int)
-	walk = func(s *symbols2.Scope, depth int) {
+	var walk func(s *symbols.Scope, depth int)
+	walk = func(s *symbols.Scope, depth int) {
 		indent := strings.Repeat("  ", depth)
 		fmt.Fprintf(w, "%s%s %q\n", indent, s.Kind, s.Name)
 		for name, sym := range s.Symbols {
@@ -1133,21 +1133,21 @@ func printSymbolModule(w io.Writer, path string, mod *symbols2.Module) {
 
 // flagString renders a BindFlag as a comma-separated list. Unflagged
 // names render as "-".
-func flagString(f symbols2.BindFlag) string {
+func flagString(f symbols.BindFlag) string {
 	parts := []string{}
 	pairs := []struct {
-		f symbols2.BindFlag
+		f symbols.BindFlag
 		s string
 	}{
-		{symbols2.FlagBound, "bound"},
-		{symbols2.FlagUsed, "used"},
-		{symbols2.FlagParam, "param"},
-		{symbols2.FlagGlobal, "global"},
-		{symbols2.FlagNonlocal, "nonlocal"},
-		{symbols2.FlagAnnotation, "ann"},
-		{symbols2.FlagImport, "import"},
-		{symbols2.FlagFree, "free"},
-		{symbols2.FlagCell, "cell"},
+		{symbols.FlagBound, "bound"},
+		{symbols.FlagUsed, "used"},
+		{symbols.FlagParam, "param"},
+		{symbols.FlagGlobal, "global"},
+		{symbols.FlagNonlocal, "nonlocal"},
+		{symbols.FlagAnnotation, "ann"},
+		{symbols.FlagImport, "import"},
+		{symbols.FlagFree, "free"},
+		{symbols.FlagCell, "cell"},
 	}
 	for _, p := range pairs {
 		if f&p.f != 0 {

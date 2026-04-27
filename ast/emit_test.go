@@ -3,7 +3,7 @@ package ast
 import (
 	"testing"
 
-	"github.com/tamnd/gopapy/parser"
+	"github.com/tamnd/gopapy/legacy/parser"
 )
 
 // parseAST is a helper that runs the full pipeline (parser → AST emitter)
