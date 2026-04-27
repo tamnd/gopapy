@@ -28,7 +28,7 @@ import (
 	"github.com/tamnd/gopapy/symbols"
 )
 
-const version = "0.3.7"
+const version = "0.3.8"
 
 func init() {
 	// Mirror the CLI version into the LSP server so the initialize

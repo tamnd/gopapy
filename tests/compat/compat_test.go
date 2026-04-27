@@ -242,9 +242,11 @@ func TestOracle_Py310(t *testing.T) {
 	runOracleTest(t, 10)
 }
 
-// TestOracle_Py39 is a placeholder. See TestOracle_Py312.
+// TestOracle_Py39 verifies that `gopapy dump --py 3.9` produces output
+// byte-identical to Python 3.9's ast.dump() for all compatible fixtures.
+// Python 3.9 uses showEmpty format; no match/case, no except*, no type_params.
 func TestOracle_Py39(t *testing.T) {
-	t.Skip("version-aware dump for 3.9 not yet implemented (spec 1324); enable after v0.3.8")
+	runOracleTest(t, 9)
 }
 
 // TestOracle_Py38 is a placeholder. See TestOracle_Py312.
