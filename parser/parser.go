@@ -747,7 +747,7 @@ func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
 				}
 				// genexp: single positional arg followed by `for` in
 				// the same paren list.
-				if len(args) == 0 && len(kwargs) == 0 && p.isKeyword("for") {
+				if len(args) == 0 && len(kwargs) == 0 && p.isCompForStart() {
 					gens, err := p.parseComprehensionClauses()
 					if err != nil {
 						return nil, nil, pos, err
@@ -765,7 +765,7 @@ func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
 			if err != nil {
 				return nil, nil, pos, err
 			}
-			if len(args) == 0 && len(kwargs) == 0 && p.isKeyword("for") {
+			if len(args) == 0 && len(kwargs) == 0 && p.isCompForStart() {
 				gens, err := p.parseComprehensionClauses()
 				if err != nil {
 					return nil, nil, pos, err
@@ -1182,7 +1182,7 @@ func (p *parser) parseParenAtom() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.isKeyword("for") {
+	if p.isCompForStart() {
 		gens, err := p.parseComprehensionClauses()
 		if err != nil {
 			return nil, err
@@ -1239,7 +1239,7 @@ func (p *parser) parseListAtom() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.isKeyword("for") {
+	if p.isCompForStart() {
 		gens, err := p.parseComprehensionClauses()
 		if err != nil {
 			return nil, err
@@ -1342,7 +1342,7 @@ func (p *parser) parseBraceAtom() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		if p.isKeyword("for") {
+		if p.isCompForStart() {
 			gens, err := p.parseComprehensionClauses()
 			if err != nil {
 				return nil, err
@@ -1392,7 +1392,7 @@ func (p *parser) parseBraceAtom() (Expr, error) {
 		}
 		return &Dict{P: pos, Keys: keys, Values: values}, nil
 	}
-	if p.isKeyword("for") {
+	if p.isCompForStart() {
 		gens, err := p.parseComprehensionClauses()
 		if err != nil {
 			return nil, err
@@ -1491,6 +1491,17 @@ func (p *parser) parseComprehensionClauses() ([]*Comprehension, error) {
 		})
 	}
 	return gens, nil
+}
+
+// isCompForStart returns true if the current token starts a
+// comprehension's for-clause: either `for` or `async for`. Use this
+// at every comprehension entry point (list/set/dict/genexp, generic
+// call) so async comprehensions are recognised consistently.
+func (p *parser) isCompForStart() bool {
+	if p.isKeyword("for") {
+		return true
+	}
+	return p.isKeyword("async") && p.peekIsFor()
 }
 
 func (p *parser) peekIsFor() bool {
