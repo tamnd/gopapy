@@ -1,8 +1,8 @@
 package linter
 
 import (
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/diag"
 )
 
 // checkE711 fires on `==` / `!=` against `None`. PEP 8 says use `is`

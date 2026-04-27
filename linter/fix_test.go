@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/parser"
 )
 
 // fixSrc parses src, runs Fix, then unparses. Returns the resulting

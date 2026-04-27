@@ -17,7 +17,7 @@ import (
 
 	plexer "github.com/alecthomas/participle/v2/lexer"
 
-	"github.com/tamnd/gopapy/v1/lex"
+	"github.com/tamnd/gopapy/lex"
 )
 
 // definition adapts our lex package to participle's lexer.Definition. It

@@ -9,7 +9,7 @@ import (
 
 	pp "github.com/alecthomas/participle/v2"
 
-	"github.com/tamnd/gopapy/v1/lex"
+	"github.com/tamnd/gopapy/lex"
 )
 
 // FuzzParseFile asserts that ParseFile never panics and never returns

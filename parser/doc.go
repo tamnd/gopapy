@@ -12,7 +12,7 @@
 //
 // Migration is a one-line import change:
 //
-//	- "github.com/tamnd/gopapy/v1/parser"
+//	- "github.com/tamnd/gopapy/parser"
 //	+ "github.com/tamnd/gopapy/v2/parser2"
 //
 // The AST dump format is identical; there are no field renames or

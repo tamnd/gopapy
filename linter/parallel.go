@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/diag"
 )
 
 // FileResult is the per-file output of LintFiles. Diagnostics is the

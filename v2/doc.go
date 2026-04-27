@@ -15,6 +15,6 @@
 //	parser2.DumpModule(*Module) string
 //	parser2.Dump(Expr) string
 //
-// v1 (`github.com/tamnd/gopapy/v1`) receives security and
+// v1 (`github.com/tamnd/gopapy`) receives security and
 // correctness fixes only. All new features target v2.
 package v2

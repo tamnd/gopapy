@@ -1,7 +1,7 @@
 package ast
 
 import (
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/parser"
 )
 
 // emitMatch lowers a parser.MatchStmt into the canonical Match AST node.

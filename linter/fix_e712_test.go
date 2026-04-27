@@ -3,8 +3,8 @@ package linter
 import (
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/parser"
 )
 
 func TestFixE712(t *testing.T) {

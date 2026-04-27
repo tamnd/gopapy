@@ -1,8 +1,8 @@
 package linter
 
 import (
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/diag"
 )
 
 // checkE712 fires on `==` / `!=` against `True` or `False`. PEP 8

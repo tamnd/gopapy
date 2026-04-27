@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/ast"
+	"github.com/tamnd/gopapy/ast"
 )
 
 func TestSeverityString(t *testing.T) {

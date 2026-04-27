@@ -1,8 +1,8 @@
 package linter
 
 import (
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/symbols"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/symbols"
 )
 
 // FixedDiagnostic is what Fix removed: code, position the diagnostic

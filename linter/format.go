@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/diag"
 )
 
 // Format names the supported diagnostic output formats. Stable string

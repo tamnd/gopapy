@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/parser"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/parser"
 )
 
 // lintSrc is the test helper. It mirrors LintFile (parses + lints +

@@ -1,8 +1,8 @@
 package linter
 
 import (
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/diag"
 )
 
 // checkF541 fires on f-strings whose values contain no placeholder.

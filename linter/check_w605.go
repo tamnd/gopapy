@@ -1,10 +1,10 @@
 package linter
 
 import (
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/cst"
-	"github.com/tamnd/gopapy/v1/diag"
-	"github.com/tamnd/gopapy/v1/lex"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/cst"
+	"github.com/tamnd/gopapy/diag"
+	"github.com/tamnd/gopapy/lex"
 )
 
 // checkW605 fires on `\X` in a string literal where X is not a

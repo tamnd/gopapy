@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tamnd/gopapy/v1/internal/asdlgen"
+	"github.com/tamnd/gopapy/internal/asdlgen"
 )
 
 func main() {

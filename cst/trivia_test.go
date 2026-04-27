@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/tamnd/gopapy/v1/ast"
+	"github.com/tamnd/gopapy/ast"
 )
 
 // parseTrivia is the small helper every trivia test reaches for: parse

@@ -1,9 +1,9 @@
 package linter
 
 import (
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/diag"
-	"github.com/tamnd/gopapy/v1/symbols"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/diag"
+	"github.com/tamnd/gopapy/symbols"
 )
 
 // checkF841 fires when a local in a function or lambda body is bound

@@ -3,8 +3,8 @@ package linter
 import (
 	"strconv"
 
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/diag"
 )
 
 // checkF501 fires on `"<fmt>" % args` where the conversion-count in

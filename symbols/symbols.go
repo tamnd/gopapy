@@ -12,8 +12,8 @@
 package symbols
 
 import (
-	"github.com/tamnd/gopapy/v1/ast"
-	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/ast"
+	"github.com/tamnd/gopapy/diag"
 )
 
 // Module is the top-level result of Build. The root scope mirrors the

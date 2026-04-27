@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tamnd/gopapy/v1/diag"
+	"github.com/tamnd/gopapy/diag"
 )
 
 // Cache is an opt-in result cache. Keyed on (absolute path, mtime,
