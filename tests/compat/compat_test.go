@@ -160,7 +160,7 @@ func runOracleTest(t *testing.T, pyMinor int) {
 			fail++
 			continue
 		}
-		want := strings.TrimRight(string(wantOut), "\n")
+		want := strings.TrimRight(string(wantOut), "\r\n")
 
 		// Get gopapy dump output.
 		gopapyArgs := []string{"dump", "--py", fmt.Sprintf("3.%d", pyMinor), fix}
@@ -171,7 +171,7 @@ func runOracleTest(t *testing.T, pyMinor int) {
 			fail++
 			continue
 		}
-		got := strings.TrimRight(string(gotOut), "\n")
+		got := strings.TrimRight(string(gotOut), "\r\n")
 
 		if got != want {
 			t.Errorf("mismatch for %s:\nwant: %s\n got: %s\ndiff:\n%s",
@@ -209,9 +209,14 @@ func diffLines(want, got string) string {
 	return b.String()
 }
 
+// TestOracle_Py314 verifies that `gopapy dump --py 3.14` produces output
+// byte-identical to Python 3.14's ast.dump() for all fixtures.
+func TestOracle_Py314(t *testing.T) {
+	runOracleTest(t, 14)
+}
+
 // TestOracle_Py313 verifies that `gopapy dump --py 3.13` produces output
 // byte-identical to Python 3.13's ast.dump() for all compatible fixtures.
-// This test is expected to pass today.
 func TestOracle_Py313(t *testing.T) {
 	runOracleTest(t, 13)
 }

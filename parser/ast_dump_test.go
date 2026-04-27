@@ -51,7 +51,7 @@ func TestASTDump(t *testing.T) {
 			if perr != nil {
 				t.Skipf("parser cannot parse %s: %v", name, perr)
 			}
-			got := parser.ASTDump(mod)
+			got := parser.ASTDump(mod, 14)
 
 			if got != want {
 				t.Errorf("ASTDump mismatch for %s\nwant: %s\n got: %s", name, want, got)

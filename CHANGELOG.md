@@ -14,6 +14,7 @@ changes.
 
 ## Releases
 
+- [0.3.4](changelog/0.3.4.md) — version-aware ASTDump, TestOracle_Py314 active
 - [0.3.3](changelog/0.3.3.md) — stdlib compat baseline, form feed fix, per-version oracle tests
 - [0.3.2](changelog/0.3.2.md)
 - [0.3.1](changelog/0.3.1.md)

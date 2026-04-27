@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build binaries for (e.g. v0.3.4)'
+        required: true
 
 env:
   GO_VERSION: '1.26'
@@ -41,11 +46,16 @@ jobs:
             archive: zip
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+
+      - name: Set release tag
+        run: echo "RELEASE_TAG=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
 
       - name: Build
         env:
@@ -56,7 +66,7 @@ jobs:
 
       - name: Stage archive contents
         run: |
-          stage=gopapy-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          stage=gopapy-${RELEASE_TAG}-${{ matrix.goos }}-${{ matrix.goarch }}
           mkdir -p "$stage"
           cp "${{ matrix.bin }}" "$stage/"
           cp LICENSE README.md CHANGELOG.md "$stage/"
@@ -73,7 +83,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: gopapy-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
+          path: gopapy-${{ env.RELEASE_TAG }}-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
           if-no-files-found: error
           retention-days: 7
 
@@ -83,6 +93,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set release tag
+        run: echo "RELEASE_TAG=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@v8
         with:
@@ -95,7 +110,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*
-          generate_release_notes: true
           draft: false
           prerelease: false
