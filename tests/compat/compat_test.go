@@ -249,7 +249,10 @@ func TestOracle_Py39(t *testing.T) {
 	runOracleTest(t, 9)
 }
 
-// TestOracle_Py38 is a placeholder. See TestOracle_Py312.
+// TestOracle_Py38 verifies that `gopapy dump --py 3.8` produces output
+// byte-identical to Python 3.8's ast.dump() for all compatible fixtures.
+// Python 3.8 uses showEmpty format; has Index/ExtSlice wrappers for subscripts,
+// kind=None on Constant, type_comment=None on several nodes.
 func TestOracle_Py38(t *testing.T) {
-	t.Skip("version-aware dump for 3.8 not yet implemented (spec 1324); enable after v0.3.9")
+	runOracleTest(t, 8)
 }
