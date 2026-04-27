@@ -1,23 +1,17 @@
 package linter
 
 import (
-	"github.com/tamnd/gopapy/ast"
 	"github.com/tamnd/gopapy/diag"
+	"github.com/tamnd/gopapy/parser"
 )
 
-// checkE711 fires on `==` / `!=` against `None`. PEP 8 says use `is`
-// / `is not` for None — the singleton's identity is the whole point.
-//
-// The check fires on either side: `None == x` is just as wrong as
-// `x == None`. pycodestyle catches both. The diagnostic Pos is the
-// Compare node's position, matching F632's style.
-func checkE711(mod *ast.Module) []diag.Diagnostic {
+func checkE711(mod *parser.Module) []diag.Diagnostic {
 	if mod == nil {
 		return nil
 	}
 	var out []diag.Diagnostic
-	ast.WalkPreorder(mod, func(n ast.Node) {
-		c, ok := n.(*ast.Compare)
+	walkModule(mod, func(e parser.Expr) {
+		c, ok := e.(*parser.Compare)
 		if !ok {
 			return
 		}
@@ -27,14 +21,14 @@ func checkE711(mod *ast.Module) []diag.Diagnostic {
 				break
 			}
 			right := c.Comparators[i]
-			if !isEqOrNotEq(op) {
+			if op != "Eq" && op != "NotEq" {
 				left = right
 				continue
 			}
 			if isNoneConstant(left) || isNoneConstant(right) {
 				out = append(out, diag.Diagnostic{
-					Pos:      c.Pos,
-					End:      c.Pos,
+					Pos:      c.P,
+					End:      c.P,
 					Severity: diag.SeverityWarning,
 					Code:     CodeComparisonToNone,
 					Msg:      "comparison to None should be `if cond is None:`",
@@ -46,15 +40,7 @@ func checkE711(mod *ast.Module) []diag.Diagnostic {
 	return out
 }
 
-func isEqOrNotEq(op ast.CmpopNode) bool {
-	switch op.(type) {
-	case *ast.Eq, *ast.NotEq:
-		return true
-	}
-	return false
-}
-
-func isNoneConstant(e ast.ExprNode) bool {
-	c, ok := e.(*ast.Constant)
-	return ok && c.Value.Kind == ast.ConstantNone
+func isNoneConstant(e parser.Expr) bool {
+	c, ok := e.(*parser.Constant)
+	return ok && c.Kind == "None"
 }

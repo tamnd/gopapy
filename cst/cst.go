@@ -17,7 +17,7 @@ import (
 
 	"github.com/tamnd/gopapy/ast"
 	"github.com/tamnd/gopapy/lex"
-	"github.com/tamnd/gopapy/parser"
+	"github.com/tamnd/gopapy/legacy/parser"
 )
 
 // File is a parsed Python source file together with the original
