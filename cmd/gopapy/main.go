@@ -485,9 +485,17 @@ func diagCmd(args []string, stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintf(stderr, "%d files, %d parse-failed, %d diagnostics\n",
 			fileCount, parseFailed, len(diagnostics))
-	} else {
-		process(path)
+		// In directory mode, parse failures are informational: parser2 does
+		// not yet handle every Python 3.14 construct, so failing the whole
+		// run would block corpus scanning. Only error-level diagnostics gate
+		// the exit code in directory mode.
+		if errorCount > 0 {
+			return fmt.Errorf("diag: %d errors", errorCount)
+		}
+		return nil
 	}
+
+	process(path)
 
 	if errorCount > 0 || parseFailed > 0 {
 		return fmt.Errorf("diag: %d errors, %d parse failures", errorCount, parseFailed)
