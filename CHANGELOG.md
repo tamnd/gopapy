@@ -14,6 +14,13 @@ changes.
 
 ## Releases
 
+- [0.3.3](changelog/0.3.3.md) — stdlib compat baseline, form feed fix, per-version oracle tests
+- [0.3.2](changelog/0.3.2.md)
+- [0.3.1](changelog/0.3.1.md)
+- [0.2.15](changelog/0.2.15.md)
+- [0.2.14](changelog/0.2.14.md)
+- [0.2.13](changelog/0.2.13.md)
+- [0.2.12](changelog/0.2.12.md)
 - [0.2.11](changelog/0.2.11.md)
 - [0.2.10](changelog/0.2.10.md)
 - [0.2.9](changelog/0.2.9.md)

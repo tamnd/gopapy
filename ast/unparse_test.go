@@ -44,6 +44,9 @@ func TestUnparse_RoundTrip_Fixtures(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
+			if strings.HasPrefix(strings.TrimSpace(string(data)), "# parser: new") {
+				t.Skip("new-parser-only fixture; legacy parser skipped")
+			}
 			want, got := roundTrip(t, path, string(data))
 			if want != got {
 				t.Fatalf("Dump mismatch\n want: %s\n  got: %s", want, got)
