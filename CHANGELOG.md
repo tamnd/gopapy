@@ -14,6 +14,7 @@ changes.
 
 ## Releases
 
+- [0.3.7](changelog/0.3.7.md) — Python 3.10 oracle passing, 14 match/case markers
 - [0.3.6](changelog/0.3.6.md) — Python 3.11 oracle passing, 3 fixture markers
 - [0.3.5](changelog/0.3.5.md) — Python 3.12 oracle passing (showEmpty), 8 fixture markers
 - [0.3.4](changelog/0.3.4.md) — version-aware ASTDump, TestOracle_Py314 active

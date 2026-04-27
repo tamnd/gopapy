@@ -1,3 +1,4 @@
+# Python 3.10+: match/case statement — as (PEP 634)
 def f(x):
     match x:
         case [1, 2] as pair:
