@@ -495,7 +495,7 @@ func (p *parser) parseFromImportStmt() (Stmt, error) {
 		}
 	}
 	module := ""
-	if p.cur.kind == tkName && !isReservedKeyword(p.cur.val) {
+	if p.cur.kind == tkName && (!isReservedKeyword(p.cur.val) || isSoftKeyword(p.cur.val)) {
 		mod, err := p.parseDottedName()
 		if err != nil {
 			return nil, err
