@@ -1,3 +1,4 @@
+# Python 3.10+: match/case statement — paren subject (PEP 634)
 def f(v):
     match ():
         case ():

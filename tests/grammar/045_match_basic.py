@@ -1,3 +1,4 @@
+# Python 3.10+: match/case statement — basic (PEP 634)
 def f(x):
     match x:
         case 0:

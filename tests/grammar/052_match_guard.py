@@ -1,3 +1,4 @@
+# Python 3.10+: match/case statement — guard (PEP 634)
 def f(x):
     match x:
         case n if n > 0:
