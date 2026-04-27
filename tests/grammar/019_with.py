@@ -1,3 +1,4 @@
+# Python 3.9+: parenthesized multi-context-manager with statement
 with open("a") as f:
     f.read()
 with open("a") as f, open("b") as g:
