@@ -9,15 +9,29 @@ changes.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-04-26
+
+### Added
+
+- **`linter2`**: four new checks:
+  - **F403** — star import (`from x import *`)
+  - **F631** — `assert` with a non-empty tuple (always truthy)
+  - **W291** — trailing whitespace on any line (raw-source scan, via `LintFile`)
+  - **F901** — `raise NotImplemented` instead of `raise NotImplementedError`
+- Total linter2 checks: 14 (ten ported from v1, four new). 30 tests.
+
 ## [0.2.3] - 2026-04-26
 
 ### Changed
 
-- **`parse`, `dump`, `check`, `symbols`, `diag` commands** now route through
+- **`parse`, `symbols`, `diag` commands** now route through
   parser2+symbols2 instead of v1 parser+ast. Parser2 is ~83x faster on the
   122-line benchmark file (32 µs vs 2.67 ms).
-- **`lint`** command still uses v1 linter (config/cache/fix/noqa/SARIF
-  infrastructure is deferred; raw `linter2.LintFile` port ships in v0.3.x).
+- **`dump`** and **`check`** remain on v1 parser: `dump` needs CPython-
+  compatible `ast.dump` field order and quoting; `check` needs complete
+  Python 3.14 coverage (large ints, PEP 701 f-string `=`, etc.) that parser2
+  does not yet provide.
+- **`lint`** command still uses v1 linter.
 - CLI version bumped to `0.2.3`.
 
 ## [0.2.2] - 2026-04-26
