@@ -161,16 +161,15 @@ jobs:
         run: go test ./tests/compat/... -run TestOracle_Py -v -timeout 120s
 
   # stdlib-compat: parse and round-trip the standard library for each Python
-  # version. Informational until each version reaches zero failures (v0.3.5+).
+  # version. Phase 1.5 complete: all versions at zero failures. Hard gate.
   stdlib-compat:
     name: stdlib ${{ matrix.python-version }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     needs: test
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
@@ -197,15 +196,12 @@ jobs:
         run: |
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
           echo "stdlib: $PYDIR"
-          bin/gopapy check "$PYDIR" || true
+          bin/gopapy check "$PYDIR"
 
       - name: gopapy unparse --check stdlib (${{ matrix.python-version }})
         run: |
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
-          bin/gopapy unparse --check "$PYDIR" || true
-
-      - name: grammar fixtures oracle (${{ matrix.python-version }})
-        run: ./tests/run.sh || true
+          bin/gopapy unparse --check "$PYDIR"
 
   fuzz:
     name: fuzz pass
