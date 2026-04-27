@@ -69,14 +69,7 @@ jobs:
     name: cpython 3.14 stdlib parse
     runs-on: ubuntu-latest
     needs: test
-    # The new parser has known stdlib failures grouped into ~6 bug
-    # categories, tracked in spec 1238 (parse-every-Python roadmap).
-    # Phase 1 of that roadmap drives the count to zero, at which
-    # point this becomes a hard gate again. Until then, a regression
-    # in the stdlib pass count shows as a failed job here without
-    # blocking the merge — read the log to confirm the count went
-    # down, not up.
-    continue-on-error: true
+    # Phase 1 complete: 1842/1842 stdlib files parse. Hard gate.
     steps:
       - uses: actions/checkout@v6
 
@@ -115,24 +108,14 @@ jobs:
       - name: gopapy unparse --check stdlib
         run: |
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
-          # test_coroutines.py exposes a separate parser-side indent bug —
-          # tracked, not a regression of the unparser. Allow it for now.
-          bin/gopapy unparse --check \
-            --allow "$PYDIR/test/test_coroutines.py" \
-            "$PYDIR"
+          bin/gopapy unparse --check "$PYDIR"
 
       - name: gopapy unparse --check --comments stdlib
         run: |
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
-          bin/gopapy unparse --check --comments \
-            --allow "$PYDIR/test/test_coroutines.py" \
-            "$PYDIR"
+          bin/gopapy unparse --check --comments "$PYDIR"
 
       - name: gopapy lint stdlib (informational)
-        # Print F401/F811/F841 totals over the local CPython 3.14 stdlib.
-        # Not a hard gate — gopapy's linter is coarser than pyflakes (no
-        # branch-aware F811, no __all__ for F401), so absolute counts are
-        # noisy. Watch for dramatic per-PR shifts as a regression hint.
         run: |
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
           bin/gopapy lint "$PYDIR" >/dev/null 2> /tmp/lint.summary
@@ -154,10 +137,6 @@ jobs:
       - name: Print tool versions
         run: go version
 
-      # 30 s per target keeps the PR-blocking budget under 2 min while
-      # still exercising the corpus mutator past the seed set. Crashes
-      # land in testdata/fuzz/<Name>/ and become permanent regression
-      # seeds in the same PR that fixes them.
       - name: fuzz lex.Scan
         run: go test ./lex -run='^$' -fuzz=FuzzScan -fuzztime=30s
 
@@ -182,9 +161,5 @@ jobs:
       - name: Print tool versions
         run: go version
 
-      # Print parser/lex/symbols benchmark numbers on every PR. This is
-      # an information channel for reviewers, not a hard gate — see
-      # notes/Spec/1100/1132 for why hard alloc-budget gating is
-      # deferred to the next version.
       - name: go test -bench
         run: go test -run='^$' -bench=. -benchtime=3x -benchmem ./lex ./parser ./symbols
