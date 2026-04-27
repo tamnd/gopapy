@@ -28,7 +28,7 @@ import (
 	"github.com/tamnd/gopapy/symbols"
 )
 
-const version = "0.3.3"
+const version = "0.3.4"
 
 func init() {
 	// Mirror the CLI version into the LSP server so the initialize
@@ -133,7 +133,6 @@ func dumpCmd(args []string, stdout io.Writer) error {
 	if len(rest) == 0 {
 		return fmt.Errorf("dump: missing FILE argument")
 	}
-	_ = parser.FeaturesFor(pyVer) // reserved for Round 1.5.4 version-aware dump
 	src, err := os.ReadFile(rest[0])
 	if err != nil {
 		return err
@@ -142,7 +141,7 @@ func dumpCmd(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, parser.ASTDump(m))
+	fmt.Fprintln(stdout, parser.ASTDump(m, pyVer))
 	return nil
 }
 

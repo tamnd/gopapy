@@ -1,3 +1,4 @@
+# Python 3.13+: type parameter defaults (PEP 696) — `[T = int]` requires 3.13
 def bounded[T: int](x: T) -> T:
     return x
 

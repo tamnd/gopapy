@@ -209,9 +209,14 @@ func diffLines(want, got string) string {
 	return b.String()
 }
 
+// TestOracle_Py314 verifies that `gopapy dump --py 3.14` produces output
+// byte-identical to Python 3.14's ast.dump() for all fixtures.
+func TestOracle_Py314(t *testing.T) {
+	runOracleTest(t, 14)
+}
+
 // TestOracle_Py313 verifies that `gopapy dump --py 3.13` produces output
 // byte-identical to Python 3.13's ast.dump() for all compatible fixtures.
-// This test is expected to pass today.
 func TestOracle_Py313(t *testing.T) {
 	runOracleTest(t, 13)
 }
