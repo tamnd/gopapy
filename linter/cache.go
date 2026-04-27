@@ -12,17 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tamnd/gopapy/legacy/diag"
+	"github.com/tamnd/gopapy/diag"
 )
 
-// Cache is an opt-in result cache. Keyed on (absolute path, mtime,
-// size, config hash); a miss on any field re-lints. Safe for
-// concurrent use by LintFiles workers.
-//
-// The cache is a hint, not a database: corrupt state is logged and
-// discarded, never returned. There is no scenario in which the
-// cache returns diagnostics computed from stale source — a file
-// edit changes mtime which changes the key.
+// Cache is an opt-in result cache keyed on (absolute path, mtime,
+// size, config hash). Safe for concurrent use by LintFiles workers.
 type Cache struct {
 	path string
 
@@ -38,12 +32,8 @@ type cacheEntry struct {
 	Diagnostics []diag.Diagnostic
 }
 
-// OpenCache loads a cache from path. A missing file is not an error
-// (the cache starts empty). A corrupt file is logged via warn and
-// the cache starts empty too — corruption never blocks linting.
-//
-// The returned Cache must be closed via Save to persist any new
-// entries; without Save the cache file is unchanged.
+// OpenCache loads a cache from path. A missing file is not an error.
+// A corrupt file is logged via warn and the cache starts empty.
 func OpenCache(path string, warn func(string)) (*Cache, error) {
 	c := &Cache{path: path, entries: map[string]cacheEntry{}}
 	f, err := os.Open(path)
@@ -65,9 +55,7 @@ func OpenCache(path string, warn func(string)) (*Cache, error) {
 	return c, nil
 }
 
-// Save writes the cache to disk. Atomic via tmp-then-rename so a
-// concurrent reader never sees a half-written file. No-op when the
-// cache hasn't been mutated.
+// Save writes the cache to disk via tmp-then-rename.
 func (c *Cache) Save() error {
 	if c == nil {
 		return nil
@@ -104,22 +92,7 @@ func (c *Cache) Save() error {
 
 // Lookup returns cached diagnostics for path if the (mtime, size,
 // config-hash) tuple matches. Returns (nil, false) on any miss.
-// It is the exported counterpart of the internal lookup method and
-// allows external callers (e.g. lintFilesV2) to check the cache.
 func (c *Cache) Lookup(path string, info os.FileInfo, cfg Config) ([]diag.Diagnostic, bool) {
-	return c.lookup(path, info, cfg)
-}
-
-// Store records post-lint diagnostics under the current key so
-// subsequent Lookup calls with the same (mtime, size, config-hash)
-// can return a cached result.
-func (c *Cache) Store(path string, info os.FileInfo, cfg Config, ds []diag.Diagnostic) {
-	c.store(path, info, cfg, ds)
-}
-
-// lookup returns cached diagnostics for path if the (mtime, size,
-// config-hash) tuple matches. Returns (nil, false) on any miss.
-func (c *Cache) lookup(path string, info os.FileInfo, cfg Config) ([]diag.Diagnostic, bool) {
 	if c == nil {
 		return nil, false
 	}
@@ -144,9 +117,8 @@ func (c *Cache) lookup(path string, info os.FileInfo, cfg Config) ([]diag.Diagno
 	return out, true
 }
 
-// store records the post-lint diagnostics under the current key.
-// Subsequent lookups with the same (mtime, size, config-hash) hit.
-func (c *Cache) store(path string, info os.FileInfo, cfg Config, ds []diag.Diagnostic) {
+// Store records post-lint diagnostics under the current key.
+func (c *Cache) Store(path string, info os.FileInfo, cfg Config, ds []diag.Diagnostic) {
 	if c == nil {
 		return
 	}
@@ -167,10 +139,7 @@ func (c *Cache) store(path string, info os.FileInfo, cfg Config, ds []diag.Diagn
 	c.dirty = true
 }
 
-// configHash is sha256 of cfg with all slice fields sorted so the
-// hash is stable regardless of declaration order in pyproject.toml.
-// JSON is the marshalling form because the hash never leaves this
-// process and JSON is dependency-free.
+// configHash is sha256 of cfg with all slice fields sorted.
 func configHash(cfg Config) string {
 	norm := struct {
 		Select  []string
@@ -202,10 +171,7 @@ func sortedCopy(s []string) []string {
 	return out
 }
 
-// DefaultCachePath is ~/.cache/gopapy/lint.cache. Used by the CLI
-// when --cache is passed without an argument. Returns the empty
-// string when HOME isn't set; callers fall back to disabling cache
-// rather than writing to /lint.cache.
+// DefaultCachePath is ~/.cache/gopapy/lint.cache.
 func DefaultCachePath() string {
 	dir, err := os.UserCacheDir()
 	if err != nil || dir == "" {
