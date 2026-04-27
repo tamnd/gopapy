@@ -19,3 +19,7 @@
 # Test artefacts
 *.expected.json.tmp
 /coverage.out
+
+# corpus harness cache
+corpus/sdists/
+corpus/src/

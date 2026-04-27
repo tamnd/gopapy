@@ -14,6 +14,7 @@ changes.
 
 ## Releases
 
+- [0.4.1](changelog/0.4.1.md) — corpus harness scaffold (18 PyPI packages, download/check/roundtrip scripts)
 - [0.4.0](changelog/0.4.0.md) — stdlib-compat hard gates all 6 versions, Phase 1.5 complete
 - [0.3.9](changelog/0.3.9.md) — Python 3.8 oracle passing, ExtSlice + ExceptHandler fixes
 - [0.3.8](changelog/0.3.8.md) — Python 3.9 oracle passing, 3 with/for markers
