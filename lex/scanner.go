@@ -99,9 +99,10 @@ func (s *Scanner) Scan() (Token, error) {
 		if s.Done() {
 			return s.tok(EOF, ""), nil
 		}
-		// skip horizontal whitespace
+		// skip horizontal whitespace (including form feed and vertical tab,
+		// which CPython's tokenizer treats as whitespace)
 		c := s.peek(0)
-		if c == ' ' || c == '\t' {
+		if c == ' ' || c == '\t' || c == '\f' || c == '\v' {
 			s.advance(1)
 			continue
 		}

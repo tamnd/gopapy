@@ -122,17 +122,56 @@ jobs:
           tail -1 /tmp/lint.summary
         continue-on-error: true
 
-  stdlib-compat:
-    name: cpython ${{ matrix.python-version }} stdlib compat
-    runs-on: ubuntu-latest
+  # compat-oracle: per-Python-version oracle diff for grammar fixtures.
+  # Matrix: python-version x os. Each cell installs the target Python via uv
+  # and runs `go test ./tests/compat/` which selects the matching test function.
+  # Python 3.13 oracle passes today. Python 3.12 and below are skipped inside
+  # the Go test until version-aware dump is implemented (spec 1323-1324).
+  compat-oracle:
+    name: oracle ${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     needs: test
-    # Phase 1.5 baseline — informational until each version reaches zero
-    # failures and is individually flipped to a hard gate (v0.3.5).
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.13', '3.12', '3.11', '3.10', '3.9', '3.8']
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python ${{ matrix.python-version }} via uv
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Print tool versions
+        run: |
+          go version
+          uv python find ${{ matrix.python-version }}
+
+      - name: go test compat oracle (Python ${{ matrix.python-version }})
+        run: go test ./tests/compat/... -run TestOracle_Py -v -timeout 120s
+
+  # stdlib-compat: parse and round-trip the standard library for each Python
+  # version. Informational until each version reaches zero failures (v0.3.5+).
+  stdlib-compat:
+    name: stdlib ${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: test
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
         python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
 
@@ -164,6 +203,9 @@ jobs:
         run: |
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
           bin/gopapy unparse --check "$PYDIR" || true
+
+      - name: grammar fixtures oracle (${{ matrix.python-version }})
+        run: ./tests/run.sh || true
 
   fuzz:
     name: fuzz pass
