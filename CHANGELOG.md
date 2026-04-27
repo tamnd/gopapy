@@ -14,6 +14,7 @@ changes.
 
 ## Releases
 
+- [0.2.10](changelog/0.2.10.md)
 - [0.2.9](changelog/0.2.9.md)
 - [0.2.8](changelog/0.2.8.md)
 - [0.2.7](changelog/0.2.7.md)

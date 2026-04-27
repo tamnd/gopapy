@@ -721,7 +721,7 @@ func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
 				return nil, nil, pos, err
 			}
 			args = append(args, &Starred{P: sp, Value: v})
-		case p.cur.kind == tkName && !isReservedKeyword(p.cur.val):
+		case p.cur.kind == tkName && (!isReservedKeyword(p.cur.val) || isSoftKeyword(p.cur.val)):
 			// Look ahead one token to see if this is `name=value`.
 			nxt, err := p.peekTok()
 			if err != nil {
@@ -1747,6 +1747,16 @@ func unaryOpString(k tokKind) string {
 // isReservedKeyword reports whether a name token text is a Python
 // keyword that the parser handles specially (so it should not be
 // treated as a plain Name in lookahead checks).
+// isSoftKeyword reports whether s is one of Python's soft keywords —
+// names that act as keywords only in specific syntactic positions
+// (`match`/`case` for pattern matching, `type` for type-alias
+// statements) and are otherwise valid identifiers. Lookahead checks
+// that need to treat these as ordinary names use this to override the
+// reserved-keyword filter.
+func isSoftKeyword(s string) bool {
+	return s == "match" || s == "case" || s == "type"
+}
+
 func isReservedKeyword(s string) bool {
 	switch s {
 	case "and", "or", "not", "in", "is",
