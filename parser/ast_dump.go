@@ -699,13 +699,43 @@ func (d *dumper) adExpr(e Expr, ctx string) {
 		d.adExpr(n.Value, "Load")
 		d.b.WriteString(", slice=")
 		if d.py38 {
-			_, isSlice := n.Slice.(*Slice)
-			if !isSlice {
+			if tup, isTuple := n.Slice.(*Tuple); isTuple {
+				// Python 3.8: ExtSlice only when at least one element is a Slice;
+				// otherwise wrap the whole tuple in Index(value=Tuple(...)).
+				hasSlice := false
+				for _, elt := range tup.Elts {
+					if _, ok := elt.(*Slice); ok {
+						hasSlice = true
+						break
+					}
+				}
+				if hasSlice {
+					d.b.WriteString("ExtSlice(dims=[")
+					for i, elt := range tup.Elts {
+						if i > 0 {
+							d.b.WriteString(", ")
+						}
+						if _, eltIsSlice := elt.(*Slice); eltIsSlice {
+							d.adExpr(elt, "Load")
+						} else {
+							d.b.WriteString("Index(value=")
+							d.adExpr(elt, "Load")
+							d.b.WriteByte(')')
+						}
+					}
+					d.b.WriteString("])")
+				} else {
+					// No Slice in tuple — wrap whole tuple in Index
+					d.b.WriteString("Index(value=")
+					d.adExpr(n.Slice, "Load")
+					d.b.WriteByte(')')
+				}
+			} else if _, isSlice := n.Slice.(*Slice); isSlice {
+				d.adExpr(n.Slice, "Load")
+			} else {
 				d.b.WriteString("Index(value=")
 				d.adExpr(n.Slice, "Load")
 				d.b.WriteByte(')')
-			} else {
-				d.adExpr(n.Slice, "Load")
 			}
 		} else {
 			d.adExpr(n.Slice, "Load")
@@ -1216,6 +1246,9 @@ func (d *dumper) adExceptHandler(h *ExceptHandler) {
 		d.b.WriteString("type=")
 		d.adExpr(h.Type, "Load")
 		sep = true
+	} else if d.py38 {
+		d.b.WriteString("type=None")
+		sep = true
 	}
 	if h.Name != "" {
 		if sep {
@@ -1223,6 +1256,12 @@ func (d *dumper) adExceptHandler(h *ExceptHandler) {
 		}
 		d.b.WriteString("name=")
 		d.b.WriteString(pyRepr(h.Name))
+		sep = true
+	} else if d.py38 {
+		if sep {
+			d.b.WriteString(", ")
+		}
+		d.b.WriteString("name=None")
 		sep = true
 	}
 	if sep {

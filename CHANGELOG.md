@@ -14,6 +14,7 @@ changes.
 
 ## Releases
 
+- [0.3.9](changelog/0.3.9.md) — Python 3.8 oracle passing, ExtSlice + ExceptHandler fixes
 - [0.3.8](changelog/0.3.8.md) — Python 3.9 oracle passing, 3 with/for markers
 - [0.3.7](changelog/0.3.7.md) — Python 3.10 oracle passing, 14 match/case markers
 - [0.3.6](changelog/0.3.6.md) — Python 3.11 oracle passing, 3 fixture markers
