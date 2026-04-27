@@ -9,6 +9,17 @@ changes.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-04-26
+
+### Changed
+
+- **`parse`, `dump`, `check`, `symbols`, `diag` commands** now route through
+  parser2+symbols2 instead of v1 parser+ast. Parser2 is ~83x faster on the
+  122-line benchmark file (32 µs vs 2.67 ms).
+- **`lint`** command still uses v1 linter (config/cache/fix/noqa/SARIF
+  infrastructure is deferred; raw `linter2.LintFile` port ships in v0.3.x).
+- CLI version bumped to `0.2.3`.
+
 ## [0.2.2] - 2026-04-26
 
 ### Added
