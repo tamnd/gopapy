@@ -293,6 +293,59 @@ jobs:
       - name: gopapy unparse --check corpus
         run: bash corpus/roundtrip.sh || true
 
+  # corpus-astdiff: compare gopapy dump vs CPython ast.dump on a random sample.
+  # Seed defaults to YYYYMMDD so each day's sample differs but is reproducible.
+  # Informational (continue-on-error: true). Hard gate comes in v0.4.9.
+  corpus-astdiff:
+    name: corpus astdiff
+    runs-on: ubuntu-latest
+    needs: test
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: corpus cache restore
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: corpus/src
+          key: corpus-src-${{ hashFiles('corpus/packages.txt') }}
+
+      - name: download corpus
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install --upgrade pip
+          bash corpus/download.sh
+
+      - name: save corpus cache
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: corpus/src
+          key: corpus-src-${{ hashFiles('corpus/packages.txt') }}
+
+      - name: build gopapy
+        run: go build -o bin/gopapy ./cmd/gopapy
+
+      - name: corpus astdiff (100 files)
+        run: bash internal/oracle/corpus_diff.sh 100 || true
+
+      - name: upload diff log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-astdiff-log-${{ github.run_id }}
+          path: corpus_diff.log
+
   fuzz:
     name: fuzz pass
     runs-on: ubuntu-latest
