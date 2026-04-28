@@ -847,7 +847,7 @@ func (s *scanner) nextInternal() (token, error) {
 	switch {
 	case isDigit(c):
 		return s.scanNumber(start)
-	case isIdentStart(rune(c)) || c >= 0x80:
+	case c < 0x80 && identStartTable[c] || c >= 0x80:
 		return s.scanNameOrPrefixedString(start)
 	}
 	return token{}, fmt.Errorf("%d:%d: unexpected character %q",
@@ -936,6 +936,14 @@ func (s *scanner) scanNumber(start Pos) (token, error) {
 func (s *scanner) scanNameOrPrefixedString(start Pos) (token, error) {
 	begin := s.off
 	for s.off < len(s.src) {
+		c := s.src[s.off]
+		if c < 0x80 {
+			if !identContTable[c] {
+				break
+			}
+			s.advance(1)
+			continue
+		}
 		r, size := utf8.DecodeRuneInString(s.src[s.off:])
 		if !isIdentPart(r) {
 			break
@@ -1588,6 +1596,29 @@ func (s *scanner) skipNestedString() error {
 	return fmt.Errorf("%d:%d: unterminated string in f-string", startLine, startCol)
 }
 
+// identStartTable[c] is true for bytes that can start a Python identifier (ASCII only).
+// Non-ASCII bytes (>= 0x80) are handled by the unicode-aware fallback.
+var identStartTable [128]bool
+
+// identContTable[c] is true for bytes that can continue a Python identifier (ASCII only).
+var identContTable [128]bool
+
+func init() {
+	for c := byte('a'); c <= 'z'; c++ {
+		identStartTable[c] = true
+		identContTable[c] = true
+	}
+	for c := byte('A'); c <= 'Z'; c++ {
+		identStartTable[c] = true
+		identContTable[c] = true
+	}
+	identStartTable['_'] = true
+	identContTable['_'] = true
+	for c := byte('0'); c <= '9'; c++ {
+		identContTable[c] = true
+	}
+}
+
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 func isHexDigit(c byte) bool {
 	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
@@ -1626,7 +1657,6 @@ func hasNonASCII(s string) bool {
 	return false
 }
 
-func isIdentStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
 func isIdentPart(r rune) bool {
 	if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
 		return true
