@@ -44,11 +44,14 @@ func pythonBin(minor int) (string, bool) {
 			}
 		}
 	}
-	// Fall back to python3.X on PATH.
-	name := "python3." + fmt.Sprint(minor)
+	// Fall back to python3.X on PATH (unix only).
+	// On Windows the py launcher (`python.exe`) is not version-specific, so using
+	// it as a fallback would silently run the wrong Python version and produce
+	// wrong oracle output. Skip the test instead.
 	if runtime.GOOS == "windows" {
-		name = "python.exe" // windows uses py launcher; best effort
+		return "", false
 	}
+	name := "python3." + fmt.Sprint(minor)
 	p, err := exec.LookPath(name)
 	if err != nil {
 		return "", false
