@@ -497,8 +497,15 @@ func (s *scanner) skipSpace() {
 		// In statement mode the trailing `\n` is left for next() so a
 		// comment followed by a newline still produces a NEWLINE token.
 		if c == '#' {
-			for s.off < len(s.src) && s.src[s.off] != '\n' {
-				s.advance(1)
+			// Use IndexByte (SIMD-accelerated) to jump to the newline.
+			// Comments contain no newlines, so no line counter update needed.
+			n := strings.IndexByte(s.src[s.off:], '\n')
+			if n < 0 {
+				s.col += len(s.src) - s.off
+				s.off = len(s.src)
+			} else {
+				s.col += n
+				s.off += n
 			}
 			continue
 		}
@@ -569,8 +576,13 @@ func (s *scanner) nextInternal() (token, error) {
 			// A lone \f or \v on an otherwise-blank line acts as a page
 			// separator; treat the entire line as blank.
 			if s.src[s.off] == '\f' || s.src[s.off] == '\v' {
-				for s.off < len(s.src) && s.src[s.off] != '\n' {
-					s.advance(1)
+				n := strings.IndexByte(s.src[s.off:], '\n')
+				if n < 0 {
+					s.col += len(s.src) - s.off
+					s.off = len(s.src)
+				} else {
+					s.col += n
+					s.off += n
 				}
 				continue
 			}
@@ -581,8 +593,13 @@ func (s *scanner) nextInternal() (token, error) {
 				continue
 			}
 			if s.src[s.off] == '#' {
-				for s.off < len(s.src) && s.src[s.off] != '\n' {
-					s.advance(1)
+				n := strings.IndexByte(s.src[s.off:], '\n')
+				if n < 0 {
+					s.col += len(s.src) - s.off
+					s.off = len(s.src)
+				} else {
+					s.col += n
+					s.off += n
 				}
 				continue
 			}
@@ -868,21 +885,21 @@ func (s *scanner) scanNumber(start Pos) (token, error) {
 		if next == 'x' || next == 'X' {
 			s.advance(2)
 			for s.off < len(s.src) && (isHexDigit(s.src[s.off]) || s.src[s.off] == '_') {
-				s.advance(1)
+				s.off++; s.col++
 			}
 			return token{kind: tkInt, val: s.src[begin:s.off], pos: start}, nil
 		}
 		if next == 'o' || next == 'O' {
 			s.advance(2)
 			for s.off < len(s.src) && ((s.src[s.off] >= '0' && s.src[s.off] <= '7') || s.src[s.off] == '_') {
-				s.advance(1)
+				s.off++; s.col++
 			}
 			return token{kind: tkInt, val: s.src[begin:s.off], pos: start}, nil
 		}
 		if next == 'b' || next == 'B' {
 			s.advance(2)
 			for s.off < len(s.src) && (s.src[s.off] == '0' || s.src[s.off] == '1' || s.src[s.off] == '_') {
-				s.advance(1)
+				s.off++; s.col++
 			}
 			return token{kind: tkInt, val: s.src[begin:s.off], pos: start}, nil
 		}
@@ -890,7 +907,7 @@ func (s *scanner) scanNumber(start Pos) (token, error) {
 
 	// Decimal / float / complex.
 	for s.off < len(s.src) && (isDigit(s.src[s.off]) || s.src[s.off] == '_') {
-		s.advance(1)
+		s.off++; s.col++
 	}
 	if s.off < len(s.src) && s.src[s.off] == '.' {
 		isFloat = true
@@ -935,15 +952,19 @@ func (s *scanner) scanNumber(start Pos) (token, error) {
 // it commits to scanning a prefixed string literal.
 func (s *scanner) scanNameOrPrefixedString(start Pos) (token, error) {
 	begin := s.off
+	sawNonASCII := false
 	for s.off < len(s.src) {
 		c := s.src[s.off]
 		if c < 0x80 {
 			if !identContTable[c] {
 				break
 			}
-			s.advance(1)
+			// ASCII identifier bytes are never '\n', so skip the newline check.
+			s.off++
+			s.col++
 			continue
 		}
+		sawNonASCII = true
 		r, size := utf8.DecodeRuneInString(s.src[s.off:])
 		if !isIdentPart(r) {
 			break
@@ -952,8 +973,9 @@ func (s *scanner) scanNameOrPrefixedString(start Pos) (token, error) {
 	}
 	name := s.src[begin:s.off]
 	// NFKC-normalize identifiers to match CPython's tokenizer behavior.
-	// Fast path: skip pure-ASCII names (the common case).
-	if hasNonASCII(name) {
+	// sawNonASCII tracks whether the non-ASCII path was taken, avoiding
+	// a redundant scan of the identifier to check for non-ASCII bytes.
+	if sawNonASCII {
 		name = norm.NFKC.String(name)
 	}
 	// Prefixed string literal? Up to two-char prefixes: b, r, u, f, t,
@@ -1648,15 +1670,6 @@ func unhexByte(c byte) byte {
 		return c - 'A' + 10
 	}
 }
-func hasNonASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return true
-		}
-	}
-	return false
-}
-
 func isIdentPart(r rune) bool {
 	if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
 		return true
