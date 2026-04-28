@@ -203,6 +203,96 @@ jobs:
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
           bin/gopapy unparse --check "$PYDIR"
 
+  # corpus-parse: run gopapy check against the 18-package PyPI corpus.
+  # Informational for now (continue-on-error: true). Hard gate comes in v0.4.8.
+  corpus-parse:
+    name: corpus parse
+    runs-on: ubuntu-latest
+    needs: test
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: corpus cache restore
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: corpus/src
+          key: corpus-src-${{ hashFiles('corpus/packages.txt') }}
+
+      - name: download corpus
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install --upgrade pip
+          bash corpus/download.sh
+
+      - name: save corpus cache
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: corpus/src
+          key: corpus-src-${{ hashFiles('corpus/packages.txt') }}
+
+      - name: build gopapy
+        run: go build -o bin/gopapy ./cmd/gopapy
+
+      - name: gopapy check corpus
+        run: bash corpus/check.sh || true
+
+  # corpus-roundtrip: run gopapy unparse --check against the corpus.
+  # Informational (continue-on-error: true). Hard gate comes in v0.4.8.
+  corpus-roundtrip:
+    name: corpus roundtrip
+    runs-on: ubuntu-latest
+    needs: test
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: corpus cache restore
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: corpus/src
+          key: corpus-src-${{ hashFiles('corpus/packages.txt') }}
+
+      - name: download corpus
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install --upgrade pip
+          bash corpus/download.sh
+
+      - name: save corpus cache
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: corpus/src
+          key: corpus-src-${{ hashFiles('corpus/packages.txt') }}
+
+      - name: build gopapy
+        run: go build -o bin/gopapy ./cmd/gopapy
+
+      - name: gopapy unparse --check corpus
+        run: bash corpus/roundtrip.sh || true
+
   fuzz:
     name: fuzz pass
     runs-on: ubuntu-latest
