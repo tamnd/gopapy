@@ -858,21 +858,44 @@ func (p *parser) parseAtom() (Expr, error) {
 // than another t-string, is rejected (matches CPython).
 func (p *parser) parseStringAtom() (Expr, error) {
 	startPos := p.cur.pos
-	var plainParts []string
-	var joined []Expr
-	bytesPrefix := false
-	firstIsU := false    // true only when the FIRST string token has 'u' prefix
-	uKindPending := false // true while kind='u' hasn't been applied yet to a joined Constant
-	hasFOrPlain := false
-	hasT := false
-	var tParts []*Constant
-	var tInterp []*Interpolation
+
+	// Fast path: single plain string literal with no implicit concatenation.
+	// Avoids all slice allocations for the overwhelming common case.
+	if p.cur.kind == tkString {
+		tok := p.cur
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind != tkString && p.cur.kind != tkFString {
+			kind := "str"
+			switch tok.strKind {
+			case 'b':
+				kind = "bytes"
+			case 'u':
+				kind = "u"
+			}
+			return arenaAlloc(&p.ar.constants, Constant{P: startPos, Kind: kind, Value: tok.val}), nil
+		}
+		// Multi-part plain string: first token already consumed; initialize state.
+		return p.finishStringAtom(startPos,
+			append(p.ar.plainPartsBuf[:0], tok.val),
+			nil,
+			tok.strKind == 'b',
+			tok.strKind == 'u',
+			tok.strKind == 'u',
+			true,
+			false,
+			nil, nil)
+	}
+	// First token is an f-string or t-string.
+	return p.finishStringAtom(startPos, p.ar.plainPartsBuf[:0], nil, false, false, false, false, false, nil, nil)
+}
+
+func (p *parser) finishStringAtom(startPos Pos, plainParts []string, joined []Expr, bytesPrefix, firstIsU, uKindPending, hasFOrPlain, hasT bool, tParts []*Constant, tInterp []*Interpolation) (Expr, error) {
 	tStartConst := func() *Constant {
-		// Append the buffered plain text as a Constant before an
-		// interpolation, even if empty (PEP 750 needs Strings to
-		// alternate one-for-one).
 		c := arenaAlloc(&p.ar.constants, Constant{P: startPos, Kind: "str", Value: strings.Join(plainParts, "")})
 		plainParts = plainParts[:0]
+		p.ar.plainPartsBuf = plainParts
 		return c
 	}
 	for p.cur.kind == tkString || p.cur.kind == tkFString {
@@ -885,8 +908,8 @@ func (p *parser) parseStringAtom() (Expr, error) {
 			isBytes := tok.strKind == 'b'
 			isUnicode := tok.strKind == 'u'
 			if isUnicode && !hasFOrPlain {
-				firstIsU = true     // only the very first token matters
-				uKindPending = true // kind='u' awaits the first real Constant in joined
+				firstIsU = true
+				uKindPending = true
 			}
 			if hasT {
 				return nil, fmt.Errorf("%d:%d: cannot mix t-string with other strings",
@@ -906,6 +929,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 			}
 			hasFOrPlain = true
 			plainParts = append(plainParts, val)
+			p.ar.plainPartsBuf = plainParts
 			continue
 		}
 		// tkFString
