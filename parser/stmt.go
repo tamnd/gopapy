@@ -152,7 +152,18 @@ func (p *parser) looksLikeMatchStmt() bool {
 func (p *parser) parseSimpleStmtList() ([]Stmt, error) {
 	var stmts []Stmt
 	for {
-		s, err := p.parseSimpleStmt()
+		var s Stmt
+		var err error
+		if p.looksLikeTypeAlias() {
+			s, err = p.parseTypeAliasStmt()
+			if err != nil {
+				return nil, err
+			}
+			stmts = append(stmts, s)
+			// parseTypeAliasStmt already consumed the trailing ; and \n.
+			return stmts, nil
+		}
+		s, err = p.parseSimpleStmt()
 		if err != nil {
 			return nil, err
 		}
@@ -1041,12 +1052,46 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Inside a parenthesized with, `for` after the first expr means it's a
+	// generator expression context manager, not a PEP 617 item list.
+	if parens && p.isCompForStart() {
+		gens, err := p.parseComprehensionClauses()
+		if err != nil {
+			return nil, err
+		}
+		genExpr := &GeneratorExp{P: pos, Elt: first.ContextExpr, Gens: gens}
+		first = &WithItem{ContextExpr: genExpr}
+	}
 	items := []*WithItem{first}
 	for p.cur.kind == tkComma {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
 		if parens && p.cur.kind == tkRParen {
+			break
+		}
+		// Inside a parenthesized with, a starred element (*x) at the item
+		// level means (…) is a tuple literal, not a PEP 617 with-item list.
+		// Collect remaining starred/plain elements into a Tuple.
+		if parens && p.cur.kind == tkStar {
+			tupleElts := []Expr{first.ContextExpr}
+			for {
+				elem, err := p.parseStarredOrExpr()
+				if err != nil {
+					return nil, err
+				}
+				tupleElts = append(tupleElts, elem)
+				if p.cur.kind != tkComma {
+					break
+				}
+				if err := p.advance(); err != nil {
+					return nil, err
+				}
+				if p.cur.kind == tkRParen {
+					break
+				}
+			}
+			items = []*WithItem{{ContextExpr: &Tuple{P: pos, Elts: tupleElts}}}
 			break
 		}
 		it, err := p.parseWithItem()
@@ -1114,6 +1159,21 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 					return nil, err
 				}
 				items[0].OptionalVars = vars
+			}
+			// If a comma follows, (expr) was a parenthesized single item in
+			// a multi-item with-statement: `with (a), (b):`. Parse the rest.
+			for p.cur.kind == tkComma {
+				if err := p.advance(); err != nil {
+					return nil, err
+				}
+				if isStmtEnd(p.cur.kind) || p.cur.kind == tkColon {
+					break
+				}
+				it, err := p.parseWithItem()
+				if err != nil {
+					return nil, err
+				}
+				items = append(items, it)
 			}
 		}
 	}
@@ -1579,7 +1639,7 @@ func (p *parser) parseAsPattern() (Pattern, error) {
 	if err := p.advance(); err != nil {
 		return nil, err
 	}
-	if p.cur.kind != tkName || isReservedKeyword(p.cur.val) {
+	if p.cur.kind != tkName || (isReservedKeyword(p.cur.val) && !isSoftKeyword(p.cur.val)) {
 		return nil, fmt.Errorf("%d:%d: expected capture name after 'as'",
 			p.cur.pos.Line, p.cur.pos.Col)
 	}
@@ -1786,8 +1846,8 @@ func (p *parser) parseClassPatternArgs(pos Pos, cls Expr) (Pattern, error) {
 	var kwPatterns []Pattern
 	seenKw := false
 	for p.cur.kind != tkRParen {
-		// keyword form: NAME `=` pattern
-		if p.cur.kind == tkName && !isReservedKeyword(p.cur.val) {
+		// keyword form: NAME `=` pattern (soft keywords like match/case allowed)
+		if p.cur.kind == tkName && (!isReservedKeyword(p.cur.val) || isSoftKeyword(p.cur.val)) {
 			nxt, err := p.peekTok()
 			if err != nil {
 				return nil, err
@@ -2184,6 +2244,19 @@ func (p *parser) parseTypeParamDefault() (Expr, error) {
 	}
 	if err := p.advance(); err != nil {
 		return nil, err
+	}
+	// A TypeVarTuple default may be starred: *Ts=*int parses the default
+	// as Starred(value=int) per PEP 696 / Python 3.13.
+	if p.cur.kind == tkStar {
+		pos := p.cur.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &Starred{P: pos, Value: val}, nil
 	}
 	return p.parseExpr()
 }

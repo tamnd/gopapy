@@ -880,12 +880,9 @@ func (p *parser) parseStringAtom() (Expr, error) {
 		}
 		if tok.kind == tkString {
 			val := tok.val
-			isBytes := strings.HasPrefix(val, "b:")
-			isUnicode := strings.HasPrefix(val, "u:")
-			if isBytes {
-				val = val[2:]
-			} else if isUnicode {
-				val = val[2:]
+			isBytes := tok.strKind == 'b'
+			isUnicode := tok.strKind == 'u'
+			if isUnicode {
 				uPrefixSeen = true
 			}
 			if hasT {
@@ -1566,20 +1563,43 @@ func (p *parser) parseTargetAtom() (Expr, error) {
 		return &Starred{P: pos, Value: v}, nil
 	}
 	if p.cur.kind == tkLParen {
-		pos := p.cur.pos
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		inner, err := p.parseTargetList()
+		// Parse (…) as a general expression (handles tuple targets, general
+		// expressions like (x in {}), walrus, etc.) then allow postfix.
+		expr, err := p.parseParenAtom()
 		if err != nil {
 			return nil, err
 		}
-		if _, err := p.expect(tkRParen); err != nil {
-			return nil, err
+		for p.cur.kind == tkDot || p.cur.kind == tkLBrack || p.cur.kind == tkLParen {
+			if p.cur.kind == tkDot {
+				dpos := p.cur.pos
+				p.advance()
+				if p.cur.kind != tkName {
+					return nil, fmt.Errorf("%d:%d: expected name after '.'",
+						p.cur.pos.Line, p.cur.pos.Col)
+				}
+				attr := p.cur.val
+				p.advance()
+				expr = &Attribute{P: dpos, Value: expr, Attr: attr}
+			} else if p.cur.kind == tkLBrack {
+				spos := p.cur.pos
+				p.advance()
+				s, err := p.parseSubscriptBody()
+				if err != nil {
+					return nil, err
+				}
+				if _, err := p.expect(tkRBrack); err != nil {
+					return nil, err
+				}
+				expr = &Subscript{P: spos, Value: expr, Slice: s}
+			} else {
+				args, kwargs, callPos, err := p.parseCallArgs()
+				if err != nil {
+					return nil, err
+				}
+				expr = &Call{P: callPos, Func: expr, Args: args, Keywords: kwargs}
+			}
 		}
-		// re-wrap in Tuple if it's a single element to preserve parens
-		_ = pos
-		return inner, nil
+		return expr, nil
 	}
 	if p.cur.kind == tkLBrack {
 		pos := p.cur.pos

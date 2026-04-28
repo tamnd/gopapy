@@ -791,6 +791,10 @@ func (d *dumper) adExpr(e Expr, ctx string) {
 		d.b.WriteString("])")
 
 	case *Dict:
+		if !d.showEmpty && len(n.Keys) == 0 {
+			d.b.WriteString("Dict()")
+			break
+		}
 		d.b.WriteString("Dict(keys=[")
 		for i, k := range n.Keys {
 			if i > 0 {
