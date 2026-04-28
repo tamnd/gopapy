@@ -30,18 +30,22 @@ func newDumper(pyMinor int) *dumper {
 // pyMinor selects the Python 3.x minor version (8–14) for version-aware output.
 func ASTDump(m *Module, pyMinor int) string {
 	d := newDumper(pyMinor)
-	d.b.WriteString("Module(body=[")
-	for i, s := range m.Body {
-		if i > 0 {
-			d.b.WriteString(", ")
+	if len(m.Body) > 0 || d.showEmpty {
+		d.b.WriteString("Module(body=[")
+		for i, s := range m.Body {
+			if i > 0 {
+				d.b.WriteString(", ")
+			}
+			d.adStmt(s)
 		}
-		d.adStmt(s)
+		d.b.WriteByte(']')
+		if d.showEmpty {
+			d.b.WriteString(", type_ignores=[]")
+		}
+		d.b.WriteByte(')')
+	} else {
+		d.b.WriteString("Module()")
 	}
-	d.b.WriteByte(']')
-	if d.showEmpty {
-		d.b.WriteString(", type_ignores=[]")
-	}
-	d.b.WriteByte(')')
 	return d.b.String()
 }
 
@@ -174,6 +178,17 @@ func pyFloat(f float64) string {
 	return strconv.FormatFloat(f, 'e', -1, 64)
 }
 
+// pyComplexImag formats the imaginary part of a complex literal to match
+// Python's repr(). It uses pyFloat but strips the trailing ".0" that Python
+// omits for integer-valued imaginary parts (e.g. 123456789j not 123456789.0j).
+func pyComplexImag(f float64) string {
+	s := pyFloat(f)
+	if strings.HasSuffix(s, ".0") {
+		s = s[:len(s)-2]
+	}
+	return s
+}
+
 // adConstValue writes the Python repr of a Constant node's value.
 // It is a method because it needs d.py38 for the kind=None field.
 func (d *dumper) adConstValue(kind string, v any) {
@@ -211,20 +226,13 @@ func (d *dumper) adConstValue(kind string, v any) {
 			f, err := strconv.ParseFloat(strings.ReplaceAll(s, "_", ""), 64)
 			// ErrRange means overflow (+Inf) or underflow (0.0) — both valid.
 			if err == nil || errors.Is(err, strconv.ErrRange) {
-				if math.IsInf(f, 1) {
-					d.b.WriteString("inf")
-				} else if math.IsInf(f, -1) {
-					d.b.WriteString("-inf")
-				} else {
-					d.b.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
-				}
+				d.b.WriteString(pyComplexImag(f))
 			} else {
 				d.b.WriteString(s)
 			}
 			d.b.WriteByte('j')
 		} else if c, ok := v.(complex128); ok {
-			im := imag(c)
-			d.b.WriteString(strconv.FormatFloat(im, 'g', -1, 64))
+			d.b.WriteString(pyComplexImag(imag(c)))
 			d.b.WriteByte('j')
 		}
 	default:
@@ -506,14 +514,16 @@ func (d *dumper) adStmt(s Stmt) {
 	case *Try:
 		d.b.WriteString("Try(body=")
 		d.adStmtList(n.Body)
-		d.b.WriteString(", handlers=[")
-		for i, h := range n.Handlers {
-			if i > 0 {
-				d.b.WriteString(", ")
+		if len(n.Handlers) > 0 || d.showEmpty {
+			d.b.WriteString(", handlers=[")
+			for i, h := range n.Handlers {
+				if i > 0 {
+					d.b.WriteString(", ")
+				}
+				d.adExceptHandler(h)
 			}
-			d.adExceptHandler(h)
+			d.b.WriteByte(']')
 		}
-		d.b.WriteByte(']')
 		if len(n.Orelse) > 0 || d.showEmpty {
 			d.b.WriteString(", orelse=")
 			d.adStmtList(n.Orelse)
@@ -527,14 +537,16 @@ func (d *dumper) adStmt(s Stmt) {
 	case *TryStar:
 		d.b.WriteString("TryStar(body=")
 		d.adStmtList(n.Body)
-		d.b.WriteString(", handlers=[")
-		for i, h := range n.Handlers {
-			if i > 0 {
-				d.b.WriteString(", ")
+		if len(n.Handlers) > 0 || d.showEmpty {
+			d.b.WriteString(", handlers=[")
+			for i, h := range n.Handlers {
+				if i > 0 {
+					d.b.WriteString(", ")
+				}
+				d.adExceptHandler(h)
 			}
-			d.adExceptHandler(h)
+			d.b.WriteByte(']')
 		}
-		d.b.WriteByte(']')
 		if len(n.Orelse) > 0 || d.showEmpty {
 			d.b.WriteString(", orelse=")
 			d.adStmtList(n.Orelse)
