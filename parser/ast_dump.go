@@ -985,7 +985,11 @@ func (d *dumper) adExpr(e Expr, ctx string) {
 		fmt.Fprintf(&d.b, ", conversion=%d", n.Conversion)
 		if n.FormatSpec != nil {
 			d.b.WriteString(", format_spec=")
-			d.adExpr(n.FormatSpec, "Load")
+			if js, ok := n.FormatSpec.(*JoinedStr); ok {
+				d.adFormatSpec(js)
+			} else {
+				d.adExpr(n.FormatSpec, "Load")
+			}
 		} else if d.py38 {
 			d.b.WriteString(", format_spec=None")
 		}
@@ -1564,4 +1568,33 @@ func (d *dumper) adTypeParams(ps []TypeParam) {
 			fmt.Fprintf(&d.b, "<unknown type_param %T>", p)
 		}
 	}
+}
+
+// adFormatSpec dumps a format_spec JoinedStr, applying the Python 3.12 rule:
+// when pyMinor <= 12 and the last value is a FormattedValue, append a trailing
+// Constant(value='') to match CPython 3.12's AST representation.
+func (d *dumper) adFormatSpec(spec *JoinedStr) {
+	values := spec.Values
+	if d.showEmpty && len(values) > 0 {
+		if _, isFormattedValue := values[len(values)-1].(*FormattedValue); isFormattedValue {
+			trailing := &Constant{P: spec.P, Kind: "str", Value: ""}
+			values = append(values, trailing)
+		}
+	}
+	if len(values) == 0 {
+		if d.showEmpty {
+			d.b.WriteString("JoinedStr(values=[])")
+		} else {
+			d.b.WriteString("JoinedStr()")
+		}
+		return
+	}
+	d.b.WriteString("JoinedStr(values=[")
+	for i, v := range values {
+		if i > 0 {
+			d.b.WriteString(", ")
+		}
+		d.adExpr(v, "Load")
+	}
+	d.b.WriteString("])")
 }
