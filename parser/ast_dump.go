@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // dumper holds the output buffer and version-specific flags for ASTDump.
@@ -49,8 +50,36 @@ func ASTDump(m *Module, pyMinor int) string {
 	return d.b.String()
 }
 
+// pythonIsPrint wraps unicode.IsPrint with version-gated overrides. Go ships
+// Unicode 15.0 tables. Three codepoints became printable (So) in Unicode 15.1
+// (Python 3.13) and five more in Unicode 16.0 (Python 3.14). Gate each group
+// to keep dumps byte-identical across all supported minor versions.
+func pythonIsPrint(r rune, pyMinor int) bool {
+	if pyMinor >= 13 {
+		switch r {
+		case 0x2FFC, // IDEOGRAPHIC DESCRIPTION CHARACTER SURROUND FROM RIGHT -> So (Unicode 15.1)
+			0x2FFF, // IDEOGRAPHIC DESCRIPTION CHARACTER ROTATION -> So (Unicode 15.1)
+			0x31EF: // IDEOGRAPHIC DESCRIPTION CHARACTER SUBTRACTION -> So (Unicode 15.1)
+			return true
+		}
+	}
+	if pyMinor >= 14 {
+		switch r {
+		case 0x1B4F, // BALINESE INVERTED CARIK PAREREN -> Po (Unicode 16.0)
+			0x1B7F, // BALINESE PANTI BAWAK -> Po (Unicode 16.0)
+			0x1C89, // CYRILLIC CAPITAL LETTER TJE -> Lu (Unicode 16.0)
+			0x2427, // SYMBOL FOR DELETE SQUARE CHECKER BOARD FORM -> So (Unicode 16.0)
+			0x31E4: // CJK STROKE HXG -> So (Unicode 16.0)
+			return true
+		}
+	}
+	return unicode.IsPrint(r)
+}
+
 // pyRepr returns a Python repr-style quoted string (single-quote preferred).
-func pyRepr(s string) string {
+// It handles WTF-8-encoded lone surrogates (U+D800–U+DFFF) by emitting \uXXXX,
+// matching CPython's repr() output for strings containing lone surrogates.
+func (d *dumper) pyRepr(s string) string {
 	hasSingle := strings.ContainsRune(s, '\'')
 	hasDouble := strings.ContainsRune(s, '"')
 	useDouble := hasSingle && !hasDouble
@@ -61,7 +90,16 @@ func pyRepr(s string) string {
 	} else {
 		b.WriteByte('\'')
 	}
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		// Detect WTF-8 lone surrogate: ED [A0-BF] [80-BF]
+		if i+3 <= len(s) && s[i] == 0xED && s[i+1] >= 0xA0 && s[i+1] <= 0xBF && s[i+2] >= 0x80 && s[i+2] <= 0xBF {
+			cp := rune(s[i]&0x0F)<<12 | rune(s[i+1]&0x3F)<<6 | rune(s[i+2]&0x3F)
+			fmt.Fprintf(&b, `\u%04x`, cp)
+			i += 3
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
 		switch {
 		case r == '\\':
 			b.WriteString(`\\`)
@@ -77,7 +115,7 @@ func pyRepr(s string) string {
 			b.WriteString(`\"`)
 		case r < 0x20 || r == 0x7f:
 			fmt.Fprintf(&b, `\x%02x`, r)
-		case r > 0x7f && !unicode.IsPrint(r):
+		case r > 0x7f && !pythonIsPrint(r, d.pyMinor):
 			if r <= 0xff {
 				fmt.Fprintf(&b, `\x%02x`, r)
 			} else if r <= 0xffff {
@@ -203,7 +241,7 @@ func (d *dumper) adConstValue(kind string, v any) {
 		d.b.WriteString("Ellipsis")
 	case "str", "u":
 		if s, ok := v.(string); ok {
-			d.b.WriteString(pyRepr(s))
+			d.b.WriteString(d.pyRepr(s))
 		}
 	case "bytes":
 		switch bv := v.(type) {
@@ -395,7 +433,7 @@ func (d *dumper) adStmt(s Stmt) {
 			if i > 0 {
 				d.b.WriteString(", ")
 			}
-			d.b.WriteString(pyRepr(name))
+			d.b.WriteString(d.pyRepr(name))
 		}
 		d.b.WriteString("])")
 
@@ -405,7 +443,7 @@ func (d *dumper) adStmt(s Stmt) {
 			if i > 0 {
 				d.b.WriteString(", ")
 			}
-			d.b.WriteString(pyRepr(name))
+			d.b.WriteString(d.pyRepr(name))
 		}
 		d.b.WriteString("])")
 
@@ -423,7 +461,7 @@ func (d *dumper) adStmt(s Stmt) {
 		d.b.WriteString("ImportFrom(")
 		if n.Module != "" {
 			d.b.WriteString("module=")
-			d.b.WriteString(pyRepr(n.Module))
+			d.b.WriteString(d.pyRepr(n.Module))
 			d.b.WriteString(", ")
 		} else if d.py38 {
 			d.b.WriteString("module=None, ")
@@ -559,7 +597,7 @@ func (d *dumper) adStmt(s Stmt) {
 
 	case *FunctionDef:
 		d.b.WriteString("FunctionDef(name=")
-		d.b.WriteString(pyRepr(n.Name))
+		d.b.WriteString(d.pyRepr(n.Name))
 		d.b.WriteString(", args=")
 		d.adArgs(n.Args)
 		d.b.WriteString(", body=")
@@ -587,7 +625,7 @@ func (d *dumper) adStmt(s Stmt) {
 
 	case *AsyncFunctionDef:
 		d.b.WriteString("AsyncFunctionDef(name=")
-		d.b.WriteString(pyRepr(n.Name))
+		d.b.WriteString(d.pyRepr(n.Name))
 		d.b.WriteString(", args=")
 		d.adArgs(n.Args)
 		d.b.WriteString(", body=")
@@ -615,7 +653,7 @@ func (d *dumper) adStmt(s Stmt) {
 
 	case *ClassDef:
 		d.b.WriteString("ClassDef(name=")
-		d.b.WriteString(pyRepr(n.Name))
+		d.b.WriteString(d.pyRepr(n.Name))
 		if len(n.Bases) > 0 || d.showEmpty {
 			d.b.WriteString(", bases=[")
 			d.adExprList(n.Bases, "Load")
@@ -694,7 +732,7 @@ func (d *dumper) adExpr(e Expr, ctx string) {
 
 	case *Name:
 		d.b.WriteString("Name(id=")
-		d.b.WriteString(pyRepr(n.Id))
+		d.b.WriteString(d.pyRepr(n.Id))
 		d.adCtx(ctx)
 		d.b.WriteByte(')')
 
@@ -702,7 +740,7 @@ func (d *dumper) adExpr(e Expr, ctx string) {
 		d.b.WriteString("Attribute(value=")
 		d.adExpr(n.Value, "Load")
 		d.b.WriteString(", attr=")
-		d.b.WriteString(pyRepr(n.Attr))
+		d.b.WriteString(d.pyRepr(n.Attr))
 		d.adCtx(ctx)
 		d.b.WriteByte(')')
 
@@ -992,7 +1030,7 @@ func (d *dumper) adExpr(e Expr, ctx string) {
 		d.b.WriteString("Interpolation(value=")
 		d.adExpr(n.Value, "Load")
 		d.b.WriteString(", str=")
-		d.b.WriteString(pyRepr(n.Str))
+		d.b.WriteString(d.pyRepr(n.Str))
 		fmt.Fprintf(&d.b, ", conversion=%d", n.Conversion)
 		if n.FormatSpec != nil {
 			d.b.WriteString(", format_spec=")
@@ -1200,7 +1238,7 @@ func (d *dumper) adArgs(a *Arguments) {
 // adArg writes a single arg(...) node.
 func (d *dumper) adArg(a *Arg) {
 	d.b.WriteString("arg(arg=")
-	d.b.WriteString(pyRepr(a.Name))
+	d.b.WriteString(d.pyRepr(a.Name))
 	if a.Annotation != nil {
 		d.b.WriteString(", annotation=")
 		d.adExpr(a.Annotation, "Load")
@@ -1271,7 +1309,7 @@ func (d *dumper) adExceptHandler(h *ExceptHandler) {
 			d.b.WriteString(", ")
 		}
 		d.b.WriteString("name=")
-		d.b.WriteString(pyRepr(h.Name))
+		d.b.WriteString(d.pyRepr(h.Name))
 		sep = true
 	} else if d.py38 {
 		if sep {
@@ -1291,10 +1329,10 @@ func (d *dumper) adExceptHandler(h *ExceptHandler) {
 // adAlias writes an alias(...) node.
 func (d *dumper) adAlias(a *Alias) {
 	d.b.WriteString("alias(name=")
-	d.b.WriteString(pyRepr(a.Name))
+	d.b.WriteString(d.pyRepr(a.Name))
 	if a.Asname != "" {
 		d.b.WriteString(", asname=")
-		d.b.WriteString(pyRepr(a.Asname))
+		d.b.WriteString(d.pyRepr(a.Asname))
 	} else if d.py38 {
 		d.b.WriteString(", asname=None")
 	}
@@ -1306,7 +1344,7 @@ func (d *dumper) adKeyword(kw *Keyword) {
 	d.b.WriteString("keyword(")
 	if kw.Arg != "" {
 		d.b.WriteString("arg=")
-		d.b.WriteString(pyRepr(kw.Arg))
+		d.b.WriteString(d.pyRepr(kw.Arg))
 		d.b.WriteString(", ")
 	} else if d.py38 {
 		d.b.WriteString("arg=None, ")
@@ -1405,7 +1443,7 @@ func (d *dumper) adPattern(p Pattern) {
 					d.b.WriteString(", ")
 				}
 				d.b.WriteString("rest=")
-				d.b.WriteString(pyRepr(n.Rest))
+				d.b.WriteString(d.pyRepr(n.Rest))
 			}
 			d.b.WriteByte(')')
 		}
@@ -1429,7 +1467,7 @@ func (d *dumper) adPattern(p Pattern) {
 				if i > 0 {
 					d.b.WriteString(", ")
 				}
-				d.b.WriteString(pyRepr(a))
+				d.b.WriteString(d.pyRepr(a))
 			}
 			d.b.WriteString("], kwd_patterns=[")
 			for i, q := range n.KwdPatterns {
@@ -1447,7 +1485,7 @@ func (d *dumper) adPattern(p Pattern) {
 			d.b.WriteString("MatchStar()")
 		} else {
 			d.b.WriteString("MatchStar(name=")
-			d.b.WriteString(pyRepr(n.Name))
+			d.b.WriteString(d.pyRepr(n.Name))
 			d.b.WriteByte(')')
 		}
 
@@ -1468,7 +1506,7 @@ func (d *dumper) adPattern(p Pattern) {
 				d.b.WriteString(", ")
 			}
 			d.b.WriteString("name=")
-			d.b.WriteString(pyRepr(n.Name))
+			d.b.WriteString(d.pyRepr(n.Name))
 		}
 		d.b.WriteByte(')')
 
@@ -1496,7 +1534,7 @@ func (d *dumper) adTypeParams(ps []TypeParam) {
 		switch n := p.(type) {
 		case *TypeVar:
 			d.b.WriteString("TypeVar(name=")
-			d.b.WriteString(pyRepr(n.Name))
+			d.b.WriteString(d.pyRepr(n.Name))
 			if n.Bound != nil {
 				d.b.WriteString(", bound=")
 				d.adExpr(n.Bound, "Load")
@@ -1508,7 +1546,7 @@ func (d *dumper) adTypeParams(ps []TypeParam) {
 			d.b.WriteByte(')')
 		case *TypeVarTuple:
 			d.b.WriteString("TypeVarTuple(name=")
-			d.b.WriteString(pyRepr(n.Name))
+			d.b.WriteString(d.pyRepr(n.Name))
 			if n.DefaultValue != nil {
 				d.b.WriteString(", default_value=")
 				d.adExpr(n.DefaultValue, "Load")
@@ -1516,7 +1554,7 @@ func (d *dumper) adTypeParams(ps []TypeParam) {
 			d.b.WriteByte(')')
 		case *ParamSpec:
 			d.b.WriteString("ParamSpec(name=")
-			d.b.WriteString(pyRepr(n.Name))
+			d.b.WriteString(d.pyRepr(n.Name))
 			if n.DefaultValue != nil {
 				d.b.WriteString(", default_value=")
 				d.adExpr(n.DefaultValue, "Load")

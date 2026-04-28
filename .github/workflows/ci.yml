@@ -125,8 +125,8 @@ jobs:
   # compat-oracle: per-Python-version oracle diff for grammar fixtures.
   # Matrix: python-version x os. Each cell installs the target Python via uv
   # and runs `go test ./tests/compat/` which selects the matching test function.
-  # Python 3.13 oracle passes today. Python 3.12 and below are skipped inside
-  # the Go test until version-aware dump is implemented (spec 1323-1324).
+  # Version-aware dump is complete: ASTDump respects pyMinor for showEmpty
+  # (3.12 and below) and py38 fields (3.8). Oracle tests for 3.8-3.14 are live.
   compat-oracle:
     name: oracle ${{ matrix.python-version }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -203,13 +203,13 @@ jobs:
           PYDIR=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
           bin/gopapy unparse --check "$PYDIR"
 
-  # corpus-parse: run gopapy check against the 18-package PyPI corpus.
-  # Informational for now (continue-on-error: true). Hard gate comes in v0.4.8.
+  # corpus-parse: run gopapy check against the 50-package PyPI corpus.
+  # Hard gate as of v0.5.3: 12179 files parse, intentionally-invalid fixtures skipped.
+  # Also runs corpus-stats (throughput + health summary) after the parse gate.
   corpus-parse:
     name: corpus parse
     runs-on: ubuntu-latest
     needs: test
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
@@ -246,15 +246,17 @@ jobs:
         run: go build -o bin/gopapy ./cmd/gopapy
 
       - name: gopapy check corpus
-        run: bash corpus/check.sh || true
+        run: bash corpus/check.sh
+
+      - name: corpus stats
+        run: bash corpus/stats.sh
 
   # corpus-roundtrip: run gopapy unparse --check against the corpus.
-  # Informational (continue-on-error: true). Hard gate comes in v0.4.8.
+  # Hard gate as of v0.5.2: 2 known legacy-unparser limitations allowed via --allow.
   corpus-roundtrip:
     name: corpus roundtrip
     runs-on: ubuntu-latest
     needs: test
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
@@ -291,16 +293,15 @@ jobs:
         run: go build -o bin/gopapy ./cmd/gopapy
 
       - name: gopapy unparse --check corpus
-        run: bash corpus/roundtrip.sh || true
+        run: bash corpus/roundtrip.sh
 
   # corpus-astdiff: compare gopapy dump vs CPython ast.dump on a random sample.
   # Seed defaults to YYYYMMDD so each day's sample differs but is reproducible.
-  # Informational (continue-on-error: true). Hard gate comes in v0.4.9.
+  # Hard gate as of v0.5.1: MISMATCH_ALLOW is empty; all sampled files must match.
   corpus-astdiff:
     name: corpus astdiff
     runs-on: ubuntu-latest
     needs: test
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
@@ -336,8 +337,8 @@ jobs:
       - name: build gopapy
         run: go build -o bin/gopapy ./cmd/gopapy
 
-      - name: corpus astdiff (100 files)
-        run: bash internal/oracle/corpus_diff.sh 100 || true
+      - name: corpus astdiff (500 files)
+        run: bash internal/oracle/corpus_diff.sh 500
 
       - name: upload diff log
         if: always()

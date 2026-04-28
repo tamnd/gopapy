@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // tokKind enumerates the lexical categories parser2 understands.
@@ -934,16 +936,21 @@ func (s *scanner) scanNameOrPrefixedString(start Pos) (token, error) {
 		}
 		s.advance(size)
 	}
-	val := s.src[begin:s.off]
+	name := s.src[begin:s.off]
+	// NFKC-normalize identifiers to match CPython's tokenizer behavior.
+	// Fast path: skip pure-ASCII names (the common case).
+	if hasNonASCII(name) {
+		name = norm.NFKC.String(name)
+	}
 	// Prefixed string literal? Up to two-char prefixes: b, r, u, f, t,
 	// br, rb, fr, rf, tr, rt.
 	if s.off < len(s.src) && (s.src[s.off] == '"' || s.src[s.off] == '\'') {
-		if isStringPrefix(val) {
+		if isStringPrefix(name) {
 			quote := s.src[s.off]
-			return s.scanString(start, quote, val)
+			return s.scanString(start, quote, name)
 		}
 	}
-	return token{kind: tkName, val: val, pos: start}, nil
+	return token{kind: tkName, val: name, pos: start}, nil
 }
 
 func isStringPrefix(p string) bool {
@@ -1115,7 +1122,7 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 					isHexByte(s.src[s.off+2]) && isHexByte(s.src[s.off+3]) &&
 					isHexByte(s.src[s.off+4]) && isHexByte(s.src[s.off+5]) {
 					v, _ := strconv.ParseInt(string(s.src[s.off+2:s.off+6]), 16, 32)
-					b.WriteRune(rune(v))
+					writeRuneOrSurrogate(&b, rune(v))
 					s.advance(6)
 				} else {
 					b.WriteByte('\\')
@@ -1130,7 +1137,7 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 					isHexByte(s.src[s.off+6]) && isHexByte(s.src[s.off+7]) &&
 					isHexByte(s.src[s.off+8]) && isHexByte(s.src[s.off+9]) {
 					v, _ := strconv.ParseInt(string(s.src[s.off+2:s.off+10]), 16, 32)
-					b.WriteRune(rune(v))
+					writeRuneOrSurrogate(&b, rune(v))
 					s.advance(10)
 				} else {
 					b.WriteByte('\\')
@@ -1138,10 +1145,28 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 					s.advance(2)
 				}
 			case 'N':
-				// \N{name} — unicode name; leave as-is (rare in practice)
-				b.WriteByte('\\')
-				b.WriteByte(esc)
-				s.advance(2)
+				s.advance(2) // consume \N
+				if !bytesPrefix && s.off < len(s.src) && s.src[s.off] == '{' {
+					s.advance(1)
+					start := s.off
+					for s.off < len(s.src) && s.src[s.off] != '}' {
+						s.advance(1)
+					}
+					name := string(s.src[start:s.off])
+					if s.off < len(s.src) {
+						s.advance(1) // consume '}'
+					}
+					if r, ok := lookupUnicodeName(name); ok {
+						b.WriteRune(r)
+					} else {
+						b.WriteString(`\N{`)
+						b.WriteString(name)
+						b.WriteByte('}')
+					}
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte('N')
+				}
 			default:
 				b.WriteByte('\\')
 				b.WriteByte(esc)
@@ -1313,7 +1338,7 @@ func (s *scanner) scanFTBody(start Pos, quote byte, raw, triple, inSpec bool) ([
 					isHexByte(s.src[s.off+2]) && isHexByte(s.src[s.off+3]) &&
 					isHexByte(s.src[s.off+4]) && isHexByte(s.src[s.off+5]) {
 					v, _ := strconv.ParseInt(string(s.src[s.off+2:s.off+6]), 16, 32)
-					b.WriteRune(rune(v))
+					writeRuneOrSurrogate(&b, rune(v))
 					s.advance(6)
 				} else {
 					b.WriteByte('\\')
@@ -1328,7 +1353,7 @@ func (s *scanner) scanFTBody(start Pos, quote byte, raw, triple, inSpec bool) ([
 					isHexByte(s.src[s.off+6]) && isHexByte(s.src[s.off+7]) &&
 					isHexByte(s.src[s.off+8]) && isHexByte(s.src[s.off+9]) {
 					v, _ := strconv.ParseInt(string(s.src[s.off+2:s.off+10]), 16, 32)
-					b.WriteRune(rune(v))
+					writeRuneOrSurrogate(&b, rune(v))
 					s.advance(10)
 				} else {
 					b.WriteByte('\\')
@@ -1353,23 +1378,29 @@ func (s *scanner) scanFTBody(start Pos, quote byte, raw, triple, inSpec bool) ([
 				b.WriteRune(rune(octal))
 				s.advance(consumed)
 			case 'N':
-				// \N{name} — Unicode name escape. Consume through the
-				// closing '}' so the '{' is not mistaken for an
-				// f-string interpolation opener.
+				// \N{name} — Unicode name escape. Resolve via Unicode name DB.
+				// Consume through '}' so '{' is not mistaken for an f-string opener.
 				s.advance(2) // consume \N
-				b.WriteByte('\\')
-				b.WriteByte('N')
 				if s.off < len(s.src) && s.src[s.off] == '{' {
-					b.WriteByte('{')
 					s.advance(1)
+					nameStart := s.off
 					for s.off < len(s.src) && s.src[s.off] != '}' {
-						b.WriteByte(s.src[s.off])
 						s.advance(1)
 					}
+					name := string(s.src[nameStart:s.off])
 					if s.off < len(s.src) {
-						b.WriteByte('}')
-						s.advance(1)
+						s.advance(1) // consume '}'
 					}
+					if r, ok := lookupUnicodeName(name); ok {
+						b.WriteRune(r)
+					} else {
+						b.WriteString(`\N{`)
+						b.WriteString(name)
+						b.WriteByte('}')
+					}
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte('N')
 				}
 			default:
 				b.WriteByte('\\')
@@ -1556,6 +1587,20 @@ func isHexDigit(c byte) bool {
 	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 func isHexByte(c byte) bool { return isHexDigit(c) }
+
+// writeRuneOrSurrogate writes r to b. Lone Unicode surrogates (U+D800–U+DFFF)
+// are encoded as WTF-8 (three-byte sequence identical to a regular UTF-8 BMP
+// encoding) so that ast_dump.go can later detect and re-emit them as \uXXXX,
+// matching CPython's repr() of strings containing lone surrogates.
+func writeRuneOrSurrogate(b *strings.Builder, r rune) {
+	if r >= 0xD800 && r <= 0xDFFF {
+		b.WriteByte(byte(0xE0 | (r >> 12)))
+		b.WriteByte(byte(0x80 | ((r >> 6) & 0x3F)))
+		b.WriteByte(byte(0x80 | (r & 0x3F)))
+	} else {
+		b.WriteRune(r)
+	}
+}
 func unhexByte(c byte) byte {
 	switch {
 	case c >= '0' && c <= '9':
@@ -1566,6 +1611,15 @@ func unhexByte(c byte) byte {
 		return c - 'A' + 10
 	}
 }
+func hasNonASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return true
+		}
+	}
+	return false
+}
+
 func isIdentStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
 func isIdentPart(r rune) bool {
 	if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {

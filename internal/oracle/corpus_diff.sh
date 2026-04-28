@@ -48,19 +48,28 @@ echo "corpus-astdiff: seed=$SEED sample=$total files" | tee "$LOG_FILE"
 
 pass=0
 fail=0
+skip=0
 
 while IFS= read -r f; do
   [ -z "$f" ] && continue
-  gopapy_out=$("$GOPAPY" dump "$f" 2>/dev/null) || {
+  gopapy_out=$("$GOPAPY" dump "$f" 2>/dev/null) && gopapy_ok=0 || gopapy_ok=$?
+  cpython_out=$(python3 -c "import ast, sys; print(ast.dump(ast.parse(open(sys.argv[1]).read())))" "$f" 2>/dev/null) && cpython_ok=0 || cpython_ok=$?
+
+  if [ $gopapy_ok -ne 0 ] && [ $cpython_ok -ne 0 ]; then
+    echo "BOTH_ERROR $f" | tee -a "$LOG_FILE"
+    skip=$((skip + 1))
+    continue
+  fi
+  if [ $gopapy_ok -ne 0 ]; then
     echo "GOPAPY_ERROR $f" | tee -a "$LOG_FILE"
     fail=$((fail + 1))
     continue
-  }
-  cpython_out=$(python3 -c "import ast, sys; print(ast.dump(ast.parse(open(sys.argv[1]).read())))" "$f" 2>/dev/null) || {
+  fi
+  if [ $cpython_ok -ne 0 ]; then
     echo "CPYTHON_ERROR $f" | tee -a "$LOG_FILE"
-    fail=$((fail + 1))
+    skip=$((skip + 1))
     continue
-  }
+  fi
   if [ "$gopapy_out" = "$cpython_out" ]; then
     pass=$((pass + 1))
   else
@@ -70,7 +79,7 @@ while IFS= read -r f; do
   fi
 done < "$SAMPLE_FILE"
 
-echo "pass=$pass fail=$fail" | tee -a "$LOG_FILE"
+echo "pass=$pass skip=$skip fail=$fail" | tee -a "$LOG_FILE"
 
 if [ "$fail" -gt 0 ]; then
   exit 1

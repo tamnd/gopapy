@@ -9,11 +9,12 @@ import (
 // It is the byte-level reader; lex/indent.go wraps it to add the synthetic
 // tokens Python's grammar references.
 type Scanner struct {
-	src      []byte
-	pos      int // byte offset
-	line     int // 1-indexed
-	col      int // 0-indexed UTF-8 byte column
-	filename string
+	src         []byte
+	pos         int // byte offset
+	line        int // 1-indexed
+	col         int // 0-indexed UTF-8 byte column
+	filename    string
+	atLineStart bool // true after \n; form feed resets col only when true
 }
 
 // NewScanner returns a Scanner over src. filename is used only for error
@@ -29,7 +30,7 @@ func NewScanner(src []byte, filename string) *Scanner {
 	if hasCarriageReturn(src) {
 		src = normalizeNewlines(src)
 	}
-	return &Scanner{src: src, line: 1, filename: filename}
+	return &Scanner{src: src, line: 1, filename: filename, atLineStart: true}
 }
 
 func hasCarriageReturn(src []byte) bool {
@@ -84,6 +85,7 @@ func (s *Scanner) advance(n int) {
 		if c == '\n' {
 			s.line++
 			s.col = 0
+			s.atLineStart = true
 		} else {
 			s.col++
 		}
@@ -102,8 +104,19 @@ func (s *Scanner) Scan() (Token, error) {
 		// skip horizontal whitespace (including form feed and vertical tab,
 		// which CPython's tokenizer treats as whitespace)
 		c := s.peek(0)
-		if c == ' ' || c == '\t' || c == '\f' || c == '\v' {
+		if c == ' ' || c == '\t' || c == '\v' {
 			s.advance(1)
+			continue
+		}
+		if c == '\f' {
+			s.advance(1)
+			// CPython resets the indentation column on a form feed that
+			// appears in leading whitespace. Our col tracks byte offset, so
+			// we reset it to 0 here — equivalent to CPython placing the next
+			// token at column 0 for indent-stack purposes.
+			if s.atLineStart {
+				s.col = 0
+			}
 			continue
 		}
 		// line continuation: backslash at EOL
@@ -114,6 +127,7 @@ func (s *Scanner) Scan() (Token, error) {
 		break
 	}
 
+	s.atLineStart = false
 	start := s.Position()
 	c := s.peek(0)
 
@@ -239,14 +253,29 @@ func isIdentPart(r rune) bool {
 		return true
 	}
 	// Combining marks (Mn, Mc) and connector punctuation (Pc) are part
-	// of an identifier per UAX #31. The tag-character block
-	// (U+E0100..U+E01EF) is listed in Other_ID_Continue and is allowed
-	// by Python in identifiers.
+	// of an identifier per UAX #31.
 	if unicode.IsMark(r) || unicode.Is(unicode.Pc, r) {
 		return true
 	}
-	if r >= 0xE0100 && r <= 0xE01EF {
-		return true
+	return isOtherIDContinue(r)
+}
+
+// isOtherIDContinue reports whether r is in the Unicode Other_ID_Continue
+// property. Only the ranges that Python identifiers use in practice are listed;
+// the fixture that triggered this is U+E0100..U+E01EF (tag chars) and U+19DA
+// (NEW TAI LUE THAM DIGIT ONE, category No).
+func isOtherIDContinue(r rune) bool {
+	switch {
+	case r == 0x00B7:
+		return true // MIDDLE DOT
+	case r == 0x0387:
+		return true // GREEK ANO TELEIA
+	case r >= 0x1369 && r <= 0x1371:
+		return true // ETHIOPIC DIGIT ONE..NINE
+	case r == 0x19DA:
+		return true // NEW TAI LUE THAM DIGIT ONE
+	case r >= 0xE0100 && r <= 0xE01EF:
+		return true // VARIATION SELECTORS SUPPLEMENT
 	}
 	return false
 }

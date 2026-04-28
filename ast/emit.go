@@ -179,7 +179,7 @@ func emitAssign(a *parser.AssignStmt) StmtNode {
 			Pos:        p,
 			Target:     target,
 			Annotation: emitExpr(a.Annot),
-			Value:      emitExprOpt(a.AnnVal),
+			Value:      emitAnnVal(a.AnnVal),
 			Simple:     simple,
 		}
 	case a.Aug != "":
@@ -417,13 +417,17 @@ func emitTypeParams(tps []*parser.TypeParam) []TypeParamNode {
 	out := make([]TypeParamNode, 0, len(tps))
 	for _, tp := range tps {
 		p := spanPos(tp.Pos, tp.EndPos)
+		def := emitExprOpt(tp.Default)
+		if def != nil && tp.DefaultStar {
+			def = &Starred{Pos: pos(tp.Default.Pos), Value: def, Ctx: &Load{}}
+		}
 		switch tp.Kind {
 		case "*":
-			out = append(out, &TypeVarTuple{Pos: p, Name: tp.Name, DefaultValue: emitExprOpt(tp.Default)})
+			out = append(out, &TypeVarTuple{Pos: p, Name: tp.Name, DefaultValue: def})
 		case "**":
-			out = append(out, &ParamSpec{Pos: p, Name: tp.Name, DefaultValue: emitExprOpt(tp.Default)})
+			out = append(out, &ParamSpec{Pos: p, Name: tp.Name, DefaultValue: def})
 		default:
-			out = append(out, &TypeVar{Pos: p, Name: tp.Name, Bound: emitExprOpt(tp.Bound), DefaultValue: emitExprOpt(tp.Default)})
+			out = append(out, &TypeVar{Pos: p, Name: tp.Name, Bound: emitExprOpt(tp.Bound), DefaultValue: def})
 		}
 	}
 	return out
@@ -666,6 +670,13 @@ func emitExprOpt(e *parser.Expression) ExprNode {
 		return nil
 	}
 	return emitExpr(e)
+}
+
+func emitAnnVal(t *parser.AssignTarget) ExprNode {
+	if t == nil {
+		return nil
+	}
+	return emitAssignTarget(t, true)
 }
 
 func emitExpr(e *parser.Expression) ExprNode {

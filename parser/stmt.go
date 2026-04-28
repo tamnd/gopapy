@@ -126,7 +126,7 @@ func (p *parser) looksLikeMatchStmt() bool {
 		return false
 	}
 	switch nxt.kind {
-	case tkInt, tkFloat, tkString, tkFString, tkLBrack, tkLBrace,
+	case tkInt, tkFloat, tkString, tkFString, tkLBrace,
 		tkMinus, tkPlus, tkTilde, tkStar, tkEllipsis:
 		return true
 	case tkLParen:
@@ -134,6 +134,11 @@ func (p *parser) looksLikeMatchStmt() bool {
 		// from `match(expr)` (a function call with no colon after).
 		// Do a cheap byte scan: skip past the matching ')' and check
 		// whether ':' follows (possibly preceded by spaces).
+		return p.sc.parenFollowedByColon()
+	case tkLBrack:
+		// `match[i]:` is a valid match subject (subscript on the name
+		// `match`). But `match[i] = x` is a subscript assignment, not
+		// a match statement. Scan past the closing ']' and require ':'.
 		return p.sc.parenFollowedByColon()
 	case tkName:
 		// `match NAME ...` - any name (including `case`, which would
@@ -1093,6 +1098,32 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 			}
 			items = []*WithItem{{ContextExpr: &Tuple{P: pos, Elts: tupleElts}}}
 			break
+		}
+		// Inside a parenthesized with, a walrus (named expression) as the first
+		// item's context — followed by a comma — means (…) is a tuple context
+		// manager, not a PEP 617 with-item list (same rule CPython uses).
+		if parens && first.OptionalVars == nil {
+			if _, ok := first.ContextExpr.(*NamedExpr); ok {
+				tupleElts := []Expr{first.ContextExpr}
+				for {
+					elem, err := p.parseExpr()
+					if err != nil {
+						return nil, err
+					}
+					tupleElts = append(tupleElts, elem)
+					if p.cur.kind != tkComma {
+						break
+					}
+					if err := p.advance(); err != nil {
+						return nil, err
+					}
+					if p.cur.kind == tkRParen {
+						break
+					}
+				}
+				items = []*WithItem{{ContextExpr: &Tuple{P: pos, Elts: tupleElts}}}
+				break
+			}
 		}
 		it, err := p.parseWithItem()
 		if err != nil {

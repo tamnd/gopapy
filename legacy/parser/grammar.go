@@ -164,7 +164,7 @@ type AssignStmt struct {
 	EndPos  plexer.Position
 	Target  *AssignTarget   `parser:"@@"`
 	Annot   *Expression     `parser:"( COLON @@"`
-	AnnVal  *Expression     `parser:"  ( EQ @@ )? )?"`
+	AnnVal  *AssignTarget   `parser:"  ( EQ @@ )? )?"`
 	Aug     string          `parser:"  ( @( PLUSEQ | MINUSEQ | STAREQ | SLASHEQ | DOUBLESLEQ | PERCENTEQ | ATEQ | AMPEQ | PIPEEQ | CARETEQ | LSHIFTEQ | RSHIFTEQ | DOUBLESTAREQ )"`
 	AugVal  *Expression     `parser:"    @@"`
 	AugRest []*Expression   `parser:"    ( COMMA @@ )* COMMA?"`
@@ -566,8 +566,9 @@ type TypeParam struct {
 	EndPos  plexer.Position
 	Kind    string      `parser:"@( DOUBLESTAR | STAR )?"`
 	Name    string      `parser:"@NAME"`
-	Bound   *Expression `parser:"( COLON @@ )?"`
-	Default *Expression `parser:"( EQ @@ )?"`
+	Bound       *Expression `parser:"( COLON @@ )?"`
+	DefaultStar bool        `parser:"( EQ @STAR?"`
+	Default     *Expression `parser:"  @@ )?"`
 }
 
 // Param covers one entry in a function parameter list. Five shapes:

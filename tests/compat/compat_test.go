@@ -1,5 +1,5 @@
 // Package compat runs the grammar fixture oracle tests for each Python minor
-// version from 3.8 through 3.13. Each test uses the Python binary from uv
+// version from 3.8 through 3.14. Each test uses the Python binary from uv
 // (or the system PATH) for that minor version.
 //
 // A test for version 3.X is skipped when:
@@ -7,16 +7,13 @@
 //     not yet downloaded).
 //   - The fixture has a "# Python 3.Y+" comment on the first line and Y > X.
 //
-// These tests do NOT skip when the ast.dump format differs between Python
-// versions — instead, gopapy dump --py 3.X must produce byte-identical
-// output to what python3.X ast.dump() produces. For Python 3.13+, the
-// format omits empty fields (show_empty=False is the default). For Python
-// 3.12 and earlier, all fields are printed. Version-aware dump is
-// implemented incrementally (see ~/notes/Spec/1300/1321-1324).
+// Version-aware dump is fully implemented. ASTDump respects pyMinor in two ways:
+//   - pyMinor <= 12: all empty/None optional fields are printed (showEmpty=true).
+//   - pyMinor <= 8: 3.8-specific fields are added (kind=None on Constant,
+//     type_comment=None on assignments/functions, Index/ExtSlice subscript wrappers,
+//     vararg=None/kwarg=None in arguments, etc.).
 //
-// For Python 3.13: our ASTDump already produces the correct format.
-// For Python 3.12 and below: gopapy dump --py 3.12 will eventually produce
-// the 3.12-compatible format; until then those version tests are skipped.
+// Oracle tests for all versions 3.8–3.14 are live and gate CI.
 package compat
 
 import (

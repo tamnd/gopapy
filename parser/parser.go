@@ -860,7 +860,8 @@ func (p *parser) parseStringAtom() (Expr, error) {
 	var plainParts []string
 	var joined []Expr
 	bytesPrefix := false
-	uPrefixSeen := false
+	firstIsU := false    // true only when the FIRST string token has 'u' prefix
+	uKindPending := false // true while kind='u' hasn't been applied yet to a joined Constant
 	hasFOrPlain := false
 	hasT := false
 	var tParts []*Constant
@@ -882,8 +883,9 @@ func (p *parser) parseStringAtom() (Expr, error) {
 			val := tok.val
 			isBytes := tok.strKind == 'b'
 			isUnicode := tok.strKind == 'u'
-			if isUnicode {
-				uPrefixSeen = true
+			if isUnicode && !hasFOrPlain {
+				firstIsU = true     // only the very first token matters
+				uKindPending = true // kind='u' awaits the first real Constant in joined
 			}
 			if hasT {
 				return nil, fmt.Errorf("%d:%d: cannot mix t-string with other strings",
@@ -953,17 +955,34 @@ func (p *parser) parseStringAtom() (Expr, error) {
 		hasFOrPlain = true
 		// f-string: flush any buffered plain text into joined first,
 		// merging with the last Constant if possible — matches CPython.
+		// uKindPending tracks whether kind='u' still needs to be applied to
+		// the first Constant created in joined (consumed once a Constant is
+		// created or once a FormattedValue appears before any Constant).
 		if len(plainParts) > 0 {
 			text := strings.Join(plainParts, "")
 			plainParts = plainParts[:0]
-			if len(joined) > 0 {
-				if c, ok := joined[len(joined)-1].(*Constant); ok && c.Kind == "str" {
-					c.Value = c.Value.(string) + text
-				} else {
-					joined = append(joined, &Constant{P: tok.pos, Kind: "str", Value: text})
+			if text != "" || len(joined) > 0 {
+				// Only create/merge when there's actual text OR there's already
+				// a leading Constant to merge into (empty text at the start is dropped).
+				if len(joined) > 0 {
+					if c, ok := joined[len(joined)-1].(*Constant); ok && (c.Kind == "str" || c.Kind == "u") {
+						c.Value = c.Value.(string) + text
+					} else {
+						kind := "str"
+						if uKindPending {
+							kind = "u"
+							uKindPending = false
+						}
+						joined = append(joined, &Constant{P: tok.pos, Kind: kind, Value: text})
+					}
+				} else if text != "" {
+					kind := "str"
+					if uKindPending {
+						kind = "u"
+						uKindPending = false
+					}
+					joined = append(joined, &Constant{P: startPos, Kind: kind, Value: text})
 				}
-			} else {
-				joined = append(joined, &Constant{P: startPos, Kind: "str", Value: text})
 			}
 		}
 		for _, seg := range payload.segments {
@@ -973,15 +992,27 @@ func (p *parser) parseStringAtom() (Expr, error) {
 				}
 				// Merge with the previous Constant if there is one (matches
 				// CPython's behavior for concatenated f-strings).
+				// Allow merging into 'u'-kind Constants so that
+				// `u"prefix" f"text{x}"` produces Constant("prefixtext", kind='u').
 				if len(joined) > 0 {
-					if c, ok := joined[len(joined)-1].(*Constant); ok && c.Kind == "str" {
+					if c, ok := joined[len(joined)-1].(*Constant); ok && (c.Kind == "str" || c.Kind == "u") {
 						c.Value = c.Value.(string) + seg.text
+						uKindPending = false // consumed by merge into existing Constant
 						continue
 					}
 				}
-				joined = append(joined, &Constant{P: seg.pos, Kind: "str", Value: seg.text})
+				kind := "str"
+				if uKindPending {
+					kind = "u"
+					uKindPending = false
+				}
+				joined = append(joined, &Constant{P: seg.pos, Kind: kind, Value: seg.text})
 				continue
 			}
+			// FormattedValue: if uKindPending is still true (no Constant created yet),
+			// cancel 'u' propagation — CPython doesn't give kind='u' to Constants
+			// that appear after an interpolation when no prior text was merged.
+			uKindPending = false
 			fv, err := p.buildFormattedValue(seg)
 			if err != nil {
 				return nil, err
@@ -1034,7 +1065,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 	kind := "str"
 	if bytesPrefix {
 		kind = "bytes"
-	} else if uPrefixSeen {
+	} else if firstIsU {
 		kind = "u"
 	}
 	return &Constant{P: startPos, Kind: kind, Value: strings.Join(plainParts, "")}, nil

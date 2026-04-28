@@ -28,7 +28,7 @@ import (
 	"github.com/tamnd/gopapy/symbols"
 )
 
-const version = "0.4.5"
+const version = "0.5.7"
 
 func init() {
 	// Mirror the CLI version into the LSP server so the initialize
@@ -189,19 +189,16 @@ func checkDir(dir string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// benchCmd walks a directory, parses every .py through the full
-// pipeline (lex + participle + emit), and reports throughput numbers
-// against actual source bytes. Useful for one-shot benchmarks against
-// a corpus that isn't in our fixtures — e.g. someone's monorepo. The
-// output format is grep-friendly so a wrapping script can diff two
-// runs.
+// benchCmd walks a directory, parses every .py through the new parser
+// pipeline, and reports throughput numbers against actual source bytes.
+// Output is grep-friendly for diff-ing two runs or scraping by CI.
 func benchCmd(dir string, stdout, stderr io.Writer) error {
 	type entry struct {
 		path string
 		src  []byte
 	}
 	var files []entry
-	var bytes int64
+	var totalBytes int64
 	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -217,7 +214,7 @@ func benchCmd(dir string, stdout, stderr io.Writer) error {
 			return err
 		}
 		files = append(files, entry{p, src})
-		bytes += int64(len(src))
+		totalBytes += int64(len(src))
 		return nil
 	})
 	if err != nil {
@@ -226,41 +223,25 @@ func benchCmd(dir string, stdout, stderr io.Writer) error {
 	if len(files) == 0 {
 		return fmt.Errorf("bench: no .py files under %s", dir)
 	}
-	parseStart := time.Now()
-	parsed := make([]*legacyparser.File, 0, len(files))
+
 	var parseFailed int
-	for i, f := range files {
-		pf, err := legacyparser.ParseFile(f.path, f.src)
-		if err != nil {
+	parseStart := time.Now()
+	for _, f := range files {
+		if _, err := parser.ParseFile(f.path, string(f.src)); err != nil {
 			parseFailed++
-			parsed = append(parsed, nil)
-			fmt.Fprintf(stderr, "FAIL parse %s: %v\n", f.path, err)
-		} else {
-			parsed = append(parsed, pf)
-		}
-		if (i+1)%64 == 0 {
-			runtime.GC()
+			fmt.Fprintf(stderr, "FAIL %s: %v\n", f.path, err)
 		}
 	}
 	parseDur := time.Since(parseStart)
 
-	emitStart := time.Now()
-	for _, pf := range parsed {
-		if pf == nil {
-			continue
-		}
-		_ = ast.FromFile(pf)
-	}
-	emitDur := time.Since(emitStart)
-
-	mb := float64(bytes) / (1024 * 1024)
-	fmt.Fprintf(stdout, "files: %d\n", len(files))
-	fmt.Fprintf(stdout, "bytes: %.1f MB\n", mb)
-	fmt.Fprintf(stdout, "parse: %s (%.2f MB/s)\n", parseDur.Round(time.Millisecond), mb/parseDur.Seconds())
-	fmt.Fprintf(stdout, "emit:  %s (%.2f MB/s)\n", emitDur.Round(time.Millisecond), mb/emitDur.Seconds())
-	fmt.Fprintf(stdout, "total: %s\n", (parseDur + emitDur).Round(time.Millisecond))
+	mb := float64(totalBytes) / (1024 * 1024)
+	filesPerSec := float64(len(files)) / parseDur.Seconds()
+	mbPerSec := mb / parseDur.Seconds()
+	fmt.Fprintf(stdout, "corpus-files: %d\n", len(files))
+	fmt.Fprintf(stdout, "corpus-bytes: %.1f MB\n", mb)
+	fmt.Fprintf(stdout, "corpus-parse-rate: %.1f files/s, %.1f MB/s\n", filesPerSec, mbPerSec)
 	if parseFailed > 0 {
-		fmt.Fprintf(stdout, "parse-failed: %d\n", parseFailed)
+		fmt.Fprintf(stdout, "corpus-parse-failed: %d\n", parseFailed)
 	}
 	return nil
 }
@@ -819,7 +800,7 @@ func lintCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 // transport is fixed at stdio with LSP framing, and configuration
 // discovery uses the same pyproject.toml walk the rest of the CLI
 // does.
-func lspCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func lspCmd(args []string, stdin io.Reader, stdout, _ io.Writer) error {
 	if len(args) > 0 {
 		return fmt.Errorf("lsp: takes no arguments, got %q", args[0])
 	}
@@ -1196,13 +1177,27 @@ func flagString(f symbols.BindFlag) string {
 	return strings.Join(parts, ",")
 }
 
-// isIntentionalBadFixture reports whether path is a CPython test fixture
-// that is *meant* to be unparseable. The naming convention `bad_*.py` /
-// `badsyntax_*.py` is used by CPython's own tokenizer/parser tests to ship
-// deliberate syntax errors.
+// isIntentionalBadFixture reports whether path is a fixture that is meant to
+// be unparseable. Covers CPython's bad_*/badsyntax_* naming convention and
+// known intentionally-invalid files from the PyPI corpus packages.
 func isIntentionalBadFixture(path string) bool {
 	base := filepath.Base(path)
-	return strings.HasPrefix(base, "bad_") || strings.HasPrefix(base, "badsyntax_")
+	if strings.HasPrefix(base, "bad_") || strings.HasPrefix(base, "badsyntax_") {
+		return true
+	}
+	// Intentionally-invalid corpus fixtures (both gopapy and CPython reject them).
+	switch base {
+	case "async_as_identifier.py",   // black: async used as identifier (Python 2 style)
+		"invalid_header.py",         // black: malformed encoding declaration
+		"pattern_matching_invalid.py", // black: walrus inside match pattern
+		"python2_detection.py",      // black: Python 2 print statement
+		"pep_572_do_not_remove_parens.py", // black: invalid walrus target
+		"pep_701.py",                // black: intentionally-broken f-string nesting
+		"tests_syntax_error.py",     // Django: deliberate SyntaxError fixture
+		"unicodedoc.py":             // pygments: uses ur"..." (invalid in Python 3)
+		return true
+	}
+	return false
 }
 
 func usage(w io.Writer) {
