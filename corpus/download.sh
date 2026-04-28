@@ -16,7 +16,7 @@ mkdir -p "$SDIST_DIR" "$SRC_DIR"
 while IFS= read -r pkg || [ -n "$pkg" ]; do
   [ -z "$pkg" ] && continue
   echo "Downloading $pkg"
-  pip download --no-deps --no-binary :all: -d "$SDIST_DIR" "$pkg"
+  python3 -m pip download --no-deps --no-binary :all: -d "$SDIST_DIR" "$pkg"
 done < "$PACKAGES_FILE"
 
 for archive in "$SDIST_DIR"/*.tar.gz; do
