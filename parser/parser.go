@@ -46,10 +46,11 @@ func ParseExpression(src string) (Expr, error) {
 }
 
 type parser struct {
-	sc   *scanner
-	cur  token
-	peek token
+	sc      *scanner
+	cur     token
+	peek    token
 	hasPeek bool
+	ar      arena
 }
 
 func newParser(src string) (*parser, error) {
@@ -147,17 +148,17 @@ func (p *parser) parseYieldExpr() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &YieldFrom{P: pos, Value: v}, nil
+		return arenaAlloc(&p.ar.yieldFroms, YieldFrom{P: pos, Value: v}), nil
 	}
 	// bare yield: stop at expression-list terminators
 	if isYieldTerminator(p.cur.kind) {
-		return &Yield{P: pos}, nil
+		return arenaAlloc(&p.ar.yields, Yield{P: pos}), nil
 	}
 	v, err := p.parseTestlistOrStarExpr()
 	if err != nil {
 		return nil, err
 	}
-	return &Yield{P: pos, Value: v}, nil
+	return arenaAlloc(&p.ar.yields, Yield{P: pos, Value: v}), nil
 }
 
 // isYieldTerminator reports kinds that end a bare `yield`.
@@ -184,11 +185,11 @@ func (p *parser) parseNamedExprFromName() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &NamedExpr{
+	return arenaAlloc(&p.ar.namedExprs, NamedExpr{
 		P:      nameTok.pos,
-		Target: &Name{P: nameTok.pos, Id: nameTok.val},
+		Target: arenaAlloc(&p.ar.names, Name{P: nameTok.pos, Id: nameTok.val}),
 		Value:  value,
-	}, nil
+	}), nil
 }
 
 func (p *parser) parseTernary() (Expr, error) {
@@ -218,7 +219,7 @@ func (p *parser) parseTernary() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &IfExp{P: ifPos, Test: test, Body: body, OrElse: orelse}, nil
+	return arenaAlloc(&p.ar.ifExprs, IfExp{P: ifPos, Test: test, Body: body, OrElse: orelse}), nil
 }
 
 // ----- Boolean and comparison layers -----
@@ -243,7 +244,7 @@ func (p *parser) parseOr() (Expr, error) {
 		}
 		values = append(values, next)
 	}
-	return &BoolOp{P: pos, Op: "Or", Values: values}, nil
+	return arenaAlloc(&p.ar.boolOps, BoolOp{P: pos, Op: "Or", Values: values}), nil
 }
 
 func (p *parser) parseAnd() (Expr, error) {
@@ -266,7 +267,7 @@ func (p *parser) parseAnd() (Expr, error) {
 		}
 		values = append(values, next)
 	}
-	return &BoolOp{P: pos, Op: "And", Values: values}, nil
+	return arenaAlloc(&p.ar.boolOps, BoolOp{P: pos, Op: "And", Values: values}), nil
 }
 
 func (p *parser) parseNot() (Expr, error) {
@@ -282,7 +283,7 @@ func (p *parser) parseNot() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &UnaryOp{P: pos, Op: "Not", Operand: operand}, nil
+		return arenaAlloc(&p.ar.unaryOps, UnaryOp{P: pos, Op: "Not", Operand: operand}), nil
 	}
 	return p.parseCompare()
 }
@@ -314,7 +315,7 @@ func (p *parser) parseCompare() (Expr, error) {
 	if len(ops) == 0 {
 		return left, nil
 	}
-	return &Compare{P: left.pos(), Left: left, Ops: ops, Comparators: comps}, nil
+	return arenaAlloc(&p.ar.compares, Compare{P: left.pos(), Left: left, Ops: ops, Comparators: comps}), nil
 }
 
 func (p *parser) tryComparisonOp() (string, bool, error) {
@@ -380,7 +381,7 @@ func (p *parser) parseBitOr() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = &BinOp{P: op.pos, Op: "BitOr", Left: left, Right: right}
+		left = arenaAlloc(&p.ar.binOps, BinOp{P: op.pos, Op: "BitOr", Left: left, Right: right})
 	}
 	return left, nil
 }
@@ -399,7 +400,7 @@ func (p *parser) parseBitXor() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = &BinOp{P: op.pos, Op: "BitXor", Left: left, Right: right}
+		left = arenaAlloc(&p.ar.binOps, BinOp{P: op.pos, Op: "BitXor", Left: left, Right: right})
 	}
 	return left, nil
 }
@@ -418,7 +419,7 @@ func (p *parser) parseBitAnd() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = &BinOp{P: op.pos, Op: "BitAnd", Left: left, Right: right}
+		left = arenaAlloc(&p.ar.binOps, BinOp{P: op.pos, Op: "BitAnd", Left: left, Right: right})
 	}
 	return left, nil
 }
@@ -441,7 +442,7 @@ func (p *parser) parseShift() (Expr, error) {
 		if op.kind == tkRShift {
 			opName = "RShift"
 		}
-		left = &BinOp{P: op.pos, Op: opName, Left: left, Right: right}
+		left = arenaAlloc(&p.ar.binOps, BinOp{P: op.pos, Op: opName, Left: left, Right: right})
 	}
 	return left, nil
 }
@@ -466,7 +467,7 @@ func (p *parser) parseAdditive() (Expr, error) {
 		if op.kind == tkMinus {
 			opName = "Sub"
 		}
-		left = &BinOp{P: op.pos, Op: opName, Left: left, Right: right}
+		left = arenaAlloc(&p.ar.binOps, BinOp{P: op.pos, Op: opName, Left: left, Right: right})
 	}
 	return left, nil
 }
@@ -500,7 +501,7 @@ func (p *parser) parseMultiplicative() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = &BinOp{P: op.pos, Op: opName, Left: left, Right: right}
+		left = arenaAlloc(&p.ar.binOps, BinOp{P: op.pos, Op: opName, Left: left, Right: right})
 	}
 }
 
@@ -515,7 +516,7 @@ func (p *parser) parseUnary() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &UnaryOp{P: op.pos, Op: unaryOpString(op.kind), Operand: operand}, nil
+		return arenaAlloc(&p.ar.unaryOps, UnaryOp{P: op.pos, Op: unaryOpString(op.kind), Operand: operand}), nil
 	}
 	if p.isKeyword("await") {
 		pos := p.cur.pos
@@ -526,7 +527,7 @@ func (p *parser) parseUnary() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Await{P: pos, Value: operand}, nil
+		return arenaAlloc(&p.ar.awaits, Await{P: pos, Value: operand}), nil
 	}
 	return p.parsePower()
 }
@@ -551,7 +552,7 @@ func (p *parser) parsePower() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &BinOp{P: op.pos, Op: "Pow", Left: left, Right: right}, nil
+	return arenaAlloc(&p.ar.binOps, BinOp{P: op.pos, Op: "Pow", Left: left, Right: right}), nil
 }
 
 // ----- Trailer (attribute, subscript, call) -----
@@ -576,13 +577,13 @@ func (p *parser) parseTrailer() (Expr, error) {
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			expr = &Attribute{P: pos, Value: expr, Attr: attr}
+			expr = arenaAlloc(&p.ar.attributes, Attribute{P: pos, Value: expr, Attr: attr})
 		case tkLParen:
 			args, kwargs, callPos, err := p.parseCallArgs()
 			if err != nil {
 				return nil, err
 			}
-			expr = &Call{P: callPos, Func: expr, Args: args, Keywords: kwargs}
+			expr = arenaAlloc(&p.ar.calls, Call{P: callPos, Func: expr, Args: args, Keywords: kwargs})
 		case tkLBrack:
 			pos := p.cur.pos
 			if err := p.advance(); err != nil {
@@ -595,7 +596,7 @@ func (p *parser) parseTrailer() (Expr, error) {
 			if _, err := p.expect(tkRBrack); err != nil {
 				return nil, err
 			}
-			expr = &Subscript{P: pos, Value: expr, Slice: slice}
+			expr = arenaAlloc(&p.ar.subscripts, Subscript{P: pos, Value: expr, Slice: slice})
 		default:
 			return expr, nil
 		}
@@ -613,7 +614,7 @@ func (p *parser) parseSubscriptBody() (Expr, error) {
 	if p.cur.kind != tkComma {
 		// PEP 646: a single *Ts subscript is wrapped in an implicit Tuple.
 		if _, ok := first.(*Starred); ok {
-			return &Tuple{P: first.pos(), Elts: []Expr{first}}, nil
+			return arenaAlloc(&p.ar.tuples, Tuple{P: first.pos(), Elts: []Expr{first}}), nil
 		}
 		return first, nil
 	}
@@ -632,7 +633,7 @@ func (p *parser) parseSubscriptBody() (Expr, error) {
 		}
 		elts = append(elts, next)
 	}
-	return &Tuple{P: pos, Elts: elts}, nil
+	return arenaAlloc(&p.ar.tuples, Tuple{P: pos, Elts: elts}), nil
 }
 
 func (p *parser) parseSubscriptItem() (Expr, error) {
@@ -646,7 +647,7 @@ func (p *parser) parseSubscriptItem() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Starred{P: pos, Value: val}, nil
+		return arenaAlloc(&p.ar.starredNodes, Starred{P: pos, Value: val}), nil
 	}
 	var lower Expr
 	if p.cur.kind != tkColon {
@@ -683,7 +684,7 @@ func (p *parser) parseSubscriptItem() (Expr, error) {
 			step = v
 		}
 	}
-	return &Slice{P: pos, Lower: lower, Upper: upper, Step: step}, nil
+	return arenaAlloc(&p.ar.slices, Slice{P: pos, Lower: lower, Upper: upper, Step: step}), nil
 }
 
 func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
@@ -710,7 +711,7 @@ func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
 			if err != nil {
 				return nil, nil, pos, err
 			}
-			kwargs = append(kwargs, &Keyword{P: kp, Arg: "", Value: v})
+			kwargs = append(kwargs, arenaAlloc(&p.ar.keywords, Keyword{P: kp, Arg: "", Value: v}))
 		case p.cur.kind == tkStar:
 			sp := p.cur.pos
 			if err := p.advance(); err != nil {
@@ -720,7 +721,7 @@ func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
 			if err != nil {
 				return nil, nil, pos, err
 			}
-			args = append(args, &Starred{P: sp, Value: v})
+			args = append(args, arenaAlloc(&p.ar.starredNodes, Starred{P: sp, Value: v}))
 		case p.cur.kind == tkName && (!isReservedKeyword(p.cur.val) || isSoftKeyword(p.cur.val)):
 			// Look ahead one token to see if this is `name=value`.
 			nxt, err := p.peekTok()
@@ -739,7 +740,7 @@ func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
 				if err != nil {
 					return nil, nil, pos, err
 				}
-				kwargs = append(kwargs, &Keyword{P: name.pos, Arg: name.val, Value: v})
+				kwargs = append(kwargs, arenaAlloc(&p.ar.keywords, Keyword{P: name.pos, Arg: name.val, Value: v}))
 			} else {
 				v, err := p.parseExpr()
 				if err != nil {
@@ -752,7 +753,7 @@ func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
 					if err != nil {
 						return nil, nil, pos, err
 					}
-					args = append(args, &GeneratorExp{P: v.pos(), Elt: v, Gens: gens})
+					args = append(args, arenaAlloc(&p.ar.generatorExps, GeneratorExp{P: v.pos(), Elt: v, Gens: gens}))
 					if _, err := p.expect(tkRParen); err != nil {
 						return nil, nil, pos, err
 					}
@@ -770,7 +771,7 @@ func (p *parser) parseCallArgs() ([]Expr, []*Keyword, Pos, error) {
 				if err != nil {
 					return nil, nil, pos, err
 				}
-				args = append(args, &GeneratorExp{P: v.pos(), Elt: v, Gens: gens})
+				args = append(args, arenaAlloc(&p.ar.generatorExps, GeneratorExp{P: v.pos(), Elt: v, Gens: gens}))
 				if _, err := p.expect(tkRParen); err != nil {
 					return nil, nil, pos, err
 				}
@@ -804,41 +805,41 @@ func (p *parser) parseAtom() (Expr, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return parseIntLiteral(tok)
+		return parseIntLiteral(&p.ar, tok)
 	case tkFloat:
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return parseFloatLiteral(tok)
+		return parseFloatLiteral(&p.ar, tok)
 	case tkString, tkFString:
 		return p.parseStringAtom()
 	case tkEllipsis:
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return &Constant{P: tok.pos, Kind: "Ellipsis"}, nil
+		return arenaAlloc(&p.ar.constants, Constant{P: tok.pos, Kind: "Ellipsis"}), nil
 	case tkName:
 		switch tok.val {
 		case "None":
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &Constant{P: tok.pos, Kind: "None"}, nil
+			return arenaAlloc(&p.ar.constants, Constant{P: tok.pos, Kind: "None"}), nil
 		case "True":
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &Constant{P: tok.pos, Kind: "True"}, nil
+			return arenaAlloc(&p.ar.constants, Constant{P: tok.pos, Kind: "True"}), nil
 		case "False":
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &Constant{P: tok.pos, Kind: "False"}, nil
+			return arenaAlloc(&p.ar.constants, Constant{P: tok.pos, Kind: "False"}), nil
 		}
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return &Name{P: tok.pos, Id: tok.val}, nil
+		return arenaAlloc(&p.ar.names, Name{P: tok.pos, Id: tok.val}), nil
 	case tkLParen:
 		return p.parseParenAtom()
 	case tkLBrack:
@@ -870,7 +871,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 		// Append the buffered plain text as a Constant before an
 		// interpolation, even if empty (PEP 750 needs Strings to
 		// alternate one-for-one).
-		c := &Constant{P: startPos, Kind: "str", Value: strings.Join(plainParts, "")}
+		c := arenaAlloc(&p.ar.constants, Constant{P: startPos, Kind: "str", Value: strings.Join(plainParts, "")})
 		plainParts = plainParts[:0]
 		return c
 	}
@@ -937,7 +938,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 					needConstant = false
 					continue
 				}
-				tParts = append(tParts, &Constant{P: pendingPos, Kind: "str", Value: pendingText})
+				tParts = append(tParts, arenaAlloc(&p.ar.constants, Constant{P: pendingPos, Kind: "str", Value: pendingText}))
 				pendingText = ""
 				needConstant = true
 				ip, err := p.buildInterpolation(seg)
@@ -946,7 +947,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 				}
 				tInterp = append(tInterp, ip)
 			}
-			tParts = append(tParts, &Constant{P: pendingPos, Kind: "str", Value: pendingText})
+			tParts = append(tParts, arenaAlloc(&p.ar.constants, Constant{P: pendingPos, Kind: "str", Value: pendingText}))
 			continue
 		}
 		if hasT {
@@ -973,7 +974,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 							kind = "u"
 							uKindPending = false
 						}
-						joined = append(joined, &Constant{P: tok.pos, Kind: kind, Value: text})
+						joined = append(joined, arenaAlloc(&p.ar.constants, Constant{P: tok.pos, Kind: kind, Value: text}))
 					}
 				} else if text != "" {
 					kind := "str"
@@ -981,7 +982,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 						kind = "u"
 						uKindPending = false
 					}
-					joined = append(joined, &Constant{P: startPos, Kind: kind, Value: text})
+					joined = append(joined, arenaAlloc(&p.ar.constants, Constant{P: startPos, Kind: kind, Value: text}))
 				}
 			}
 		}
@@ -1006,7 +1007,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 					kind = "u"
 					uKindPending = false
 				}
-				joined = append(joined, &Constant{P: seg.pos, Kind: kind, Value: seg.text})
+				joined = append(joined, arenaAlloc(&p.ar.constants, Constant{P: seg.pos, Kind: kind, Value: seg.text}))
 				continue
 			}
 			// FormattedValue: if uKindPending is still true (no Constant created yet),
@@ -1024,10 +1025,10 @@ func (p *parser) parseStringAtom() (Expr, error) {
 					if c, ok := joined[len(joined)-1].(*Constant); ok && c.Kind == "str" {
 						c.Value = c.Value.(string) + seg.selfDocText
 					} else {
-						joined = append(joined, &Constant{P: seg.pos, Kind: "str", Value: seg.selfDocText})
+						joined = append(joined, arenaAlloc(&p.ar.constants, Constant{P: seg.pos, Kind: "str", Value: seg.selfDocText}))
 					}
 				} else {
-					joined = append(joined, &Constant{P: seg.pos, Kind: "str", Value: seg.selfDocText})
+					joined = append(joined, arenaAlloc(&p.ar.constants, Constant{P: seg.pos, Kind: "str", Value: seg.selfDocText}))
 				}
 				// Default conversion for '=' is repr unless explicit or format spec present.
 				if seg.convert == -1 && seg.spec == nil {
@@ -1041,7 +1042,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 		// Any trailing buffered text is already in tParts thanks to
 		// the per-segment flush.
 		_ = tStartConst
-		return &TemplateStr{P: startPos, Strings: tParts, Interpolations: tInterp}, nil
+		return arenaAlloc(&p.ar.templateStrs, TemplateStr{P: startPos, Strings: tParts, Interpolations: tInterp}), nil
 	}
 	if len(joined) > 0 {
 		// Any remaining plain text (from a trailing plain-string
@@ -1053,14 +1054,14 @@ func (p *parser) parseStringAtom() (Expr, error) {
 			if c, ok := joined[len(joined)-1].(*Constant); ok && c.Kind == "str" {
 				c.Value = c.Value.(string) + text
 			} else {
-				joined = append(joined, &Constant{P: startPos, Kind: "str", Value: text})
+				joined = append(joined, arenaAlloc(&p.ar.constants, Constant{P: startPos, Kind: "str", Value: text}))
 			}
 		}
-		return &JoinedStr{P: startPos, Values: joined}, nil
+		return arenaAlloc(&p.ar.joinedStrs, JoinedStr{P: startPos, Values: joined}), nil
 	}
 	// Empty f-string (no segments) becomes JoinedStr() to match CPython.
 	if hasFOrPlain && !bytesPrefix && len(plainParts) == 0 {
-		return &JoinedStr{P: startPos, Values: nil}, nil
+		return arenaAlloc(&p.ar.joinedStrs, JoinedStr{P: startPos, Values: nil}), nil
 	}
 	kind := "str"
 	if bytesPrefix {
@@ -1068,7 +1069,7 @@ func (p *parser) parseStringAtom() (Expr, error) {
 	} else if firstIsU {
 		kind = "u"
 	}
-	return &Constant{P: startPos, Kind: kind, Value: strings.Join(plainParts, "")}, nil
+	return arenaAlloc(&p.ar.constants, Constant{P: startPos, Kind: kind, Value: strings.Join(plainParts, "")}), nil
 }
 
 // buildFormattedValue parses a single f-string interpolation segment
@@ -1087,12 +1088,12 @@ func (p *parser) buildFormattedValue(seg fstringSegment) (*FormattedValue, error
 		}
 		spec = s
 	}
-	return &FormattedValue{
+	return arenaAlloc(&p.ar.formattedValues, FormattedValue{
 		P:          seg.pos,
 		Value:      val,
 		Conversion: seg.convert,
 		FormatSpec: spec,
-	}, nil
+	}), nil
 }
 
 // buildInterpolation is the t-string analogue of buildFormattedValue.
@@ -1109,13 +1110,13 @@ func (p *parser) buildInterpolation(seg fstringSegment) (*Interpolation, error) 
 		}
 		spec = s
 	}
-	return &Interpolation{
+	return arenaAlloc(&p.ar.interpolations, Interpolation{
 		P:          seg.pos,
 		Value:      val,
 		Str:        seg.exprSrc,
 		Conversion: seg.convert,
 		FormatSpec: spec,
-	}, nil
+	}), nil
 }
 
 // buildSpecJoined turns a parsed format-spec payload into a
@@ -1128,7 +1129,7 @@ func (p *parser) buildSpecJoined(payload *fstringPayload, at Pos) (*JoinedStr, e
 			if seg.text == "" {
 				continue
 			}
-			values = append(values, &Constant{P: seg.pos, Kind: "str", Value: seg.text})
+			values = append(values, arenaAlloc(&p.ar.constants, Constant{P: seg.pos, Kind: "str", Value: seg.text}))
 			continue
 		}
 		fv, err := p.buildFormattedValue(seg)
@@ -1137,7 +1138,7 @@ func (p *parser) buildSpecJoined(payload *fstringPayload, at Pos) (*JoinedStr, e
 		}
 		values = append(values, fv)
 	}
-	return &JoinedStr{P: at, Values: values}, nil
+	return arenaAlloc(&p.ar.joinedStrs, JoinedStr{P: at, Values: values}), nil
 }
 
 // parseInterpExpr parses the expression source captured from an
@@ -1172,7 +1173,7 @@ func parseInterpExpr(src string, at Pos) (Expr, error) {
 	return e, nil
 }
 
-func parseIntLiteral(tok token) (Expr, error) {
+func parseIntLiteral(ar *arena, tok token) (Expr, error) {
 	val := strings.ReplaceAll(tok.val, "_", "")
 	var base int
 	var digits string
@@ -1188,7 +1189,7 @@ func parseIntLiteral(tok token) (Expr, error) {
 	}
 	v64, err := strconv.ParseInt(digits, base, 64)
 	if err == nil {
-		return &Constant{P: tok.pos, Kind: "int", Value: v64}, nil
+		return arenaAlloc(&ar.constants, Constant{P: tok.pos, Kind: "int", Value: v64}), nil
 	}
 	if errors.Is(err, strconv.ErrRange) {
 		bi := new(big.Int)
@@ -1196,17 +1197,17 @@ func parseIntLiteral(tok token) (Expr, error) {
 			return nil, fmt.Errorf("%d:%d: invalid int literal %q",
 				tok.pos.Line, tok.pos.Col, tok.val)
 		}
-		return &Constant{P: tok.pos, Kind: "int", Value: bi}, nil
+		return arenaAlloc(&ar.constants, Constant{P: tok.pos, Kind: "int", Value: bi}), nil
 	}
 	return nil, fmt.Errorf("%d:%d: invalid int literal %q",
 		tok.pos.Line, tok.pos.Col, tok.val)
 }
 
-func parseFloatLiteral(tok token) (Expr, error) {
+func parseFloatLiteral(ar *arena, tok token) (Expr, error) {
 	val := strings.ReplaceAll(tok.val, "_", "")
 	if strings.HasSuffix(val, "j") || strings.HasSuffix(val, "J") {
 		// Complex: keep as-is; adConstValue will parse the imaginary part.
-		return &Constant{P: tok.pos, Kind: "complex", Value: val}, nil
+		return arenaAlloc(&ar.constants, Constant{P: tok.pos, Kind: "complex", Value: val}), nil
 	}
 	v, err := strconv.ParseFloat(val, 64)
 	// ErrRange means overflow (+Inf) or underflow (0.0) — both valid Python values.
@@ -1214,7 +1215,7 @@ func parseFloatLiteral(tok token) (Expr, error) {
 		return nil, fmt.Errorf("%d:%d: invalid float literal %q",
 			tok.pos.Line, tok.pos.Col, tok.val)
 	}
-	return &Constant{P: tok.pos, Kind: "float", Value: v}, nil
+	return arenaAlloc(&ar.constants, Constant{P: tok.pos, Kind: "float", Value: v}), nil
 }
 
 // parseParenAtom handles:
@@ -1234,7 +1235,7 @@ func (p *parser) parseParenAtom() (Expr, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return &Tuple{P: pos, Elts: nil}, nil
+		return arenaAlloc(&p.ar.tuples, Tuple{P: pos, Elts: nil}), nil
 	}
 	first, err := p.parseStarredOrExpr()
 	if err != nil {
@@ -1248,7 +1249,7 @@ func (p *parser) parseParenAtom() (Expr, error) {
 		if _, err := p.expect(tkRParen); err != nil {
 			return nil, err
 		}
-		return &GeneratorExp{P: pos, Elt: first, Gens: gens}, nil
+		return arenaAlloc(&p.ar.generatorExps, GeneratorExp{P: pos, Elt: first, Gens: gens}), nil
 	}
 	if p.cur.kind == tkRParen {
 		if err := p.advance(); err != nil {
@@ -1279,7 +1280,7 @@ func (p *parser) parseParenAtom() (Expr, error) {
 	if _, err := p.expect(tkRParen); err != nil {
 		return nil, err
 	}
-	return &Tuple{P: pos, Elts: elts}, nil
+	return arenaAlloc(&p.ar.tuples, Tuple{P: pos, Elts: elts}), nil
 }
 
 func (p *parser) parseListAtom() (Expr, error) {
@@ -1291,7 +1292,7 @@ func (p *parser) parseListAtom() (Expr, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return &List{P: pos, Elts: nil}, nil
+		return arenaAlloc(&p.ar.lists, List{P: pos, Elts: nil}), nil
 	}
 	first, err := p.parseStarredOrExpr()
 	if err != nil {
@@ -1305,7 +1306,7 @@ func (p *parser) parseListAtom() (Expr, error) {
 		if _, err := p.expect(tkRBrack); err != nil {
 			return nil, err
 		}
-		return &ListComp{P: pos, Elt: first, Gens: gens}, nil
+		return arenaAlloc(&p.ar.listComps, ListComp{P: pos, Elt: first, Gens: gens}), nil
 	}
 	elts := []Expr{first}
 	for p.cur.kind == tkComma {
@@ -1324,7 +1325,7 @@ func (p *parser) parseListAtom() (Expr, error) {
 	if _, err := p.expect(tkRBrack); err != nil {
 		return nil, err
 	}
-	return &List{P: pos, Elts: elts}, nil
+	return arenaAlloc(&p.ar.lists, List{P: pos, Elts: elts}), nil
 }
 
 func (p *parser) parseBraceAtom() (Expr, error) {
@@ -1336,7 +1337,7 @@ func (p *parser) parseBraceAtom() (Expr, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return &Dict{P: pos, Keys: nil, Values: nil}, nil
+		return arenaAlloc(&p.ar.dicts, Dict{P: pos, Keys: nil, Values: nil}), nil
 	}
 	// Special leading **other → dict
 	if p.cur.kind == tkDoubleStar {
@@ -1385,7 +1386,7 @@ func (p *parser) parseBraceAtom() (Expr, error) {
 		if _, err := p.expect(tkRBrace); err != nil {
 			return nil, err
 		}
-		return &Dict{P: pos, Keys: keys, Values: values}, nil
+		return arenaAlloc(&p.ar.dicts, Dict{P: pos, Keys: keys, Values: values}), nil
 	}
 	first, err := p.parseStarredOrExpr()
 	if err != nil {
@@ -1408,7 +1409,7 @@ func (p *parser) parseBraceAtom() (Expr, error) {
 			if _, err := p.expect(tkRBrace); err != nil {
 				return nil, err
 			}
-			return &DictComp{P: pos, Key: first, Value: firstVal, Gens: gens}, nil
+			return arenaAlloc(&p.ar.dictComps, DictComp{P: pos, Key: first, Value: firstVal, Gens: gens}), nil
 		}
 		keys := []Expr{first}
 		values := []Expr{firstVal}
@@ -1448,7 +1449,7 @@ func (p *parser) parseBraceAtom() (Expr, error) {
 		if _, err := p.expect(tkRBrace); err != nil {
 			return nil, err
 		}
-		return &Dict{P: pos, Keys: keys, Values: values}, nil
+		return arenaAlloc(&p.ar.dicts, Dict{P: pos, Keys: keys, Values: values}), nil
 	}
 	if p.isCompForStart() {
 		gens, err := p.parseComprehensionClauses()
@@ -1458,7 +1459,7 @@ func (p *parser) parseBraceAtom() (Expr, error) {
 		if _, err := p.expect(tkRBrace); err != nil {
 			return nil, err
 		}
-		return &SetComp{P: pos, Elt: first, Gens: gens}, nil
+		return arenaAlloc(&p.ar.setComps, SetComp{P: pos, Elt: first, Gens: gens}), nil
 	}
 	// set literal
 	elts := []Expr{first}
@@ -1478,7 +1479,7 @@ func (p *parser) parseBraceAtom() (Expr, error) {
 	if _, err := p.expect(tkRBrace); err != nil {
 		return nil, err
 	}
-	return &Set{P: pos, Elts: elts}, nil
+	return arenaAlloc(&p.ar.sets, Set{P: pos, Elts: elts}), nil
 }
 
 // parseStarredOrExpr is the entry for a single element inside a
@@ -1494,7 +1495,7 @@ func (p *parser) parseStarredOrExpr() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Starred{P: pos, Value: v}, nil
+		return arenaAlloc(&p.ar.starredNodes, Starred{P: pos, Value: v}), nil
 	}
 	return p.parseExpr()
 }
@@ -1544,9 +1545,9 @@ func (p *parser) parseComprehensionClauses() ([]*Comprehension, error) {
 			}
 			ifs = append(ifs, cond)
 		}
-		gens = append(gens, &Comprehension{
+		gens = append(gens, arenaAlloc(&p.ar.comprehensions, Comprehension{
 			Target: target, Iter: iter, Ifs: ifs, IsAsync: isAsync,
-		})
+		}))
 	}
 	return gens, nil
 }
@@ -1598,7 +1599,7 @@ func (p *parser) parseTargetList() (Expr, error) {
 		}
 		elts = append(elts, next)
 	}
-	return &Tuple{P: pos, Elts: elts}, nil
+	return arenaAlloc(&p.ar.tuples, Tuple{P: pos, Elts: elts}), nil
 }
 
 func (p *parser) parseTargetAtom() (Expr, error) {
@@ -1611,7 +1612,7 @@ func (p *parser) parseTargetAtom() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Starred{P: pos, Value: v}, nil
+		return arenaAlloc(&p.ar.starredNodes, Starred{P: pos, Value: v}), nil
 	}
 	if p.cur.kind == tkLParen {
 		// Parse (…) as a general expression (handles tuple targets, general
@@ -1630,7 +1631,7 @@ func (p *parser) parseTargetAtom() (Expr, error) {
 				}
 				attr := p.cur.val
 				p.advance()
-				expr = &Attribute{P: dpos, Value: expr, Attr: attr}
+				expr = arenaAlloc(&p.ar.attributes, Attribute{P: dpos, Value: expr, Attr: attr})
 			} else if p.cur.kind == tkLBrack {
 				spos := p.cur.pos
 				p.advance()
@@ -1641,13 +1642,13 @@ func (p *parser) parseTargetAtom() (Expr, error) {
 				if _, err := p.expect(tkRBrack); err != nil {
 					return nil, err
 				}
-				expr = &Subscript{P: spos, Value: expr, Slice: s}
+				expr = arenaAlloc(&p.ar.subscripts, Subscript{P: spos, Value: expr, Slice: s})
 			} else {
 				args, kwargs, callPos, err := p.parseCallArgs()
 				if err != nil {
 					return nil, err
 				}
-				expr = &Call{P: callPos, Func: expr, Args: args, Keywords: kwargs}
+				expr = arenaAlloc(&p.ar.calls, Call{P: callPos, Func: expr, Args: args, Keywords: kwargs})
 			}
 		}
 		return expr, nil
@@ -1673,7 +1674,7 @@ func (p *parser) parseTargetAtom() (Expr, error) {
 		if _, err := p.expect(tkRBrack); err != nil {
 			return nil, err
 		}
-		return &List{P: pos, Elts: elts}, nil
+		return arenaAlloc(&p.ar.lists, List{P: pos, Elts: elts}), nil
 	}
 	if p.cur.kind != tkName {
 		return nil, fmt.Errorf("%d:%d: expected target, got %s",
@@ -1684,7 +1685,7 @@ func (p *parser) parseTargetAtom() (Expr, error) {
 		return nil, err
 	}
 	// allow attribute / subscript targets for completeness
-	expr := Expr(&Name{P: tok.pos, Id: tok.val})
+	expr := Expr(arenaAlloc(&p.ar.names, Name{P: tok.pos, Id: tok.val}))
 	for p.cur.kind == tkDot || p.cur.kind == tkLBrack {
 		if p.cur.kind == tkDot {
 			pos := p.cur.pos
@@ -1695,7 +1696,7 @@ func (p *parser) parseTargetAtom() (Expr, error) {
 			}
 			attr := p.cur.val
 			p.advance()
-			expr = &Attribute{P: pos, Value: expr, Attr: attr}
+			expr = arenaAlloc(&p.ar.attributes, Attribute{P: pos, Value: expr, Attr: attr})
 		} else {
 			pos := p.cur.pos
 			p.advance()
@@ -1706,7 +1707,7 @@ func (p *parser) parseTargetAtom() (Expr, error) {
 			if _, err := p.expect(tkRBrack); err != nil {
 				return nil, err
 			}
-			expr = &Subscript{P: pos, Value: expr, Slice: s}
+			expr = arenaAlloc(&p.ar.subscripts, Subscript{P: pos, Value: expr, Slice: s})
 		}
 	}
 	return expr, nil
@@ -1730,11 +1731,11 @@ func (p *parser) parseLambda() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Lambda{P: pos, Args: args, Body: body}, nil
+	return arenaAlloc(&p.ar.lambdas, Lambda{P: pos, Args: args, Body: body}), nil
 }
 
 func (p *parser) parseLambdaArgs() (*Arguments, error) {
-	a := &Arguments{}
+	a := arenaAlloc(&p.ar.argumentsList, Arguments{})
 	if p.cur.kind == tkColon {
 		return a, nil
 	}
@@ -1754,7 +1755,7 @@ func (p *parser) parseLambdaArgs() (*Arguments, error) {
 				}
 				name := p.cur
 				p.advance()
-				a.Vararg = &Arg{P: name.pos, Name: name.val}
+				a.Vararg = arenaAlloc(&p.ar.args, Arg{P: name.pos, Name: name.val})
 				state = "kwonly"
 			}
 		case tkDoubleStar:
@@ -1767,7 +1768,7 @@ func (p *parser) parseLambdaArgs() (*Arguments, error) {
 			}
 			name := p.cur
 			p.advance()
-			a.Kwarg = &Arg{P: name.pos, Name: name.val}
+			a.Kwarg = arenaAlloc(&p.ar.args, Arg{P: name.pos, Name: name.val})
 		case tkSlash:
 			// posonly marker — promote current Args to PosOnly
 			if err := p.advance(); err != nil {
@@ -1778,7 +1779,7 @@ func (p *parser) parseLambdaArgs() (*Arguments, error) {
 		case tkName:
 			name := p.cur
 			p.advance()
-			arg := &Arg{P: name.pos, Name: name.val}
+			arg := arenaAlloc(&p.ar.args, Arg{P: name.pos, Name: name.val})
 			var defaultVal Expr
 			if p.cur.kind == tkAssign {
 				p.advance()
