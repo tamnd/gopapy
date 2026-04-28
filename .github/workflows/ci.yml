@@ -383,8 +383,35 @@ jobs:
           go-version: '1.26'
           cache: true
 
-      - name: Print tool versions
-        run: go version
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
 
-      - name: go test -bench
+      - name: Print tool versions
+        run: |
+          go version
+          python3 --version
+
+      - name: go test -bench (unit fixtures)
         run: go test -run='^$' -bench=. -benchtime=3x -benchmem ./lex ./parser ./symbols
+
+      - name: corpus cache restore
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: corpus/src
+          key: corpus-src-${{ hashFiles('corpus/packages.txt') }}
+
+      - name: download corpus
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install --upgrade pip
+          bash corpus/download.sh
+
+      - name: cpython ast.parse throughput (baseline)
+        run: python3 corpus/cpython_bench.py corpus/src
+        continue-on-error: true
+
+      - name: gopapy corpus parse throughput
+        run: go test -run='^$' -bench=BenchmarkCorpus -benchtime=5s -benchmem ./internal/bench/
+        continue-on-error: true
