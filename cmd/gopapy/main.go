@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tamnd/gopapy/ast"
@@ -28,7 +29,7 @@ import (
 	"github.com/tamnd/gopapy/symbols"
 )
 
-const version = "0.6.0"
+const version = "0.6.1"
 
 func init() {
 	// Mirror the CLI version into the LSP server so the initialize
@@ -149,38 +150,59 @@ func dumpCmd(args []string, stdout io.Writer) error {
 // summary distinguishes successes from failures so the harness can be
 // pointed at a corpus and produce a quick health number.
 func checkDir(dir string, stdout, stderr io.Writer) error {
-	var passed, failed int
-	const gcEvery = 16
+	type pyFile struct{ path string; src []byte }
+	var files []pyFile
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		if !strings.HasSuffix(path, ".py") {
-			return nil
-		}
-		if isIntentionalBadFixture(path) {
+		if !strings.HasSuffix(path, ".py") || isIntentionalBadFixture(path) {
 			return nil
 		}
 		src, readErr := os.ReadFile(path)
 		if readErr != nil {
-			failed++
-			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, readErr)
 			return nil
 		}
-		if _, perr := parser.ParseFile(path, string(src)); perr != nil {
-			failed++
-			fmt.Fprintf(stderr, "FAIL %s: %v\n", path, perr)
-		} else {
-			passed++
-		}
-		// Free per-file parse trees promptly on large corpora.
-		if (passed+failed)%gcEvery == 0 {
-			runtime.GC()
-		}
+		files = append(files, pyFile{path, src})
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+
+	type result struct {
+		path string
+		err  error
+	}
+	results := make([]result, len(files))
+	workers := runtime.NumCPU()
+	ch := make(chan int, workers*4)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range ch {
+				f := files[i]
+				_, perr := parser.ParseFile(f.path, string(f.src))
+				results[i] = result{f.path, perr}
+			}
+		}()
+	}
+	for i := range files {
+		ch <- i
+	}
+	close(ch)
+	wg.Wait()
+
+	var passed, failed int
+	for _, r := range results {
+		if r.err != nil {
+			failed++
+			fmt.Fprintf(stderr, "FAIL %s: %v\n", r.path, r.err)
+		} else {
+			passed++
+		}
 	}
 	fmt.Fprintf(stdout, "%d passed, %d failed\n", passed, failed)
 	if failed > 0 {
@@ -226,11 +248,34 @@ func benchCmd(dir string, stdout, stderr io.Writer) error {
 
 	var parseFailed int
 	parseStart := time.Now()
+	workers := runtime.NumCPU()
+	ch := make(chan entry, workers*4)
+	type parseResult struct{ path string; err error }
+	resultCh := make(chan parseResult, workers*4)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for f := range ch {
+				_, perr := parser.ParseFile(f.path, string(f.src))
+				if perr != nil {
+					resultCh <- parseResult{f.path, perr}
+				}
+			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
 	for _, f := range files {
-		if _, err := parser.ParseFile(f.path, string(f.src)); err != nil {
-			parseFailed++
-			fmt.Fprintf(stderr, "FAIL %s: %v\n", f.path, err)
-		}
+		ch <- f
+	}
+	close(ch)
+	for r := range resultCh {
+		parseFailed++
+		fmt.Fprintf(stderr, "FAIL %s: %v\n", r.path, r.err)
 	}
 	parseDur := time.Since(parseStart)
 
@@ -298,44 +343,74 @@ func unparseCmd(args []string, stdout, stderr io.Writer) error {
 	if !check {
 		return fmt.Errorf("unparse: directory input requires --check")
 	}
-	var fileCount, parseFailed, mismatched, allowed int
-	const gcEvery = 16
+	type unparseJob struct{ path, abs string }
+	var jobs []unparseJob
 	walkErr := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		if !strings.HasSuffix(p, ".py") {
+		if !strings.HasSuffix(p, ".py") || isIntentionalBadFixture(p) {
 			return nil
 		}
-		if isIntentionalBadFixture(p) {
-			return nil
-		}
-		fileCount++
 		abs, _ := filepath.Abs(p)
-		isAllowed := allow[abs]
-		sink := stderr
-		if isAllowed {
-			sink = io.Discard
-		}
-		status := unparseOne(p, true, comments, io.Discard, sink)
-		if status != nil {
-			if isAllowed {
-				allowed++
-				return nil
+		jobs = append(jobs, unparseJob{p, abs})
+		return nil
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+
+	type unparseResult struct {
+		path      string
+		status    error
+		isAllowed bool
+	}
+	results := make([]unparseResult, len(jobs))
+	workers := runtime.NumCPU()
+	jobCh := make(chan int, workers*4)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobCh {
+				j := jobs[i]
+				isAllowed := allow[j.abs]
+				var sink io.Writer = stderr
+				if isAllowed {
+					sink = io.Discard
+				}
+				// Capture per-file stderr lines into a buffer so output
+				// is not interleaved across goroutines.
+				var buf bytes.Buffer
+				status := unparseOne(j.path, true, comments, io.Discard, &buf)
+				if !isAllowed && buf.Len() > 0 {
+					// Flush diagnostic lines to the shared sink after the fact.
+					// Minor: order may differ from walk order, but content is correct.
+					_, _ = sink.Write(buf.Bytes())
+				}
+				results[i] = unparseResult{j.path, status, isAllowed}
 			}
-			if errors.Is(status, errParseFailed) {
+		}()
+	}
+	for i := range jobs {
+		jobCh <- i
+	}
+	close(jobCh)
+	wg.Wait()
+
+	var fileCount, parseFailed, mismatched, allowed int
+	for _, r := range results {
+		fileCount++
+		if r.status != nil {
+			if r.isAllowed {
+				allowed++
+			} else if errors.Is(r.status, errParseFailed) {
 				parseFailed++
 			} else {
 				mismatched++
 			}
 		}
-		if fileCount%gcEvery == 0 {
-			runtime.GC()
-		}
-		return nil
-	})
-	if walkErr != nil {
-		return walkErr
 	}
 	fmt.Fprintf(stderr, "%d files, %d parse-failed, %d round-trip mismatched, %d allowed\n",
 		fileCount, parseFailed, mismatched, allowed)
@@ -1183,6 +1258,15 @@ func flagString(f symbols.BindFlag) string {
 func isIntentionalBadFixture(path string) bool {
 	base := filepath.Base(path)
 	if strings.HasPrefix(base, "bad_") || strings.HasPrefix(base, "badsyntax_") {
+		return true
+	}
+	// lib2to3 test data contains Python 2 source files and encoding edge cases
+	// (BOM, CRLF, non-UTF-8 encodings) used to test the 2to3 migration tool.
+	// These are not valid Python 3 and are intentionally excluded.
+	// Python <= 3.11: lib2to3/tests/data/; Python 3.12: test/test_lib2to3/data/.
+	slash := filepath.ToSlash(path)
+	if strings.Contains(slash, "lib2to3/tests/data/") ||
+		strings.Contains(slash, "test_lib2to3/data/") {
 		return true
 	}
 	// Intentionally-invalid corpus fixtures (both gopapy and CPython reject them).

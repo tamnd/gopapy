@@ -13,8 +13,9 @@ def main() -> int:
     else:
         src = sys.stdin.buffer.read()
     tree = ast.parse(src)
-    sys.stdout.write(ast.dump(tree))
-    sys.stdout.write("\n")
+    # Write as UTF-8 bytes to avoid Windows console encoding errors (cp1252).
+    sys.stdout.buffer.write(ast.dump(tree).encode("utf-8"))
+    sys.stdout.buffer.write(b"\n")
     return 0
 
 

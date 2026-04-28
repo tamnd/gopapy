@@ -900,13 +900,19 @@ func (s *scanner) scanNumber(start Pos) (token, error) {
 		}
 	}
 	if s.off < len(s.src) && (s.src[s.off] == 'e' || s.src[s.off] == 'E') {
-		isFloat = true
-		s.advance(1)
-		if s.off < len(s.src) && (s.src[s.off] == '+' || s.src[s.off] == '-') {
-			s.advance(1)
-		}
-		for s.off < len(s.src) && (isDigit(s.src[s.off]) || s.src[s.off] == '_') {
-			s.advance(1)
+		// Only treat e/E as exponent if followed by a digit or sign.
+		// Without this check, `1else` would consume `1e` as an incomplete
+		// float instead of tokenizing `1` and `else` separately (CPython behavior).
+		next := s.off + 1
+		if next < len(s.src) && (isDigit(s.src[next]) || s.src[next] == '+' || s.src[next] == '-') {
+			isFloat = true
+			s.advance(1) // consume e/E
+			if s.off < len(s.src) && (s.src[s.off] == '+' || s.src[s.off] == '-') {
+				s.advance(1)
+			}
+			for s.off < len(s.src) && (isDigit(s.src[s.off]) || s.src[s.off] == '_') {
+				s.advance(1)
+			}
 		}
 	}
 	if s.off < len(s.src) && (s.src[s.off] == 'j' || s.src[s.off] == 'J') {

@@ -374,6 +374,11 @@ func TestParseFileTable(t *testing.T) {
 			src:  "ä = 1\n蟒 = 2\n",
 			want: `Module(body=[Assign(targets=[Name(id="ä")], value=Constant(value=1)), Assign(targets=[Name(id="蟒")], value=Constant(value=2))])`,
 		},
+		{
+			name: "1else tokenization",
+			src:  "x = 1 if 1else 0\n",
+			want: `Module(body=[Assign(targets=[Name(id="x")], value=IfExp(test=Constant(value=1), body=Constant(value=1), orelse=Constant(value=0)))])`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

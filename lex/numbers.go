@@ -33,14 +33,19 @@ func (s *Scanner) scanNumber(start Position) (Token, error) {
 	}
 	// Exponent.
 	if c := s.peek(0); c == 'e' || c == 'E' {
-		s.advance(1)
-		if c2 := s.peek(0); c2 == '+' || c2 == '-' {
+		// Only treat e/E as exponent start if followed by a digit or sign.
+		// Without this check, `1else` would consume `1e` as an incomplete
+		// float instead of tokenizing `1` and `else` separately (CPython issue 21642).
+		if c2 := s.peek(1); isDigit(c2) || c2 == '+' || c2 == '-' {
 			s.advance(1)
+			if c2 := s.peek(0); c2 == '+' || c2 == '-' {
+				s.advance(1)
+			}
+			if !s.scanDigitRun(false) {
+				return Token{}, &Error{Pos: s.Position(), Msg: "missing digits in exponent"}
+			}
+			hadDot = true // exponent makes it a float in Python
 		}
-		if !s.scanDigitRun(false) {
-			return Token{}, &Error{Pos: s.Position(), Msg: "missing digits in exponent"}
-		}
-		hadDot = true // exponent makes it a float in Python
 	}
 	// Imaginary suffix.
 	if c := s.peek(0); c == 'j' || c == 'J' {
