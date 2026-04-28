@@ -1030,6 +1030,26 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 	raw := strings.ContainsRune(low, 'r')
 	bytesPrefix := strings.ContainsRune(low, 'b')
 	uPrefix := strings.ContainsRune(prefix, 'u') && !bytesPrefix
+	// Zero-copy fast path: single-quoted strings with no escape sequences.
+	// Two IndexByte calls (SIMD on arm64/amd64) locate the closing quote and
+	// check for backslashes. When both succeed the string value is a direct
+	// sub-slice of the source buffer — no Builder allocation needed.
+	if !triple && !raw {
+		if closeIdx := strings.IndexByte(s.src[s.off:], quote); closeIdx >= 0 {
+			chunk := s.src[s.off : s.off+closeIdx]
+			if strings.IndexByte(chunk, '\\') < 0 {
+				s.col += closeIdx + 1
+				s.off += closeIdx + 1
+				if bytesPrefix {
+					return token{kind: tkString, val: chunk, pos: start, strKind: 'b'}, nil
+				}
+				if uPrefix {
+					return token{kind: tkString, val: chunk, pos: start, strKind: 'u'}, nil
+				}
+				return token{kind: tkString, val: chunk, pos: start}, nil
+			}
+		}
+	}
 	var b strings.Builder
 	for s.off < len(s.src) {
 		c := s.src[s.off]
