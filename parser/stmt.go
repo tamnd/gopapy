@@ -179,7 +179,9 @@ func (p *parser) looksLikeMatchStmt() bool {
 // parseSimpleStmtList reads one or more semicolon-separated small
 // statements terminated by NEWLINE (or EOF).
 func (p *parser) parseSimpleStmtList() ([]Stmt, error) {
-	var stmts []Stmt
+	// Reuse the arena scratch buffer. Callers consume the result via
+	// append(outer, ss...) before the next call, so reuse is safe.
+	p.ar.simpleStmtBuf = p.ar.simpleStmtBuf[:0]
 	for {
 		var s Stmt
 		var err error
@@ -188,15 +190,15 @@ func (p *parser) parseSimpleStmtList() ([]Stmt, error) {
 			if err != nil {
 				return nil, err
 			}
-			stmts = append(stmts, s)
+			p.ar.simpleStmtBuf = append(p.ar.simpleStmtBuf, s)
 			// parseTypeAliasStmt already consumed the trailing ; and \n.
-			return stmts, nil
+			return p.ar.simpleStmtBuf, nil
 		}
 		s, err = p.parseSimpleStmt()
 		if err != nil {
 			return nil, err
 		}
-		stmts = append(stmts, s)
+		p.ar.simpleStmtBuf = append(p.ar.simpleStmtBuf, s)
 		if p.cur.kind != tkSemi {
 			break
 		}
@@ -215,7 +217,7 @@ func (p *parser) parseSimpleStmtList() ([]Stmt, error) {
 		return nil, fmt.Errorf("%d:%d: expected newline after statement, got %s",
 			p.cur.pos.Line, p.cur.pos.Col, p.cur.kind)
 	}
-	return stmts, nil
+	return p.ar.simpleStmtBuf, nil
 }
 
 // parseSimpleStmt parses one small statement: keyword form or
@@ -311,8 +313,11 @@ func (p *parser) parseExprBasedStmt() (Stmt, error) {
 		return arenaAlloc(&p.ar.augAssigns, AugAssign{P: pos, Target: lhs, Op: op, Value: rhs}), nil
 	}
 	// Plain assignment: chains via repeated `=`.
+	// Targets are stored as a contiguous segment of the arena's exprLists
+	// slab to avoid a separate []Expr allocation per statement.
 	if p.cur.kind == tkAssign {
-		targets := []Expr{lhs}
+		tStart := len(p.ar.exprLists)
+		p.ar.exprLists = append(p.ar.exprLists, lhs)
 		var value Expr
 		for p.cur.kind == tkAssign {
 			if err := p.advance(); err != nil {
@@ -323,12 +328,13 @@ func (p *parser) parseExprBasedStmt() (Stmt, error) {
 				return nil, err
 			}
 			if p.cur.kind == tkAssign {
-				targets = append(targets, rhs)
+				p.ar.exprLists = append(p.ar.exprLists, rhs)
 				continue
 			}
 			value = rhs
 			break
 		}
+		targets := p.ar.exprLists[tStart:]
 		for _, t := range targets {
 			if err := validateAssignTarget(t); err != nil {
 				return nil, err
@@ -1392,7 +1398,15 @@ func (p *parser) parseBlock() ([]Stmt, error) {
 		return stmts, nil
 	}
 	// Inline block: one or more simple statements on the same line.
-	return p.parseSimpleStmtList()
+	// parseSimpleStmtList returns the arena scratch buffer; copy it since
+	// the result is stored directly in an AST node body field.
+	ss, err := p.parseSimpleStmtList()
+	if err != nil {
+		return nil, err
+	}
+	body := make([]Stmt, len(ss))
+	copy(body, ss)
+	return body, nil
 }
 
 func isStmtEnd(k tokKind) bool {

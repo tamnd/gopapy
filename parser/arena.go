@@ -99,6 +99,16 @@ type arena struct {
 	withItems       []WithItem
 	yields          []Yield
 	yieldFroms      []YieldFrom
+
+	// exprLists holds contiguous segments of []Expr for assignment target
+	// lists. Each plain-assignment statement claims a slice
+	// exprLists[start:end]; the segment is valid until arena.reset().
+	exprLists []Expr
+
+	// Scratch buffers for non-reentrant list-building call sites.
+	// Each is reset at the start of the function that owns it.
+	simpleStmtBuf []Stmt   // parseSimpleStmtList
+	plainPartsBuf []string // parseStringAtom implicit-concat accumulator
 }
 
 // reset truncates all slices to length zero, retaining their backing arrays
@@ -182,4 +192,7 @@ func (a *arena) reset() {
 	a.withItems = a.withItems[:0]
 	a.yields = a.yields[:0]
 	a.yieldFroms = a.yieldFroms[:0]
+	a.exprLists = a.exprLists[:0]
+	a.simpleStmtBuf = a.simpleStmtBuf[:0]
+	a.plainPartsBuf = a.plainPartsBuf[:0]
 }
