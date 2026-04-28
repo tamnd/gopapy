@@ -237,7 +237,7 @@ func TestParseFileTable(t *testing.T) {
 		{
 			name: "adjacent plain and fstring",
 			src:  `s = "a" f"b{x}c"` + "\n",
-			want: `Module(body=[Assign(targets=[Name(id="s")], value=JoinedStr(values=[Constant(value="a"), Constant(value="b"), FormattedValue(value=Name(id="x")), Constant(value="c")]))])`,
+			want: `Module(body=[Assign(targets=[Name(id="s")], value=JoinedStr(values=[Constant(value="ab"), FormattedValue(value=Name(id="x")), Constant(value="c")]))])`,
 		},
 		{
 			name: "match literal",

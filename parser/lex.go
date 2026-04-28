@@ -1280,12 +1280,78 @@ func (s *scanner) scanFTBody(start Pos, quote byte, raw, triple, inSpec bool) ([
 			case '"':
 				b.WriteByte('"')
 				s.advance(2)
-			case '0':
-				b.WriteByte(0)
+			case 'a':
+				b.WriteByte('\a')
+				s.advance(2)
+			case 'b':
+				b.WriteByte('\b')
+				s.advance(2)
+			case 'f':
+				b.WriteByte('\f')
+				s.advance(2)
+			case 'v':
+				b.WriteByte('\v')
 				s.advance(2)
 			case '\n':
 				// line continuation
 				s.advance(2)
+			case 'x':
+				// \xHH — exactly 2 hex digits
+				if s.off+3 < len(s.src) && isHexByte(s.src[s.off+2]) && isHexByte(s.src[s.off+3]) {
+					hi := unhexByte(s.src[s.off+2])
+					lo := unhexByte(s.src[s.off+3])
+					b.WriteRune(rune(hi<<4 | lo))
+					s.advance(4)
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte(esc)
+					s.advance(2)
+				}
+			case 'u':
+				// \uHHHH — 4 hex digits
+				if s.off+5 < len(s.src) &&
+					isHexByte(s.src[s.off+2]) && isHexByte(s.src[s.off+3]) &&
+					isHexByte(s.src[s.off+4]) && isHexByte(s.src[s.off+5]) {
+					v, _ := strconv.ParseInt(string(s.src[s.off+2:s.off+6]), 16, 32)
+					b.WriteRune(rune(v))
+					s.advance(6)
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte(esc)
+					s.advance(2)
+				}
+			case 'U':
+				// \UHHHHHHHH — 8 hex digits
+				if s.off+9 < len(s.src) &&
+					isHexByte(s.src[s.off+2]) && isHexByte(s.src[s.off+3]) &&
+					isHexByte(s.src[s.off+4]) && isHexByte(s.src[s.off+5]) &&
+					isHexByte(s.src[s.off+6]) && isHexByte(s.src[s.off+7]) &&
+					isHexByte(s.src[s.off+8]) && isHexByte(s.src[s.off+9]) {
+					v, _ := strconv.ParseInt(string(s.src[s.off+2:s.off+10]), 16, 32)
+					b.WriteRune(rune(v))
+					s.advance(10)
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte(esc)
+					s.advance(2)
+				}
+			case '0', '1', '2', '3', '4', '5', '6', '7':
+				// Octal: 1 to 3 octal digits
+				octal := int(esc - '0')
+				consumed := 2
+				for i := 1; i < 3; i++ {
+					if s.off+consumed < len(s.src) {
+						d := s.src[s.off+consumed]
+						if d >= '0' && d <= '7' {
+							octal = octal*8 + int(d-'0')
+							consumed++
+							continue
+						}
+					}
+					break
+				}
+				b.WriteRune(rune(octal))
+				s.advance(consumed)
 			case 'N':
 				// \N{name} — Unicode name escape. Consume through the
 				// closing '}' so the '{' is not mistaken for an

@@ -951,19 +951,33 @@ func (p *parser) parseStringAtom() (Expr, error) {
 			return nil, fmt.Errorf("%d:%d: cannot mix t-string with f-string", tok.pos.Line, tok.pos.Col)
 		}
 		hasFOrPlain = true
-		// f-string: lower segments into JoinedStr values, mixing in
-		// any buffered plain text first.
-		if len(joined) == 0 && len(plainParts) > 0 {
-			joined = append(joined, &Constant{P: startPos, Kind: "str", Value: strings.Join(plainParts, "")})
+		// f-string: flush any buffered plain text into joined first,
+		// merging with the last Constant if possible — matches CPython.
+		if len(plainParts) > 0 {
+			text := strings.Join(plainParts, "")
 			plainParts = plainParts[:0]
-		} else if len(plainParts) > 0 {
-			joined = append(joined, &Constant{P: tok.pos, Kind: "str", Value: strings.Join(plainParts, "")})
-			plainParts = plainParts[:0]
+			if len(joined) > 0 {
+				if c, ok := joined[len(joined)-1].(*Constant); ok && c.Kind == "str" {
+					c.Value = c.Value.(string) + text
+				} else {
+					joined = append(joined, &Constant{P: tok.pos, Kind: "str", Value: text})
+				}
+			} else {
+				joined = append(joined, &Constant{P: startPos, Kind: "str", Value: text})
+			}
 		}
 		for _, seg := range payload.segments {
 			if !seg.isInterp {
 				if seg.text == "" {
 					continue
+				}
+				// Merge with the previous Constant if there is one (matches
+				// CPython's behavior for concatenated f-strings).
+				if len(joined) > 0 {
+					if c, ok := joined[len(joined)-1].(*Constant); ok && c.Kind == "str" {
+						c.Value = c.Value.(string) + seg.text
+						continue
+					}
 				}
 				joined = append(joined, &Constant{P: seg.pos, Kind: "str", Value: seg.text})
 				continue
@@ -1000,10 +1014,16 @@ func (p *parser) parseStringAtom() (Expr, error) {
 	}
 	if len(joined) > 0 {
 		// Any remaining plain text (from a trailing plain-string
-		// literal, e.g. `f"a" "b"`) becomes a final Constant.
+		// literal, e.g. `f"a{x}" "b"`) merges with the last Constant
+		// if possible, otherwise appends a new one — matching CPython.
 		if len(plainParts) > 0 {
-			joined = append(joined, &Constant{P: startPos, Kind: "str", Value: strings.Join(plainParts, "")})
+			text := strings.Join(plainParts, "")
 			plainParts = plainParts[:0]
+			if c, ok := joined[len(joined)-1].(*Constant); ok && c.Kind == "str" {
+				c.Value = c.Value.(string) + text
+			} else {
+				joined = append(joined, &Constant{P: startPos, Kind: "str", Value: text})
+			}
 		}
 		return &JoinedStr{P: startPos, Values: joined}, nil
 	}
