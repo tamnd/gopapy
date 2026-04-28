@@ -210,6 +210,7 @@ type token struct {
 	val      string
 	pos      Pos
 	fpayload *fstringPayload
+	strKind  byte // for tkString: 'b'=bytes, 'u'=unicode, 0=plain str
 }
 
 // fstringPayload carries the parsed structure of an f-string or
@@ -554,6 +555,11 @@ func (s *scanner) nextInternal() (token, error) {
 			if s.off >= len(s.src) {
 				break
 			}
+			// CR before NL (CRLF files): skip the CR as whitespace.
+			if s.src[s.off] == '\r' {
+				s.advance(1)
+				continue
+			}
 			if s.src[s.off] == '\n' {
 				s.advance(1)
 				continue
@@ -564,6 +570,12 @@ func (s *scanner) nextInternal() (token, error) {
 				for s.off < len(s.src) && s.src[s.off] != '\n' {
 					s.advance(1)
 				}
+				continue
+			}
+			// Backslash-newline at the start of an otherwise-blank line
+			// is a line continuation: treat the whole line as blank.
+			if s.src[s.off] == '\\' && s.off+1 < len(s.src) && s.src[s.off+1] == '\n' {
+				s.advance(2)
 				continue
 			}
 			if s.src[s.off] == '#' {
@@ -983,10 +995,10 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 				s.advance(3)
 				val := b.String()
 				if bytesPrefix {
-					return token{kind: tkString, val: "b:" + val, pos: start}, nil
+					return token{kind: tkString, val: val, pos: start, strKind: 'b'}, nil
 				}
 				if uPrefix {
-					return token{kind: tkString, val: "u:" + val, pos: start}, nil
+					return token{kind: tkString, val: val, pos: start, strKind: 'u'}, nil
 				}
 				return token{kind: tkString, val: val, pos: start}, nil
 			}
@@ -994,10 +1006,10 @@ func (s *scanner) scanString(start Pos, quote byte, prefix string) (token, error
 			s.advance(1)
 			val := b.String()
 			if bytesPrefix {
-				return token{kind: tkString, val: "b:" + val, pos: start}, nil
+				return token{kind: tkString, val: val, pos: start, strKind: 'b'}, nil
 			}
 			if uPrefix {
-				return token{kind: tkString, val: "u:" + val, pos: start}, nil
+				return token{kind: tkString, val: val, pos: start, strKind: 'u'}, nil
 			}
 			return token{kind: tkString, val: val, pos: start}, nil
 		}
@@ -1491,6 +1503,11 @@ func unhexByte(c byte) byte {
 func isIdentStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
 func isIdentPart(r rune) bool {
 	if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+		return true
+	}
+	// Python ID_Continue includes Mn (nonspacing marks) and Mc (spacing
+	// combining marks) per Unicode UAX #31, e.g. U+17BB KHMER VOWEL SIGN U.
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Mc, r) {
 		return true
 	}
 	// UAX #31 Other_ID_Continue ranges not covered by IsLetter/IsDigit.
