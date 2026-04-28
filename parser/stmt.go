@@ -3,7 +3,20 @@ package parser
 import (
 	"fmt"
 	"strings"
+	"sync"
 )
+
+// stmtParserPool recycles *parser values across ParseFile calls. Each call
+// resets the arena to length 0, retaining the backing arrays grown during
+// previous parses. This amortizes node allocation cost across files.
+//
+// Safety: the returned *Module (and every node pointer it contains) is valid
+// only until the next ParseFile call that reuses the same pooled parser.
+// For sequential per-file processing (parse → process → discard) this is
+// always satisfied. Callers that retain an AST across multiple ParseFile
+// calls must use fresh parsers (e.g. call ParseFile from a dedicated
+// goroutine and never reuse the goroutine's pool slot).
+var stmtParserPool sync.Pool
 
 // ParseFile parses src as a complete Python module and returns its
 // Module AST. filename is used only for error messages; the bytes
@@ -16,11 +29,22 @@ func ParseFile(filename, src string) (*Module, error) {
 	src = strings.TrimPrefix(src, "\xef\xbb\xbf")
 	src = strings.ReplaceAll(src, "\r\n", "\n")
 	src = strings.ReplaceAll(src, "\r", "\n")
-	p, err := newStmtParser(src)
-	if err != nil {
+
+	var p *parser
+	if v := stmtParserPool.Get(); v != nil {
+		p = v.(*parser)
+		p.ar.reset()
+	} else {
+		p = &parser{}
+	}
+	p.sc = newStmtScanner(src)
+	p.hasPeek = false
+	if err := p.advance(); err != nil {
+		stmtParserPool.Put(p)
 		return nil, prefixErr(err, filename)
 	}
 	mod, err := p.parseModule()
+	stmtParserPool.Put(p)
 	if err != nil {
 		return nil, prefixErr(err, filename)
 	}
@@ -40,18 +64,11 @@ func prefixErr(err error, filename string) error {
 	return fmt.Errorf("%s:%v", filename, err)
 }
 
-func newStmtParser(src string) (*parser, error) {
-	p := &parser{sc: newStmtScanner(src)}
-	if err := p.advance(); err != nil {
-		return nil, err
-	}
-	return p, nil
-}
 
 // ----- Module / block / statement entry points -----
 
 func (p *parser) parseModule() (*Module, error) {
-	mod := &Module{}
+	mod := arenaAlloc(&p.ar.modules, Module{})
 	for p.cur.kind != tkEOF {
 		// Skip stray NEWLINEs at the top level (blank logical lines
 		// the lexer collapses are already gone, but a leading or
@@ -211,19 +228,19 @@ func (p *parser) parseSimpleStmt() (Stmt, error) {
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &Pass{P: pos}, nil
+			return arenaAlloc(&p.ar.passes, Pass{P: pos}), nil
 		case "break":
 			pos := p.cur.pos
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &Break{P: pos}, nil
+			return arenaAlloc(&p.ar.breaks, Break{P: pos}), nil
 		case "continue":
 			pos := p.cur.pos
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &Continue{P: pos}, nil
+			return arenaAlloc(&p.ar.continues, Continue{P: pos}), nil
 		case "return":
 			return p.parseReturnStmt()
 		case "raise":
@@ -277,7 +294,7 @@ func (p *parser) parseExprBasedStmt() (Stmt, error) {
 			return nil, err
 		}
 		_, simple := lhs.(*Name)
-		return &AnnAssign{P: pos, Target: lhs, Annotation: ann, Value: value, Simple: simple}, nil
+		return arenaAlloc(&p.ar.annAssigns, AnnAssign{P: pos, Target: lhs, Annotation: ann, Value: value, Simple: simple}), nil
 	}
 	// Augmented assignment.
 	if op, ok := augAssignOp(p.cur.kind); ok {
@@ -291,7 +308,7 @@ func (p *parser) parseExprBasedStmt() (Stmt, error) {
 		if err := validateAssignTarget(lhs); err != nil {
 			return nil, err
 		}
-		return &AugAssign{P: pos, Target: lhs, Op: op, Value: rhs}, nil
+		return arenaAlloc(&p.ar.augAssigns, AugAssign{P: pos, Target: lhs, Op: op, Value: rhs}), nil
 	}
 	// Plain assignment: chains via repeated `=`.
 	if p.cur.kind == tkAssign {
@@ -317,10 +334,10 @@ func (p *parser) parseExprBasedStmt() (Stmt, error) {
 				return nil, err
 			}
 		}
-		return &Assign{P: pos, Targets: targets, Value: value}, nil
+		return arenaAlloc(&p.ar.assigns, Assign{P: pos, Targets: targets, Value: value}), nil
 	}
 	// Bare expression statement.
-	return &ExprStmt{P: pos, Value: lhs}, nil
+	return arenaAlloc(&p.ar.exprStmts, ExprStmt{P: pos, Value: lhs}), nil
 }
 
 // parseTestlistOrStarExpr parses `expr` or `expr, expr, ...` — a
@@ -352,7 +369,7 @@ func (p *parser) parseTestlistOrStarExpr() (Expr, error) {
 		}
 		elts = append(elts, next)
 	}
-	return &Tuple{P: pos, Elts: elts}, nil
+	return arenaAlloc(&p.ar.tuples, Tuple{P: pos, Elts: elts}), nil
 }
 
 func (p *parser) parseStarOrExprStmt() (Expr, error) {
@@ -365,7 +382,7 @@ func (p *parser) parseStarOrExprStmt() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Starred{P: pos, Value: val}, nil
+		return arenaAlloc(&p.ar.starredNodes, Starred{P: pos, Value: val}), nil
 	}
 	return p.parseExpr()
 }
@@ -451,13 +468,13 @@ func (p *parser) parseReturnStmt() (Stmt, error) {
 		return nil, err
 	}
 	if isStmtEnd(p.cur.kind) {
-		return &Return{P: pos}, nil
+		return arenaAlloc(&p.ar.returns, Return{P: pos}), nil
 	}
 	val, err := p.parseTestlistOrStarExpr()
 	if err != nil {
 		return nil, err
 	}
-	return &Return{P: pos, Value: val}, nil
+	return arenaAlloc(&p.ar.returns, Return{P: pos, Value: val}), nil
 }
 
 func (p *parser) parseRaiseStmt() (Stmt, error) {
@@ -466,7 +483,7 @@ func (p *parser) parseRaiseStmt() (Stmt, error) {
 		return nil, err
 	}
 	if isStmtEnd(p.cur.kind) {
-		return &Raise{P: pos}, nil
+		return arenaAlloc(&p.ar.raises, Raise{P: pos}), nil
 	}
 	exc, err := p.parseExpr()
 	if err != nil {
@@ -482,7 +499,7 @@ func (p *parser) parseRaiseStmt() (Stmt, error) {
 			return nil, err
 		}
 	}
-	return &Raise{P: pos, Exc: exc, Cause: cause}, nil
+	return arenaAlloc(&p.ar.raises, Raise{P: pos, Exc: exc, Cause: cause}), nil
 }
 
 func (p *parser) parseImportStmt() (Stmt, error) {
@@ -505,7 +522,7 @@ func (p *parser) parseImportStmt() (Stmt, error) {
 		}
 		names = append(names, a)
 	}
-	return &Import{P: pos, Names: names}, nil
+	return arenaAlloc(&p.ar.imports, Import{P: pos, Names: names}), nil
 }
 
 func (p *parser) parseFromImportStmt() (Stmt, error) {
@@ -543,7 +560,7 @@ func (p *parser) parseFromImportStmt() (Stmt, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return &ImportFrom{P: pos, Module: module, Names: []*Alias{{P: pos, Name: "*"}}, Level: level}, nil
+		return arenaAlloc(&p.ar.importFroms, ImportFrom{P: pos, Module: module, Names: []*Alias{{P: pos, Name: "*"}}, Level: level}), nil
 	}
 	parens := false
 	if p.cur.kind == tkLParen {
@@ -575,7 +592,7 @@ func (p *parser) parseFromImportStmt() (Stmt, error) {
 			return nil, err
 		}
 	}
-	return &ImportFrom{P: pos, Module: module, Names: names, Level: level}, nil
+	return arenaAlloc(&p.ar.importFroms, ImportFrom{P: pos, Module: module, Names: names, Level: level}), nil
 }
 
 func (p *parser) parseDottedAlias() (*Alias, error) {
@@ -598,7 +615,7 @@ func (p *parser) parseDottedAlias() (*Alias, error) {
 			return nil, err
 		}
 	}
-	return &Alias{P: pos, Name: name, Asname: asname}, nil
+	return arenaAlloc(&p.ar.aliases, Alias{P: pos, Name: name, Asname: asname}), nil
 }
 
 func (p *parser) parseImportAsName() (*Alias, error) {
@@ -625,7 +642,7 @@ func (p *parser) parseImportAsName() (*Alias, error) {
 			return nil, err
 		}
 	}
-	return &Alias{P: pos, Name: name, Asname: asname}, nil
+	return arenaAlloc(&p.ar.aliases, Alias{P: pos, Name: name, Asname: asname}), nil
 }
 
 func (p *parser) parseDottedName() (string, error) {
@@ -678,9 +695,9 @@ func (p *parser) parseGlobalNonlocal(global bool) (Stmt, error) {
 		}
 	}
 	if global {
-		return &Global{P: pos, Names: names}, nil
+		return arenaAlloc(&p.ar.globals, Global{P: pos, Names: names}), nil
 	}
-	return &Nonlocal{P: pos, Names: names}, nil
+	return arenaAlloc(&p.ar.nonlocals, Nonlocal{P: pos, Names: names}), nil
 }
 
 func (p *parser) parseDeleteStmt() (Stmt, error) {
@@ -712,7 +729,7 @@ func (p *parser) parseDeleteStmt() (Stmt, error) {
 			return nil, err
 		}
 	}
-	return &Delete{P: pos, Targets: targets}, nil
+	return arenaAlloc(&p.ar.deletes, Delete{P: pos, Targets: targets}), nil
 }
 
 func (p *parser) parseAssertStmt() (Stmt, error) {
@@ -734,7 +751,7 @@ func (p *parser) parseAssertStmt() (Stmt, error) {
 			return nil, err
 		}
 	}
-	return &Assert{P: pos, Test: test, Msg: msg}, nil
+	return arenaAlloc(&p.ar.asserts, Assert{P: pos, Test: test, Msg: msg}), nil
 }
 
 // ----- Compound statements -----
@@ -873,7 +890,7 @@ func (p *parser) parseIfStmt() (Stmt, error) {
 			return nil, err
 		}
 	}
-	return &If{P: pos, Test: test, Body: body, Orelse: orelse}, nil
+	return arenaAlloc(&p.ar.ifs, If{P: pos, Test: test, Body: body, Orelse: orelse}), nil
 }
 
 func (p *parser) parseWhileStmt() (Stmt, error) {
@@ -899,7 +916,7 @@ func (p *parser) parseWhileStmt() (Stmt, error) {
 			return nil, err
 		}
 	}
-	return &While{P: pos, Test: test, Body: body, Orelse: orelse}, nil
+	return arenaAlloc(&p.ar.whiles, While{P: pos, Test: test, Body: body, Orelse: orelse}), nil
 }
 
 func (p *parser) parseForStmt(async bool) (Stmt, error) {
@@ -937,9 +954,9 @@ func (p *parser) parseForStmt(async bool) (Stmt, error) {
 		}
 	}
 	if async {
-		return &AsyncFor{P: pos, Target: target, Iter: iter, Body: body, Orelse: orelse}, nil
+		return arenaAlloc(&p.ar.asyncFors, AsyncFor{P: pos, Target: target, Iter: iter, Body: body, Orelse: orelse}), nil
 	}
-	return &For{P: pos, Target: target, Iter: iter, Body: body, Orelse: orelse}, nil
+	return arenaAlloc(&p.ar.fors, For{P: pos, Target: target, Iter: iter, Body: body, Orelse: orelse}), nil
 }
 
 func (p *parser) parseTryStmt() (Stmt, error) {
@@ -990,7 +1007,7 @@ func (p *parser) parseTryStmt() (Stmt, error) {
 					}
 					elts = append(elts, next)
 				}
-				typ = &Tuple{P: tupPos, Elts: elts}
+				typ = arenaAlloc(&p.ar.tuples, Tuple{P: tupPos, Elts: elts})
 			}
 			if p.isKeyword("as") {
 				if err := p.advance(); err != nil {
@@ -1010,7 +1027,7 @@ func (p *parser) parseTryStmt() (Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		handlers = append(handlers, &ExceptHandler{P: hpos, Type: typ, Name: name, Body: hbody})
+		handlers = append(handlers, arenaAlloc(&p.ar.exceptHandlers, ExceptHandler{P: hpos, Type: typ, Name: name, Body: hbody}))
 	}
 	var orelse []Stmt
 	if p.isKeyword("else") {
@@ -1037,9 +1054,9 @@ func (p *parser) parseTryStmt() (Stmt, error) {
 			pos.Line, pos.Col)
 	}
 	if isTryStar {
-		return &TryStar{P: pos, Body: body, Handlers: handlers, Orelse: orelse, Finalbody: finalbody}, nil
+		return arenaAlloc(&p.ar.tryStars, TryStar{P: pos, Body: body, Handlers: handlers, Orelse: orelse, Finalbody: finalbody}), nil
 	}
-	return &Try{P: pos, Body: body, Handlers: handlers, Orelse: orelse, Finalbody: finalbody}, nil
+	return arenaAlloc(&p.ar.tries, Try{P: pos, Body: body, Handlers: handlers, Orelse: orelse, Finalbody: finalbody}), nil
 }
 
 func (p *parser) parseWithStmt(async bool) (Stmt, error) {
@@ -1071,8 +1088,8 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		genExpr := &GeneratorExp{P: pos, Elt: first.ContextExpr, Gens: gens}
-		first = &WithItem{ContextExpr: genExpr}
+		genExpr := arenaAlloc(&p.ar.generatorExps, GeneratorExp{P: pos, Elt: first.ContextExpr, Gens: gens})
+		first = arenaAlloc(&p.ar.withItems, WithItem{ContextExpr: genExpr})
 	}
 	items := []*WithItem{first}
 	for p.cur.kind == tkComma {
@@ -1103,7 +1120,7 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 					break
 				}
 			}
-			items = []*WithItem{{ContextExpr: &Tuple{P: pos, Elts: tupleElts}}}
+			items = []*WithItem{{ContextExpr: arenaAlloc(&p.ar.tuples, Tuple{P: pos, Elts: tupleElts})}}
 			break
 		}
 		// Inside a parenthesized with, a walrus (named expression) as the first
@@ -1128,7 +1145,7 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 						break
 					}
 				}
-				items = []*WithItem{{ContextExpr: &Tuple{P: pos, Elts: tupleElts}}}
+				items = []*WithItem{{ContextExpr: arenaAlloc(&p.ar.tuples, Tuple{P: pos, Elts: tupleElts})}}
 				break
 			}
 		}
@@ -1164,13 +1181,13 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 					if err := p.advance(); err != nil {
 						return nil, err
 					}
-					ctx = &Attribute{P: dpos, Value: ctx, Attr: attr}
+					ctx = arenaAlloc(&p.ar.attributes, Attribute{P: dpos, Value: ctx, Attr: attr})
 				case tkLParen:
 					args, kwargs, callPos, err := p.parseCallArgs()
 					if err != nil {
 						return nil, err
 					}
-					ctx = &Call{P: callPos, Func: ctx, Args: args, Keywords: kwargs}
+					ctx = arenaAlloc(&p.ar.calls, Call{P: callPos, Func: ctx, Args: args, Keywords: kwargs})
 				case tkLBrack:
 					spos := p.cur.pos
 					if err := p.advance(); err != nil {
@@ -1183,7 +1200,7 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 					if _, err := p.expect(tkRBrack); err != nil {
 						return nil, err
 					}
-					ctx = &Subscript{P: spos, Value: ctx, Slice: slice}
+					ctx = arenaAlloc(&p.ar.subscripts, Subscript{P: spos, Value: ctx, Slice: slice})
 				}
 			}
 			items[0].ContextExpr = ctx
@@ -1220,9 +1237,9 @@ func (p *parser) parseWithStmt(async bool) (Stmt, error) {
 		return nil, err
 	}
 	if async {
-		return &AsyncWith{P: pos, Items: items, Body: body}, nil
+		return arenaAlloc(&p.ar.asyncWiths, AsyncWith{P: pos, Items: items, Body: body}), nil
 	}
-	return &With{P: pos, Items: items, Body: body}, nil
+	return arenaAlloc(&p.ar.withs, With{P: pos, Items: items, Body: body}), nil
 }
 
 func (p *parser) parseWithItem() (*WithItem, error) {
@@ -1245,7 +1262,7 @@ func (p *parser) parseWithItem() (*WithItem, error) {
 			return nil, err
 		}
 	}
-	return &WithItem{P: pos, ContextExpr: ctx, OptionalVars: vars}, nil
+	return arenaAlloc(&p.ar.withItems, WithItem{P: pos, ContextExpr: ctx, OptionalVars: vars}), nil
 }
 
 func (p *parser) parseFunctionDef(decorators []Expr, async bool) (Stmt, error) {
@@ -1294,9 +1311,9 @@ func (p *parser) parseFunctionDef(decorators []Expr, async bool) (Stmt, error) {
 		return nil, err
 	}
 	if async {
-		return &AsyncFunctionDef{P: pos, Name: name, TypeParams: typeParams, Args: args, Body: body, DecoratorList: decorators, Returns: returns}, nil
+		return arenaAlloc(&p.ar.asyncFuncDefs, AsyncFunctionDef{P: pos, Name: name, TypeParams: typeParams, Args: args, Body: body, DecoratorList: decorators, Returns: returns}), nil
 	}
-	return &FunctionDef{P: pos, Name: name, TypeParams: typeParams, Args: args, Body: body, DecoratorList: decorators, Returns: returns}, nil
+	return arenaAlloc(&p.ar.funcDefs, FunctionDef{P: pos, Name: name, TypeParams: typeParams, Args: args, Body: body, DecoratorList: decorators, Returns: returns}), nil
 }
 
 func (p *parser) parseClassDef(decorators []Expr) (Stmt, error) {
@@ -1333,7 +1350,7 @@ func (p *parser) parseClassDef(decorators []Expr) (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ClassDef{P: pos, Name: name, TypeParams: typeParams, Bases: bases, Keywords: keywords, Body: body, DecoratorList: decorators}, nil
+	return arenaAlloc(&p.ar.classDefs, ClassDef{P: pos, Name: name, TypeParams: typeParams, Bases: bases, Keywords: keywords, Body: body, DecoratorList: decorators}), nil
 }
 
 // parseBlock reads `: NEWLINE INDENT stmts DEDENT` or, in the inline
@@ -1390,7 +1407,7 @@ func isStmtEnd(k tokKind) bool {
 // token. It's similar in shape to parseLambdaArgs but supports type
 // annotations and the `/` and `*` separators.
 func (p *parser) parseFuncParams(end tokKind) (*Arguments, error) {
-	args := &Arguments{}
+	args := arenaAlloc(&p.ar.argumentsList, Arguments{})
 	if p.cur.kind == end {
 		return args, nil
 	}
@@ -1501,7 +1518,7 @@ func (p *parser) parseFuncParam() (*Arg, error) {
 			if err != nil {
 				return nil, err
 			}
-			ann = &Starred{P: annPos, Value: inner}
+			ann = arenaAlloc(&p.ar.starredNodes, Starred{P: annPos, Value: inner})
 		} else {
 			ann, err = p.parseExpr()
 		}
@@ -1509,7 +1526,7 @@ func (p *parser) parseFuncParam() (*Arg, error) {
 			return nil, err
 		}
 	}
-	return &Arg{P: pos, Name: name, Annotation: ann}, nil
+	return arenaAlloc(&p.ar.args, Arg{P: pos, Name: name, Annotation: ann}), nil
 }
 
 const (
@@ -1573,7 +1590,7 @@ func (p *parser) parseMatchStmt() (Stmt, error) {
 		return nil, fmt.Errorf("%d:%d: match statement requires at least one case",
 			pos.Line, pos.Col)
 	}
-	return &Match{P: pos, Subject: subject, Cases: cases}, nil
+	return arenaAlloc(&p.ar.matches, Match{P: pos, Subject: subject, Cases: cases}), nil
 }
 
 func (p *parser) parseCaseArm() (*MatchCase, error) {
@@ -1600,7 +1617,7 @@ func (p *parser) parseCaseArm() (*MatchCase, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &MatchCase{P: pos, Pattern: pat, Guard: guard, Body: body}, nil
+	return arenaAlloc(&p.ar.matchCases, MatchCase{P: pos, Pattern: pat, Guard: guard, Body: body}), nil
 }
 
 // parsePatterns is the case-arm entry. It allows a paren-less open
@@ -1633,7 +1650,7 @@ func (p *parser) parsePatterns() (Pattern, error) {
 		}
 		items = append(items, next)
 	}
-	return &MatchSequence{P: pos, Patterns: items}, nil
+	return arenaAlloc(&p.ar.matchSequences, MatchSequence{P: pos, Patterns: items}), nil
 }
 
 // parseMaybeStarPattern parses either a `*name`/`*_` star pattern or
@@ -1654,9 +1671,9 @@ func (p *parser) parseMaybeStarPattern() (Pattern, bool, error) {
 			return nil, false, err
 		}
 		if name == "_" {
-			return &MatchStar{P: pos}, true, nil
+			return arenaAlloc(&p.ar.matchStars, MatchStar{P: pos}), true, nil
 		}
-		return &MatchStar{P: pos, Name: name}, true, nil
+		return arenaAlloc(&p.ar.matchStars, MatchStar{P: pos, Name: name}), true, nil
 	}
 	pat, err := p.parseAsPattern()
 	if err != nil {
@@ -1689,7 +1706,7 @@ func (p *parser) parseAsPattern() (Pattern, error) {
 	if err := p.advance(); err != nil {
 		return nil, err
 	}
-	return &MatchAs{P: pos, Pattern: or, Name: name}, nil
+	return arenaAlloc(&p.ar.matchAsList, MatchAs{P: pos, Pattern: or, Name: name}), nil
 }
 
 func (p *parser) parseOrPattern() (Pattern, error) {
@@ -1712,7 +1729,7 @@ func (p *parser) parseOrPattern() (Pattern, error) {
 		}
 		items = append(items, next)
 	}
-	return &MatchOr{P: pos, Patterns: items}, nil
+	return arenaAlloc(&p.ar.matchOrs, MatchOr{P: pos, Patterns: items}), nil
 }
 
 func (p *parser) parseClosedPattern() (Pattern, error) {
@@ -1732,22 +1749,22 @@ func (p *parser) parseClosedPattern() (Pattern, error) {
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &MatchSingleton{P: pos, Value: nil}, nil
+			return arenaAlloc(&p.ar.matchSingletons, MatchSingleton{P: pos, Value: nil}), nil
 		case "True":
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &MatchSingleton{P: pos, Value: true}, nil
+			return arenaAlloc(&p.ar.matchSingletons, MatchSingleton{P: pos, Value: true}), nil
 		case "False":
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &MatchSingleton{P: pos, Value: false}, nil
+			return arenaAlloc(&p.ar.matchSingletons, MatchSingleton{P: pos, Value: false}), nil
 		case "_":
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &MatchAs{P: pos}, nil
+			return arenaAlloc(&p.ar.matchAsList, MatchAs{P: pos}), nil
 		}
 		return p.parseNameStartedPattern()
 	}
@@ -1764,7 +1781,7 @@ func (p *parser) parseLiteralPattern() (Pattern, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &MatchValue{P: pos, Value: s}, nil
+		return arenaAlloc(&p.ar.matchValues, MatchValue{P: pos, Value: s}), nil
 	}
 	real, err := p.parseSignedNumberLiteral()
 	if err != nil {
@@ -1786,9 +1803,9 @@ func (p *parser) parseLiteralPattern() (Pattern, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &MatchValue{P: pos, Value: &BinOp{P: pos, Op: op, Left: real, Right: imag}}, nil
+		return arenaAlloc(&p.ar.matchValues, MatchValue{P: pos, Value: arenaAlloc(&p.ar.binOps, BinOp{P: pos, Op: op, Left: real, Right: imag})}), nil
 	}
-	return &MatchValue{P: pos, Value: real}, nil
+	return arenaAlloc(&p.ar.matchValues, MatchValue{P: pos, Value: real}), nil
 }
 
 func (p *parser) parseSignedNumberLiteral() (Expr, error) {
@@ -1807,9 +1824,9 @@ func (p *parser) parseSignedNumberLiteral() (Expr, error) {
 			return nil, err
 		}
 		if !neg {
-			return &UnaryOp{P: pos, Op: "UAdd", Operand: num}, nil
+			return arenaAlloc(&p.ar.unaryOps, UnaryOp{P: pos, Op: "UAdd", Operand: num}), nil
 		}
-		return &UnaryOp{P: pos, Op: "USub", Operand: num}, nil
+		return arenaAlloc(&p.ar.unaryOps, UnaryOp{P: pos, Op: "USub", Operand: num}), nil
 	}
 	return p.parseNumberLiteral()
 }
@@ -1821,9 +1838,9 @@ func (p *parser) parseNumberLiteral() (Expr, error) {
 	}
 	switch tok.kind {
 	case tkInt:
-		return parseIntLiteral(tok)
+		return parseIntLiteral(&p.ar, tok)
 	case tkFloat:
-		return parseFloatLiteral(tok)
+		return parseFloatLiteral(&p.ar, tok)
 	}
 	return nil, fmt.Errorf("%d:%d: expected number literal",
 		tok.pos.Line, tok.pos.Col)
@@ -1841,17 +1858,17 @@ func (p *parser) parseNameStartedPattern() (Pattern, error) {
 		// Bare name. Class form when followed by `(`, otherwise a
 		// capture pattern.
 		if p.cur.kind == tkLParen {
-			cls := Expr(&Name{P: pos, Id: name})
+			cls := Expr(arenaAlloc(&p.ar.names, Name{P: pos, Id: name}))
 			return p.parseClassPatternArgs(pos, cls)
 		}
 		if isReservedKeyword(name) && name != "match" && name != "case" {
 			return nil, fmt.Errorf("%d:%d: cannot use reserved name %q as capture",
 				pos.Line, pos.Col, name)
 		}
-		return &MatchAs{P: pos, Name: name}, nil
+		return arenaAlloc(&p.ar.matchAsList, MatchAs{P: pos, Name: name}), nil
 	}
 	// Dotted: build Attribute chain, then either class or value pattern.
-	value := Expr(&Name{P: pos, Id: name})
+	value := Expr(arenaAlloc(&p.ar.names, Name{P: pos, Id: name}))
 	for p.cur.kind == tkDot {
 		dotPos := p.cur.pos
 		if err := p.advance(); err != nil {
@@ -1865,12 +1882,12 @@ func (p *parser) parseNameStartedPattern() (Pattern, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		value = &Attribute{P: dotPos, Value: value, Attr: attr}
+		value = arenaAlloc(&p.ar.attributes, Attribute{P: dotPos, Value: value, Attr: attr})
 	}
 	if p.cur.kind == tkLParen {
 		return p.parseClassPatternArgs(pos, value)
 	}
-	return &MatchValue{P: pos, Value: value}, nil
+	return arenaAlloc(&p.ar.matchValues, MatchValue{P: pos, Value: value}), nil
 }
 
 // parseClassPatternArgs parses `(positional, kw=pattern)` after the
@@ -1931,13 +1948,13 @@ func (p *parser) parseClassPatternArgs(pos Pos, cls Expr) (Pattern, error) {
 	if _, err := p.expect(tkRParen); err != nil {
 		return nil, err
 	}
-	return &MatchClass{
+	return arenaAlloc(&p.ar.matchClasses, MatchClass{
 		P:           pos,
 		Cls:         cls,
 		Patterns:    positional,
 		KwdAttrs:    kwAttrs,
 		KwdPatterns: kwPatterns,
-	}, nil
+	}), nil
 }
 
 func (p *parser) parseSequencePatternBrackets() (Pattern, error) {
@@ -1962,7 +1979,7 @@ func (p *parser) parseSequencePatternBrackets() (Pattern, error) {
 	if _, err := p.expect(tkRBrack); err != nil {
 		return nil, err
 	}
-	return &MatchSequence{P: pos, Patterns: items}, nil
+	return arenaAlloc(&p.ar.matchSequences, MatchSequence{P: pos, Patterns: items}), nil
 }
 
 // parseGroupOrSequencePattern handles `(p)` (group) vs `(p, q)`
@@ -1976,7 +1993,7 @@ func (p *parser) parseGroupOrSequencePattern() (Pattern, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return &MatchSequence{P: pos}, nil
+		return arenaAlloc(&p.ar.matchSequences, MatchSequence{P: pos}), nil
 	}
 	first, isStar, err := p.parseMaybeStarPattern()
 	if err != nil {
@@ -1988,7 +2005,7 @@ func (p *parser) parseGroupOrSequencePattern() (Pattern, error) {
 		}
 		if isStar {
 			// `(*x)` is an unusual single-star form — treat as 1-tuple.
-			return &MatchSequence{P: pos, Patterns: []Pattern{first}}, nil
+			return arenaAlloc(&p.ar.matchSequences, MatchSequence{P: pos, Patterns: []Pattern{first}}), nil
 		}
 		return first, nil
 	}
@@ -2009,7 +2026,7 @@ func (p *parser) parseGroupOrSequencePattern() (Pattern, error) {
 	if _, err := p.expect(tkRParen); err != nil {
 		return nil, err
 	}
-	return &MatchSequence{P: pos, Patterns: items}, nil
+	return arenaAlloc(&p.ar.matchSequences, MatchSequence{P: pos, Patterns: items}), nil
 }
 
 // parseMappingPattern handles `{ key: pattern, **rest }`.
@@ -2064,7 +2081,7 @@ func (p *parser) parseMappingPattern() (Pattern, error) {
 	if _, err := p.expect(tkRBrace); err != nil {
 		return nil, err
 	}
-	return &MatchMapping{P: pos, Keys: keys, Patterns: pats, Rest: rest}, nil
+	return arenaAlloc(&p.ar.matchMappings, MatchMapping{P: pos, Keys: keys, Patterns: pats, Rest: rest}), nil
 }
 
 // parseMappingKey accepts a literal expression (signed number, string,
@@ -2091,7 +2108,7 @@ func (p *parser) parseMappingKey() (Expr, error) {
 			if err != nil {
 				return nil, err
 			}
-			return &BinOp{P: pos, Op: op, Left: real, Right: imag}, nil
+			return arenaAlloc(&p.ar.binOps, BinOp{P: pos, Op: op, Left: real, Right: imag}), nil
 		}
 		return real, nil
 	case tkName:
@@ -2100,24 +2117,24 @@ func (p *parser) parseMappingKey() (Expr, error) {
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &Constant{P: pos, Kind: "None"}, nil
+			return arenaAlloc(&p.ar.constants, Constant{P: pos, Kind: "None"}), nil
 		case "True":
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &Constant{P: pos, Kind: "True"}, nil
+			return arenaAlloc(&p.ar.constants, Constant{P: pos, Kind: "True"}), nil
 		case "False":
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			return &Constant{P: pos, Kind: "False"}, nil
+			return arenaAlloc(&p.ar.constants, Constant{P: pos, Kind: "False"}), nil
 		}
 		// Dotted name (value-pattern key).
 		name := p.cur.val
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		var v Expr = &Name{P: pos, Id: name}
+		var v Expr = arenaAlloc(&p.ar.names, Name{P: pos, Id: name})
 		for p.cur.kind == tkDot {
 			dotPos := p.cur.pos
 			if err := p.advance(); err != nil {
@@ -2131,7 +2148,7 @@ func (p *parser) parseMappingKey() (Expr, error) {
 			if err := p.advance(); err != nil {
 				return nil, err
 			}
-			v = &Attribute{P: dotPos, Value: v, Attr: attr}
+			v = arenaAlloc(&p.ar.attributes, Attribute{P: dotPos, Value: v, Attr: attr})
 		}
 		return v, nil
 	}
@@ -2180,12 +2197,12 @@ func (p *parser) parseTypeAliasStmt() (Stmt, error) {
 			return nil, err
 		}
 	}
-	return &TypeAlias{
+	return arenaAlloc(&p.ar.typeAliases, TypeAlias{
 		P:          pos,
-		Name:       &Name{P: namePos, Id: nameStr},
+		Name:       arenaAlloc(&p.ar.names, Name{P: namePos, Id: nameStr}),
 		TypeParams: typeParams,
 		Value:      value,
-	}, nil
+	}), nil
 }
 
 func (p *parser) parseTypeParams() ([]TypeParam, error) {
@@ -2231,7 +2248,7 @@ func (p *parser) parseTypeParam() (TypeParam, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &TypeVarTuple{P: pos, Name: name, DefaultValue: def}, nil
+		return arenaAlloc(&p.ar.typeVarTuples, TypeVarTuple{P: pos, Name: name, DefaultValue: def}), nil
 	case tkDoubleStar:
 		if err := p.advance(); err != nil {
 			return nil, err
@@ -2248,7 +2265,7 @@ func (p *parser) parseTypeParam() (TypeParam, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &ParamSpec{P: pos, Name: name, DefaultValue: def}, nil
+		return arenaAlloc(&p.ar.paramSpecs, ParamSpec{P: pos, Name: name, DefaultValue: def}), nil
 	}
 	if p.cur.kind != tkName {
 		return nil, fmt.Errorf("%d:%d: expected type parameter",
@@ -2273,7 +2290,7 @@ func (p *parser) parseTypeParam() (TypeParam, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &TypeVar{P: pos, Name: name, Bound: bound, DefaultValue: def}, nil
+	return arenaAlloc(&p.ar.typeVars, TypeVar{P: pos, Name: name, Bound: bound, DefaultValue: def}), nil
 }
 
 func (p *parser) parseTypeParamDefault() (Expr, error) {
@@ -2294,7 +2311,7 @@ func (p *parser) parseTypeParamDefault() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Starred{P: pos, Value: val}, nil
+		return arenaAlloc(&p.ar.starredNodes, Starred{P: pos, Value: val}), nil
 	}
 	return p.parseExpr()
 }
