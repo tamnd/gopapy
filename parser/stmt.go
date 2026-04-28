@@ -8,7 +8,14 @@ import (
 // ParseFile parses src as a complete Python module and returns its
 // Module AST. filename is used only for error messages; the bytes
 // themselves come from src.
+//
+// ParseFile normalizes the source before parsing: it strips a leading
+// UTF-8 BOM (U+FEFF, encoded as 0xEF 0xBB 0xBF) and converts Windows
+// CRLF line endings to LF. CPython does both before tokenizing.
 func ParseFile(filename, src string) (*Module, error) {
+	src = strings.TrimPrefix(src, "\xef\xbb\xbf")
+	src = strings.ReplaceAll(src, "\r\n", "\n")
+	src = strings.ReplaceAll(src, "\r", "\n")
 	p, err := newStmtParser(src)
 	if err != nil {
 		return nil, prefixErr(err, filename)

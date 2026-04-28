@@ -1260,6 +1260,12 @@ func isIntentionalBadFixture(path string) bool {
 	if strings.HasPrefix(base, "bad_") || strings.HasPrefix(base, "badsyntax_") {
 		return true
 	}
+	// lib2to3/tests/data/ contains Python 2 source files and encoding edge cases
+	// (BOM, CRLF, non-UTF-8 encodings) used to test the 2to3 migration tool.
+	// These are not valid Python 3 and are intentionally excluded.
+	if strings.Contains(filepath.ToSlash(path), "lib2to3/tests/data/") {
+		return true
+	}
 	// Intentionally-invalid corpus fixtures (both gopapy and CPython reject them).
 	switch base {
 	case "async_as_identifier.py",   // black: async used as identifier (Python 2 style)
